@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     SCRIPT_DIR: str  # folder where scripts live
     TARGET_SCRIPT: str  # script filename to run
 
+    # --- Strategy parameters ---
+    RISK: int = 100  # Default risk per trade in dollars
+    MAX_ENTRY_FREQUENCY_MINUTES: int = 10 
+
+
+
     def __init__(self, **values):
         super().__init__(**values)
         if not self.DEBUG:
