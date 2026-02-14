@@ -1,30 +1,15 @@
-from pydantic import BaseModel
-from datetime import date, time
 from typing import List, Dict
 from db.livestream_repo import LiveStreamRepository
+from schemas.APIschemas import LatestRow
 import logging
 
 logger = logging.getLogger(__name__)
 
-class LatestRow(BaseModel):
-    TableName: str
-    Symbol: str
-    Date: date
-    Time: time
-    Open: float
-    High: float
-    Low: float
-    Close: float
-    Volume: float
-    VWAP: float
-    EMA9: float
-    Avg_volume: float
-    Rvol: float
-    Relatr: float
+
     
 class LiveStreamService:
-    def __init__(self, conn = None):
-        self.repo = LiveStreamRepository(conn) if conn else None
+    def __init__(self, db_connection):
+        self.repo = LiveStreamRepository(db_connection)
         self.latest_rows: Dict[str, LatestRow] = {}  # in-memory cache
 
     # ---------------- DB Fetch ----------------

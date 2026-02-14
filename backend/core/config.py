@@ -26,9 +26,13 @@ class Settings(BaseSettings):
     TARGET_SCRIPT: str  # script filename to run
 
     # --- Strategy parameters ---
-    RISK: int = 100  # Default risk per trade in dollars
-    MAX_ENTRY_FREQUENCY_MINUTES: int = 10 
+    RISK: int  # Default risk per trade in dollars
+    MAX_ENTRY_FREQUENCY_MINUTES: int
 
+    # --- Alpaca API Config ---
+    ALPACA_API_KEY: str
+    ALPACA_API_SECRET: str
+    ALPACA_BASE_URL: str
 
 
     def __init__(self, **values):

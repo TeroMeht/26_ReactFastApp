@@ -1,12 +1,19 @@
 from pathlib import Path
 from typing import Dict, Optional
+from core.config import settings  # service pulls settings itself
 import logging
-
 logger = logging.getLogger(__name__)
 
+
 class InputTickerService:
-    def __init__(self, base_path: Path):
-        self.base_path = base_path
+    """
+    Service for managing input ticker files.
+    Decoupled from FastAPI; reads settings internally.
+    """
+
+    def __init__(self):
+        # Pull base path from settings internally
+        self.base_path: Path = Path(settings.INPUT_TICKERS_PATH)
 
     # -------------------------
     # Public Methods
@@ -45,7 +52,7 @@ class InputTickerService:
     def _ensure_directory_exists(self) -> None:
         if not self.base_path.exists() or not self.base_path.is_dir():
             raise FileNotFoundError(
-                f"Base path not found or not directory: {self.base_path}"
+                f"Base path not found or not a directory: {self.base_path}"
             )
 
     def _read_single_file(self, filename: str) -> dict:

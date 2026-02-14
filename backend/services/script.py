@@ -1,13 +1,15 @@
 import subprocess
 from pathlib import Path
+from core.config import settings
+
 import logging
 
 logger = logging.getLogger(__name__)
 
 class ScriptService:
-    def __init__(self, script_dir: Path, target_script: str):
-        self.script_dir = script_dir
-        self.target_script = target_script
+    def __init__(self):
+        self.script_dir = Path(settings.SCRIPT_DIR)
+        self.target_script = settings.TARGET_SCRIPT
 
     def run_script(self) -> str:
         if not self.script_dir.exists():

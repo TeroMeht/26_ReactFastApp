@@ -1,8 +1,9 @@
-# routers/portfolio_router.py
 from fastapi import APIRouter, Depends, HTTPException
 from services.portfolio import PortfolioService
 from dependencies import get_ib
-from pydantic import BaseModel
+
+from schemas.APIschemas import EntryRequest, ModifyOrderRequest
+
 router = APIRouter(
     prefix="/api/portfolio",
     tags=["portfolio"]
@@ -66,11 +67,6 @@ async def get_bid_ask_price(symbol: str, ib = Depends(get_ib)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-class EntryRequest(BaseModel):
-    symbol: str
-    entry_price: float
-    stop_price: float
-    position_size: int
 
 @router.post("/entry-request")
 async def entry_request(payload: EntryRequest, ib=Depends(get_ib)):
@@ -83,3 +79,36 @@ async def entry_request(payload: EntryRequest, ib=Depends(get_ib)):
         "parentOrderId": parent.orderId if parent else None,
         "stopOrderId": stop.orderId if stop else None,
     }
+
+
+@router.post("/add-request")
+async def add_request(payload: EntryRequest, ib=Depends(get_ib)):
+    service = PortfolioService(ib)
+
+    parent, stop, allowed, msg = await service.process_entry_request(payload.dict())
+    return {
+        "allowed": allowed,
+        "message": msg,
+        "symbol": payload.symbol,
+        "parentOrderId": parent.orderId if parent else None,
+        "stopOrderId": stop.orderId if stop else None,
+    }
+
+@router.post("/modify-order")
+async def modify_order(request: ModifyOrderRequest, ib=Depends(get_ib)):
+    """
+    Modify the quantity of the first open IB order matching the given symbol.
+    """
+    ib_service = PortfolioService(ib)
+
+    result = await ib_service.modify_order_quantity_by_symbol(
+        symbol=request.symbol,
+        new_qty=request.new_quantity
+    )
+
+    if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail=f"No open order found for {request.symbol}")
+    elif result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("message"))
+
+    return result

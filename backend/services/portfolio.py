@@ -5,10 +5,7 @@ import logging
 from services.orders import Order, build_order, calculate_position_size
 import datetime
 from datetime import datetime, timedelta
-from core.config import settings, Settings
-settings = Settings()
-
-
+from core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +157,7 @@ class PortfolioService:
 
             bid = ticker.bid
             ask = ticker.ask
-
+            logger.info(f"Fetched bid/ask for {symbol}: bid={bid}, ask={ask}")
             # Cancel subscription (important)
             self.ib.cancelMktData(contract)
 
@@ -233,55 +230,52 @@ class PortfolioService:
             return None, None
 
 
+    async def modify_order_quantity_by_symbol(self, symbol: str, new_qty: float) -> dict:
+        """
+        Modify the quantity of the first open IB order matching the symbol.
+        Does not require order_id.
+        """
+        try:
+            # 1 Fetch all open orders
+            open_orders = await self.ib.reqAllOpenOrdersAsync()
+            logger.info(f"Fetched {len(open_orders)} open orders for modification attempt on {symbol}")
+            #  Find the first order for the given symbol
+            target_order_data = next(
+                (t for t in open_orders if t.contract and t.contract.symbol.upper() == symbol.upper()),
+                None
+            )
 
+            if not target_order_data:
+                logging.warning(f"No open order found for symbol {symbol}")
+                return {"status": "not_found", "symbol": symbol}
 
+            order = target_order_data.order
+            contract = target_order_data.contract
 
-    async def process_entry_request(self, payload: dict):
-            """
-            Process entry request:
-            - Validate payload
-            - Check if entry is allowed based on last executions
-            - Place bracket order if allowed
-            """
-            try:
-                order = self.create_order(payload)
+            if not order or not contract:
+                logging.error(f"Order or contract missing for symbol {symbol}")
+                return {"status": "error", "message": "Order or contract not found", "symbol": symbol}
 
-                # --- Fetch executed trades ---
-                executed_trades = await self.get_trades()
+            # 3 Update the quantity
+            order.totalQuantity = new_qty
 
-                # --- Check if entry is allowed ---
-                allowed, message = self.is_entry_allowed(executed_trades, order.symbol)
+            # 4 Qualify contract (IB requirement)
+            await self.ib.qualifyContractsAsync(contract)
 
-                if not allowed:
-                    logger.info(message)
-                    return None, None, allowed,message
+            # 5 Place modified order (same orderId updates existing order)
+            self.ib.placeOrder(contract, order)
 
-                # --- Step 2: Update order entry price dynamically ---
-                bid_ask = await self.get_bid_ask_price(order.symbol)
+            logging.info(f"Modified order for {symbol}: new quantity={new_qty}")
 
-                if not bid_ask or bid_ask.get("ask") is None:
-                    raise ValueError(f"Could not fetch latest ask price for {order.symbol}")
+            return {
+                "status": "success",
+                "symbol": symbol,
+                "new_quantity": new_qty
+            }
 
-                order.entry_price = bid_ask["ask"]
-
-                # --- Step 3: Recalculate position size ---
-                order.position_size = calculate_position_size(
-                    entry_price=order.entry_price,
-                    stop_price=order.stop_price,
-                    risk=settings.RISK  # Use the configured risk value from settings
-                )
-
-                logger.debug(f"Updated order: symbol={order.symbol}, entry={order.entry_price}, size={order.position_size}")
-
-                # --- Place bracket order ---
-                parent, stop = await self.place_bracket_order(order)
-                return parent, stop, allowed,message
-
-            except Exception as e:
-                logger.error(f"Error processing entry request: {e}")
-                return None, None, None,str(e)
-
-
+        except Exception as e:
+            logging.error(f"Error modifying order for {symbol}: {e}")
+            return {"status": "error", "message": str(e), "symbol": symbol}
 
 
 
@@ -342,3 +336,98 @@ class PortfolioService:
             message = f"Error in is_entry_allowed: {e}"
             logger.error(message)
             return False, message
+
+
+    async def process_entry_request(self, payload: dict):
+            """
+            Process entry request:
+            - Validate payload
+            - Check if entry is allowed based on last executions
+            - Place bracket order if allowed
+            """
+            try:
+                order = self.create_order(payload)
+
+                # --- Fetch executed trades ---
+                executed_trades = await self.get_trades()
+
+                # --- Check if entry is allowed ---
+                allowed, message = self.is_entry_allowed(executed_trades, order.symbol)
+
+                if not allowed:
+                    logger.info(message)
+                    return None, None, allowed,message
+
+                # --- Step 2: Update order entry price dynamically ---
+                bid_ask = await self.get_bid_ask_price(order.symbol)
+
+                if not bid_ask or bid_ask.get("ask") is None:
+                    raise ValueError(f"Could not fetch latest ask price for {order.symbol}")
+
+                order.entry_price = bid_ask["ask"]
+
+                # --- Step 3: Recalculate position size ---
+                order.position_size = calculate_position_size(
+                    entry_price=order.entry_price,
+                    stop_price=order.stop_price,
+                    risk=settings.RISK  # Use the configured risk value from settings
+                )
+
+                logger.debug(f"Updated order: symbol={order.symbol}, entry={order.entry_price}, size={order.position_size}")
+
+                # --- Place bracket order ---
+                parent, stop = await self.place_bracket_order(order)
+                return parent, stop, allowed,message
+
+            except Exception as e:
+                logger.error(f"Error processing entry request: {e}")
+                return None, None, None,str(e)
+
+
+
+
+    async def process_add_request(self, payload: dict):
+            """
+            Process add request:
+            - Validate payload
+            - Check if a add request is allowed based on last executions
+            - Place limit order and modify stop size accordingly
+            """
+            try:
+                order = self.create_order(payload)
+
+                # --- Fetch executed trades ---
+                executed_trades = await self.get_trades()
+
+                # --- Check if entry is allowed ---
+                allowed, message = self.is_entry_allowed(executed_trades, order.symbol)
+
+                if not allowed:
+                    logger.info(message)
+                    return None, None, allowed,message
+
+                # --- Step 2: Update order entry price dynamically ---
+                bid_ask = await self.get_bid_ask_price(order.symbol)
+
+                if not bid_ask or bid_ask.get("ask") is None:
+                    raise ValueError(f"Could not fetch latest ask price for {order.symbol}")
+
+                order.entry_price = bid_ask["ask"]
+
+                # --- Step 3: Recalculate position size ---
+                order.position_size = calculate_position_size(
+                    entry_price=order.entry_price,
+                    stop_price=order.stop_price,
+                    risk=settings.RISK  # Use the configured risk value from settings
+                )
+
+                logger.debug(f"Updated order: symbol={order.symbol}, entry={order.entry_price}, size={order.position_size}")
+
+                # --- Place bracket order ---
+                parent, stop = await self.place_bracket_order(order)
+                return parent, stop, allowed,message
+
+            except Exception as e:
+                logger.error(f"Error processing entry request: {e}")
+                return None, None, None,str(e)
+

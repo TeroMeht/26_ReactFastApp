@@ -1,4 +1,5 @@
 
+
 from my_logging.logger import setup_logging
 # Set up logging and get a logger
 logger = setup_logging(__name__)
@@ -15,7 +16,7 @@ import asyncpg
 from urllib.parse import urlparse
 
 # Import routers
-from routers import tickers, script, alarms, livestream, portfolio
+from routers import tickers, script, alarms, livestream, portfolio, pending_orders
 
 
 # Global IBKR object
@@ -38,24 +39,6 @@ async def lifespan(app: FastAPI):
         db_pool = await asyncpg.create_pool(dsn=settings.DATABASE_URL)
         await dependencies.setup_dependencies(ib, db_pool)
 
-        # Extract DB name from DSN
-        parsed = urlparse(settings.DATABASE_URL)
-        db_name = parsed.path.lstrip("/")
-
-        # --- Test DB connection ---
-        async with db_pool.acquire() as conn:
-            result = await conn.fetchrow("SELECT 1 AS test")
-            db_status = "OK " if result and result['test'] == 1 else "FAILED "
-
-        # --- Startup Summary Log ---
-        logger.info(
-            " Application startup | IBKR: host=%s port=%s clientId=%s | DB: %s status=%s",
-            settings.IB_HOST,
-            settings.IB_PORT,
-            settings.IB_CLIENT_ID,
-            db_name,
-            db_status
-        )
 
         yield  # app runs here
 
@@ -94,6 +77,7 @@ app.include_router(script.router)
 app.include_router(alarms.router)
 app.include_router(livestream.router)
 app.include_router(portfolio.router)
+app.include_router(pending_orders.router)
 
 if __name__ == "__main__":
 
