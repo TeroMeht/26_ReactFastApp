@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from services.portfolio import PortfolioService
 from dependencies import get_ib
 
-from schemas.APIschemas import EntryRequest, ModifyOrderRequest
+from schemas.api_schemas import AddRequest, EntryRequest, ModifyOrderRequest, ModifyOrderByIdRequest
 
 router = APIRouter(
     prefix="/api/portfolio",
@@ -71,7 +71,7 @@ async def get_bid_ask_price(symbol: str, ib = Depends(get_ib)):
 @router.post("/entry-request")
 async def entry_request(payload: EntryRequest, ib=Depends(get_ib)):
     service = PortfolioService(ib)
-    parent, stop, allowed, msg = await service.process_entry_request(payload.dict())
+    parent, stop, allowed, msg = await service.process_entry_request(payload)
     return {
         "allowed": allowed,
         "message": msg,
@@ -82,33 +82,76 @@ async def entry_request(payload: EntryRequest, ib=Depends(get_ib)):
 
 
 @router.post("/add-request")
-async def add_request(payload: EntryRequest, ib=Depends(get_ib)):
+async def add_request(payload: AddRequest, ib=Depends(get_ib)):
+    """
+    Process an add request:
+    - Only symbol and risk are needed as input
+    - Calculates position size, builds and places new order, modifies STP
+    - Returns details of the new order and STP modification
+    """
     service = PortfolioService(ib)
 
-    parent, stop, allowed, msg = await service.process_entry_request(payload.dict())
+    # Call the service method
+    result = await service.process_add_request(payload)
+
+    # Return response directly
     return {
-        "allowed": allowed,
-        "message": msg,
+        "allowed": result.get("allowed", False),
+        "message": result.get("message"),
         "symbol": payload.symbol,
-        "parentOrderId": parent.orderId if parent else None,
-        "stopOrderId": stop.orderId if stop else None,
+        "new_order": result.get("new_order"),           # Order as dict
+        "place_result": result.get("place_result"),     # Limit order placement result
+        "modified_stp_qty": result.get("modified_stp_qty")  # Updated STP qty
     }
 
-@router.post("/modify-order")
-async def modify_order(request: ModifyOrderRequest, ib=Depends(get_ib)):
+
+
+
+# Temporary endpoint to fetch open STP order for a symbol (used for testing modify flow)
+
+@router.get("/stp-order/{symbol}")
+async def get_stp_order(symbol: str, ib=Depends(get_ib)):
     """
-    Modify the quantity of the first open IB order matching the given symbol.
+    Fetch the first open STP (Stop) order for the given symbol.
     """
     ib_service = PortfolioService(ib)
 
-    result = await ib_service.modify_order_quantity_by_symbol(
-        symbol=request.symbol,
+    result = await ib_service.get_stp_order_by_symbol(symbol)
+
+    if result.get("status") == "not_found":
+        raise HTTPException(
+            status_code=404,
+            detail=f"No open STP order found for {symbol}"
+        )
+    elif result.get("status") == "error":
+        raise HTTPException(
+            status_code=500,
+            detail=result.get("message")
+        )
+
+    return result
+
+@router.post("/modify-order-by-id")
+async def modify_order(request: ModifyOrderByIdRequest, ib=Depends(get_ib)):
+    """
+    Modify the quantity of an open IB order using its orderId.
+    """
+    ib_service = PortfolioService(ib)
+
+    result = await ib_service.modify_stp_order_by_id(
+        order_id=request.order_id,
         new_qty=request.new_quantity
     )
 
     if result.get("status") == "not_found":
-        raise HTTPException(status_code=404, detail=f"No open order found for {request.symbol}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"No open order found with orderId {request.order_id}"
+        )
     elif result.get("status") == "error":
-        raise HTTPException(status_code=500, detail=result.get("message"))
+        raise HTTPException(
+            status_code=500,
+            detail=result.get("message")
+        )
 
     return result

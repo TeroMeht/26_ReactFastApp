@@ -11,11 +11,7 @@ class AutoOrderResponse(BaseModel):
     Status: str
 
 
-class EntryRequest(BaseModel):
-    symbol: str
-    entry_price: float
-    stop_price: float
-    position_size: int
+
 
 
 class SaveTickerRequest(BaseModel):
@@ -55,3 +51,21 @@ class LatestRow(BaseModel):
 class ModifyOrderRequest(BaseModel):
     symbol: str
     new_quantity: float
+
+    
+class ModifyOrderByIdRequest(BaseModel):
+    order_id: int
+    new_quantity: float
+
+
+
+class EntryRequest(BaseModel):
+    symbol: str
+    entry_price: float
+    stop_price: float
+    position_size: int
+
+
+class AddRequest(BaseModel):
+    symbol: str
+    total_risk: int 

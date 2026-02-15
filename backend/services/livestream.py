@@ -1,6 +1,6 @@
 from typing import List, Dict
 from db.livestream_repo import LiveStreamRepository
-from schemas.APIschemas import LatestRow
+from schemas.api_schemas import LatestRow
 import logging
 
 logger = logging.getLogger(__name__)

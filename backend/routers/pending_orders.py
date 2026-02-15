@@ -3,7 +3,7 @@ from typing import List
 from services.pending_orders import OrderService
 from dependencies import get_db_conn, release_db_conn
 
-from schemas.APIschemas import AutoOrderResponse
+from schemas.api_schemas import AutoOrderResponse
 
 router = APIRouter(
     prefix="/api/pending_orders",
@@ -11,10 +11,10 @@ router = APIRouter(
 )
 
 
-@router.get("/orders")
-async def get_open_orders():
+@router.get("/manual")
+async def get_open_orders(db_conn=Depends(get_db_conn)):
 
-    service = OrderService()
+    service = OrderService(db_conn)
     try:
         orders = await service.fetch_manual_orders()
 
@@ -30,10 +30,10 @@ async def get_open_orders():
         raise HTTPException(status_code=500, detail=str(e))
     
     
-@router.delete("/orders/{order_id}")
-async def cancel_order(order_id: str):
+@router.delete("/manual/{order_id}")
+async def cancel_order(order_id: str,db_conn=Depends(get_db_conn)):
 
-    service = OrderService()
+    service = OrderService(db_conn)
     try:
         
         return await service.cancel_manual_order(order_id)

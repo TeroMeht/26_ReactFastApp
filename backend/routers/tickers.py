@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
-from schemas.APIschemas import SaveTickerRequest
+from schemas.api_schemas import SaveTickerRequest
 from services.tickers import InputTickerService
 
 router = APIRouter(

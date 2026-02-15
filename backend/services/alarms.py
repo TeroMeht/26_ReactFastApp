@@ -1,6 +1,6 @@
 from db.alarms_repo import AlarmRepository
 from typing import List, Dict
-from schemas.APIschemas import AlarmResponse,CreateAlarmRequest
+from schemas.api_schemas import AlarmResponse,CreateAlarmRequest
 
 import logging
 
