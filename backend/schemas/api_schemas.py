@@ -1,5 +1,7 @@
-from pydantic import BaseModel
+
+from pydantic import BaseModel, field_validator,Field
 from datetime import date, time
+
 
 
 class AutoOrderResponse(BaseModel):
@@ -69,3 +71,41 @@ class EntryRequest(BaseModel):
 class AddRequest(BaseModel):
     symbol: str
     total_risk: int 
+
+# Watchlist streamer lähettää tällaisen sanoman POST endpointtiin, jossa tarkastetaan ensin että onko sille symbolille tilattu exit
+class ExitRequest(BaseModel):
+    date: date
+    time: time
+    alarm: str
+    symbol: str
+     
+
+     
+class UpdateExitRequest(BaseModel):
+    symbol: str = Field(
+        ...,
+        min_length=1,
+        description="Trading symbol (auto uppercased)"
+    )
+    requested: bool
+
+    @field_validator("symbol")
+    @classmethod
+    def validate_and_uppercase_symbol(cls, v: str) -> str:
+        v = v.strip().upper()
+
+        if not v:
+            raise ValueError("Symbol cannot be empty")
+
+        return v
+    
+
+
+class PortfolioPositionModel(BaseModel):
+    Symbol: str
+    Allocation: float | None
+    Size: float
+    AvgCost: float
+    AuxPrice: float
+    Position: float
+    OpenRisk: float

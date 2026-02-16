@@ -16,7 +16,7 @@ import asyncpg
 from urllib.parse import urlparse
 
 # Import routers
-from routers import tickers, script, alarms, livestream, portfolio, pending_orders
+from routers import tickers, script, alarms, livestream, portfolio, pending_orders, exits
 
 
 # Global IBKR object
@@ -78,6 +78,7 @@ app.include_router(alarms.router)
 app.include_router(livestream.router)
 app.include_router(portfolio.router)
 app.include_router(pending_orders.router)
+app.include_router(exits.router)
 
 if __name__ == "__main__":
 

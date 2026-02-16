@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from services.portfolio import PortfolioService
 from dependencies import get_ib
+from typing import Optional,List
 
-from schemas.api_schemas import AddRequest, EntryRequest, ModifyOrderRequest, ModifyOrderByIdRequest
+from schemas.api_schemas import AddRequest, EntryRequest, ExitRequest,ModifyOrderRequest, ModifyOrderByIdRequest,PortfolioPositionModel
 
 router = APIRouter(
     prefix="/api/portfolio",
@@ -55,16 +56,11 @@ async def get_bid_ask_price(symbol: str, ib = Depends(get_ib)):
         service = PortfolioService(ib)
         data = await service.get_bid_ask_price(symbol)
 
-        if data is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No bid/ask data available for {symbol}"
-            )
-
         return data
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 
@@ -104,6 +100,64 @@ async def add_request(payload: AddRequest, ib=Depends(get_ib)):
         "modified_stp_qty": result.get("modified_stp_qty")  # Updated STP qty
     }
 
+
+@router.post("/move-stop-be")
+async def move_stop_by_symbol(symbol: str, ib=Depends(get_ib)):
+    """
+    Move stop to breakeven for a given symbol.
+    Expects JSON body: {"symbol": "AAPL"}
+    """
+
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Symbol is required in the request body")
+
+    service = PortfolioService(ib)
+
+    result = await service.move_stp_order_by_symbol(symbol)
+
+    return result
+
+
+@router.post("/exit-request")
+async def exit_request(payload: ExitRequest, ib=Depends(get_ib)):
+    
+    service = PortfolioService(ib)
+    result = await service.process_exit_request(payload)
+
+    return {
+        "message": result.get("message"),
+        "symbol": payload.symbol,
+        "requested": payload.requested,
+        "signal": payload.signal
+    }
+
+
+
+
+
+@router.get("/open-risk-table", response_model=List[PortfolioPositionModel])
+async def get_open_risk_table(ib=Depends(get_ib)):
+    """
+    Fetch the current open risk table for all portfolio positions.
+    """
+    try:
+        ib_service = PortfolioService(ib)
+
+        positions = await ib_service.process_openrisktable()
+
+        if not positions:
+            raise HTTPException(
+                status_code=404,
+                detail="No positions found in the portfolio"
+            )
+
+        return positions
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch open risk table: {str(e)}"
+        )
 
 
 

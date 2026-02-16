@@ -6,9 +6,23 @@ from services.orders import Order, build_order, calculate_position_size
 import datetime
 from datetime import datetime, timedelta
 from core.config import settings
-from schemas.api_schemas import AddRequest, EntryRequest, ModifyOrderRequest, ModifyOrderByIdRequest
+from schemas.api_schemas import AddRequest, EntryRequest,ExitRequest, ModifyOrderRequest, ModifyOrderByIdRequest
+from dataclasses import dataclass, asdict,field
+from typing import Optional,List
 
 logger = logging.getLogger(__name__)
+
+@dataclass
+class PortfolioPosition:
+    Symbol: str
+    Allocation: Optional[float]
+    Size: float
+    AvgCost: float
+    AuxPrice: Optional[float] = field(default=0.0)
+    Position: float = 0.0
+    OpenRisk: Optional[float] = field(default=0.0)
+
+
 
 
 class PortfolioService:
@@ -310,6 +324,41 @@ class PortfolioService:
             logging.error(f"Error in place_bracket_order for {order.symbol}: {e}")
             return None, None
 
+    async def place_limit_order(self, order: Order):
+        """
+        Place a simple limit order asynchronously.
+        """
+        try:
+            contract = Stock(
+                symbol=order.symbol,
+                exchange="SMART",
+                currency="USD"
+            )
+
+            # Properly await qualification
+            await self.ib.qualifyContractsAsync(contract)
+
+            limit_order = LimitOrder(
+                action=order.action,
+                totalQuantity=order.position_size,
+                lmtPrice=order.entry_price,
+                orderId=self.ib.client.getReqId(),
+                transmit=True,
+            )
+
+            self.ib.placeOrder(contract, limit_order)
+            logger.info(f"Limit order submitted for {order.symbol}: "
+                        f"orderId={limit_order.orderId}, "
+                        f"action={order.action}, quantity={order.position_size}, "
+                        f"price={order.entry_price}")
+
+            return limit_order
+
+        except Exception as e:
+            logger.error(f"Error in place_limit_order for {order.symbol}: {e}")
+            return None
+
+
     async def modify_stp_order_by_id(self, order_id: int, new_qty: float) -> dict:
         """
         Modify the quantity of an open IB order using its permId.
@@ -372,40 +421,106 @@ class PortfolioService:
                 "order_id": order_id
             }
 
-    async def place_limit_order(self, order: Order):
+    async def move_stp_auxprice_to_avgcost(self, order_id: int, new_auxprice: float) -> dict:
         """
-        Place a simple limit order asynchronously.
+        Modify the auxPrice (stop price) of an open STP order to the given avg_cost.
+        Uses permId to locate the order.
         """
         try:
-            contract = Stock(
-                symbol=order.symbol,
-                exchange="SMART",
-                currency="USD"
+            # 1️⃣ Fetch all open orders
+            open_orders = await self.ib.reqAllOpenOrdersAsync()
+            await asyncio.sleep(0.5)
+
+            # 2️⃣ Find order matching permId
+            target_trade = next(
+                (
+                    t for t in open_orders
+                    if t.order and t.order.permId == order_id
+                ),
+                None
             )
 
-            # Properly await qualification
+            if not target_trade:
+                logging.warning(f"No open order found with permId {order_id}")
+                return {"status": "not_found", "order_id": order_id}
+
+            order = target_trade.order
+            contract = target_trade.contract
+
+
+            # 4️⃣ Modify auxPrice (stop price)
+            order.auxPrice = float(new_auxprice)
+
+            # 5️⃣ Qualify contract (required by IB)
             await self.ib.qualifyContractsAsync(contract)
 
-            limit_order = LimitOrder(
-                action=order.action,
-                totalQuantity=order.position_size,
-                lmtPrice=order.entry_price,
-                orderId=self.ib.client.getReqId(),
-                transmit=True,
+            # 6️⃣ Place order again (same orderId updates existing order)
+            self.ib.placeOrder(contract, order)
+
+            await asyncio.sleep(0.5)
+
+            logging.info(
+                f"Moved STP order {order_id} stop to new price {new_auxprice}",
+                extra={
+                    "order_id": order_id,
+                    "symbol": contract.symbol,
+                    "new_stop": new_auxprice
+                }
             )
 
-            self.ib.placeOrder(contract, limit_order)
-            logger.info(f"Limit order submitted for {order.symbol}: "
-                        f"orderId={limit_order.orderId}, "
-                        f"action={order.action}, quantity={order.position_size}, "
-                        f"price={order.entry_price}")
-
-            return limit_order
+            return {
+                "status": "success",
+                "order_id": order_id,
+                "symbol": contract.symbol,
+                "new_stop_price": new_auxprice
+            }
 
         except Exception as e:
-            logger.error(f"Error in place_limit_order for {order.symbol}: {e}")
-            return None
+            logging.error(f"Error modifying STP order {order_id}: {e}")
+            return {
+                "status": "error",
+                "message": str(e),
+                "order_id": order_id
+            }
+   
+    async def move_stp_order_by_symbol(self, symbol: str):
+        """
+        Move the stop loss order for a given symbol to breakeven (avg cost).
+        """
+        try:
+            # 1️⃣ Get existing STP order
+            stp_order = await self.get_stp_order_by_symbol(symbol)
 
+            # 2️⃣ Get current position (for avg cost)
+            position = await self.get_position_by_symbol(symbol)
+
+            order_id = stp_order.get("orderid")
+            avgcost = position.get("avgcost")
+
+            # 3️⃣ Move stop to breakeven
+            result= await self.move_stp_auxprice_to_avgcost(
+                order_id=order_id,
+                new_auxprice=avgcost
+            )
+                # 3️⃣ If successful, return detailed response
+            if result.get("status") == "success":
+                return {
+                    "status": "success",
+                    "message": f"STP order for {symbol} moved to breakeven at price {avgcost}",
+                    "symbol": symbol,
+                    "order_id": order_id,
+                    "new_stop_price": avgcost,
+                }
+
+            return result  # propagate error from modify function
+
+        except Exception as e:
+            logging.error(f"Error in move_stp_order_by_id for {symbol}: {e}")
+            return {
+                "status": "error",
+                "message": str(e)
+            }
+        
 
 # Checks if user is trying to add to losing position. Won't allow that. 
     async def is_add_allowed(self, position: dict) -> dict:
@@ -450,7 +565,6 @@ class PortfolioService:
                 "symbol": symbol,
                 "message": str(e)
             }
-
 
     async def is_entry_allowed(self, executed_trades: list[dict]) -> dict:
         """
@@ -581,7 +695,6 @@ class PortfolioService:
             logger.error(f"Error processing entry request for {symbol}: {e}")
             return None, None, False, str(e)
 
-
     async def process_add_request(self, payload: AddRequest):
         """
         Process an add request:
@@ -597,6 +710,8 @@ class PortfolioService:
             
             # 2 Get existing position quantity
             position = await self.get_position_by_symbol(symbol)
+            # Get existing stp order
+            existing_stp_order = await self.get_stp_order_by_symbol(symbol)
 
             # 1 Check if adding is allowed to that position
             validation = await self.is_add_allowed(position)
@@ -609,8 +724,7 @@ class PortfolioService:
                 return None, None, False, validation.get("message")
 
         
-            # Get existing stp order
-            existing_stp_order = await self.get_stp_order_by_symbol(symbol)
+
             logger.info(f"Existing STP order for {symbol}: {existing_stp_order}")
 
             # Get existing aux price
@@ -670,3 +784,85 @@ class PortfolioService:
                 "allowed": False,
                 "message": str(e)
             }
+        
+
+
+
+    async def process_openrisktable(self) -> List[PortfolioPosition]:
+        """
+        Build risk objects for each portfolio position:
+        - OpenRisk (based on stop)
+        - NetLiquidity% exposure
+        - Size (absolute position value)
+        """
+
+        # Fetch everything concurrently (faster)
+        positions, orders, account_summary = await asyncio.gather(
+            self.get_positions(),
+            self.get_orders(),
+            self.get_account_summary()
+        )
+
+        if not positions:
+            return []
+
+        netliq = float(account_summary.get("NetLiquidation", 0))
+
+        portfolio_positions: List[PortfolioPosition] = []
+
+        for pos in positions:
+            try:
+                symbol = pos.get("symbol")
+                position = float(pos.get("position", 0))
+                avgcost = float(pos.get("avgcost", 0))
+
+                if not symbol or position == 0:
+                    continue
+
+                size = round(abs(position * avgcost), 2)
+                allocation = (
+                    round((size / netliq) * 100, 2)
+                    if netliq > 0
+                    else None
+                )
+
+                # Find STOP order for this symbol
+                stop_order = next(
+                    (
+                        o for o in orders
+                        if o.get("symbol") == symbol
+                        and o.get("ordertype") == "STP"
+                    ),
+                    None
+                )
+
+                if stop_order and stop_order.get("auxprice") is not None:
+                    aux_price = float(stop_order.get("auxprice"))
+                    open_risk = round(abs(position * (aux_price - avgcost)), 2)
+                else:
+                    aux_price = 0.0
+                    open_risk = 999_999_999  # no stop = unlimited risk
+
+                portfolio_positions.append(
+                    PortfolioPosition(
+                        Symbol=symbol,
+                        Allocation=allocation,
+                        Size=size,
+                        AvgCost=avgcost,
+                        AuxPrice=aux_price,
+                        Position=position,
+                        OpenRisk=open_risk
+                    )
+                )
+
+            except Exception as e:
+                logger.error("Error processing %s: %s", pos.get("symbol"), e)
+                continue
+        logger.info("Built open risk table for %d positions", len(portfolio_positions))
+
+        return portfolio_positions
+
+
+
+# Automatic exit handler. Checks if exit is requested and if signal is hit. If so, it will place a market order to exit the position.
+   # async def process_exit_request(self, payload: ExitRequest):
