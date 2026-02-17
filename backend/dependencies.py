@@ -16,18 +16,12 @@ def set_ib_instance(ib: IB):
     global _ib_instance
     _ib_instance = ib
 
-# --- PostgreSQL async dependencies ---
-async def get_db_conn() -> asyncpg.Connection:
-    """Acquire a connection from the pool."""
-    if _db_pool is None:
-        raise RuntimeError("Database pool not initialized")
-    return await _db_pool.acquire()
-
-async def release_db_conn(conn: asyncpg.Connection):
-    """Release a connection back to the pool."""
-    if _db_pool is None:
-        raise RuntimeError("Database pool not initialized")
-    await _db_pool.release(conn)
+async def get_db_conn():
+    db_conn = await _db_pool.acquire()
+    try:
+        yield db_conn
+    finally:
+        await _db_pool.release(db_conn)
 
 async def set_database_pool(pool: asyncpg.pool.Pool):
     global _db_pool

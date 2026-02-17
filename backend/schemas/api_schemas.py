@@ -1,6 +1,14 @@
 
 from pydantic import BaseModel, field_validator,Field
 from datetime import date, time
+from datetime import datetime
+from typing import Optional,Any
+
+
+class TickerFile(BaseModel):
+    filename: str
+    content: str
+
 
 
 
@@ -13,11 +21,6 @@ class AutoOrderResponse(BaseModel):
     Status: str
 
 
-
-
-
-class SaveTickerRequest(BaseModel):
-    content: str
 
 
 class AlarmResponse(BaseModel):
@@ -61,24 +64,10 @@ class ModifyOrderByIdRequest(BaseModel):
 
 
 
-class EntryRequest(BaseModel):
-    symbol: str
-    entry_price: float
-    stop_price: float
-    position_size: int
 
 
-class AddRequest(BaseModel):
-    symbol: str
-    total_risk: int 
 
-# Watchlist streamer lähettää tällaisen sanoman POST endpointtiin, jossa tarkastetaan ensin että onko sille symbolille tilattu exit
-class ExitRequest(BaseModel):
-    date: date
-    time: time
-    alarm: str
-    symbol: str
-     
+
 
      
 class UpdateExitRequest(BaseModel):
@@ -109,3 +98,57 @@ class PortfolioPositionModel(BaseModel):
     AuxPrice: float
     Position: float
     OpenRisk: float
+
+
+
+# Exits
+
+# Watchlist streamer lähettää tällaisen sanoman POST endpointtiin, jossa tarkastetaan ensin että onko sille symbolille tilattu exit
+class ExitRequest(BaseModel):
+    date: date
+    time: time
+    alarm: str
+    symbol: str
+     
+
+
+
+
+
+
+class ExitRequestResponse(BaseModel):
+    symbol: str
+    exitrequested:bool
+    updated: datetime
+
+
+# Portfolio
+
+
+class EntryRequest(BaseModel):
+    symbol: str
+    entry_price: float
+    stop_price: float
+    position_size: int
+
+
+class EntryRequestResponse(BaseModel):
+    allowed: bool
+    message: str
+    symbol: str
+    parentOrderId: Optional[int] = None
+    stopOrderId: Optional[int] = None
+
+
+class AddRequest(BaseModel):
+    symbol: str
+    total_risk: int 
+
+
+class AddRequestResponse(BaseModel):
+    allowed: bool
+    message: str
+    symbol: str
+    new_order: Optional[Any] = None
+    place_result: Optional[Any] = None
+    modified_stp_qty: Optional[int] = None

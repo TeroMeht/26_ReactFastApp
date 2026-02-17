@@ -1,6 +1,6 @@
-from fastapi import APIRouter, HTTPException, Query
-from schemas.api_schemas import SaveTickerRequest
-from services.tickers import InputTickerService
+from fastapi import APIRouter, HTTPException
+from services.tickers import get_tickers,save_tickers
+from schemas.api_schemas import TickerFile
 
 router = APIRouter(
     prefix="/api/tickers",
@@ -8,18 +8,27 @@ router = APIRouter(
 )
 
 @router.get("/")
-def read_input_tickers(file: str | None = Query(None)):
-    service = InputTickerService()  # singleton service
+async def read_input_tickers():
+    """
+    Return all tickers or files in the tickers path.
+    """
     try:
-        return service.get_tickers(file)
+        return await get_tickers()
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
 
 
 @router.post("/")
-def write_input_tickers(request: SaveTickerRequest, file: str = Query(...)):
-    service = InputTickerService()  # singleton service
+async def write_input_tickers(payload: TickerFile):
+    """
+    Save content to a ticker file.
+    Body must include 'file' and 'content'.
+    """
     try:
-        return service.save_tickers(file, request.content)
+        return await save_tickers(payload.filename, payload.content)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

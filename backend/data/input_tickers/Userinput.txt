@@ -1,1 +1,1 @@
-mstr
+string

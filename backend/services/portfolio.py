@@ -3,12 +3,14 @@ from ib_async import IB,Stock,LimitOrder, StopOrder
 import pytz
 import logging
 from services.orders import Order, build_order, calculate_position_size
+from db.exits import fetch_exits,update_exit_request
 import datetime
 from datetime import datetime, timedelta
 from core.config import settings
-from schemas.api_schemas import AddRequest, EntryRequest,ExitRequest, ModifyOrderRequest, ModifyOrderByIdRequest
+from schemas.api_schemas import AddRequest, EntryRequest,EntryRequestResponse,AddRequestResponse,ExitRequest, ModifyOrderRequest, ModifyOrderByIdRequest
 from dataclasses import dataclass, asdict,field
 from typing import Optional,List
+
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +28,9 @@ class PortfolioPosition:
 
 
 class PortfolioService:
-    def __init__(self, ib: IB):
+    def __init__(self, ib: IB,db_conn):
         self.ib = ib
+        self.db_conn = db_conn
 
 
     def create_order(self, payload: dict) -> Order:
@@ -150,7 +153,7 @@ class PortfolioService:
                         ),
                     })
 
-            logging.info(f"Fetched executed trades: {executed}")
+            logging.debug(f"Fetched executed trades: {executed}")
             return executed
 
         except Exception as e:
@@ -168,14 +171,14 @@ class PortfolioService:
             ticker = self.ib.reqMktData(contract, "", False, False)
 
             # Wait briefly for first tick
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
 
             bid = ticker.bid
             ask = ticker.ask
 
-# For testing
-            bid = 100
-            ask = 185
+            # For testing
+            # bid = 100
+            # ask = 185
 
             logger.info(f"Fetched bid/ask for {symbol}: bid={bid}, ask={ask}")
             # Cancel subscription (important)
@@ -259,12 +262,21 @@ class PortfolioService:
                 if t.get("symbol") and t["symbol"].upper() == symbol.upper()
             ]
 
-            logging.info(f"Fetched {len(symbol_trades)} executed trades for {symbol}")
-            return symbol_trades
+            # --- Find the latest trade ---
+            def parse_time(trade):
+                trade_time = trade.get("time")
+                if isinstance(trade_time, str):
+                    return datetime.fromisoformat(trade_time)
+                return trade_time
+
+            latest_trade = max(symbol_trades, key=parse_time)
+
+            logging.info(f"Latest executed trade for {symbol}: {latest_trade}")
+            return latest_trade
 
         except Exception as e:
-            logging.error(f"Error fetching executed trades for {symbol}: {e}")
-            return []
+            logging.error(f"Error fetching latest executed trade for {symbol}: {e}")
+            return None
 
 
 
@@ -403,7 +415,7 @@ class PortfolioService:
 
             await asyncio.sleep(0.5)  # small delay to ensure modification is processed
             logging.info(f"Modified order {order_id} → new quantity {new_qty}",
-                         details={"order_id": order_id, "symbol": contract.symbol, "new_qty": new_qty}
+                         {"order_id": order_id, "symbol": contract.symbol, "new_qty": new_qty}
             )
 
             return {
@@ -457,7 +469,7 @@ class PortfolioService:
             # 6️⃣ Place order again (same orderId updates existing order)
             self.ib.placeOrder(contract, order)
 
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
 
             logging.info(
                 f"Moved STP order {order_id} stop to new price {new_auxprice}",
@@ -496,6 +508,7 @@ class PortfolioService:
 
             order_id = stp_order.get("orderid")
             avgcost = position.get("avgcost")
+            avgcost = round(avgcost,2)
 
             # 3️⃣ Move stop to breakeven
             result= await self.move_stp_auxprice_to_avgcost(
@@ -565,80 +578,41 @@ class PortfolioService:
                 "symbol": symbol,
                 "message": str(e)
             }
-
-    async def is_entry_allowed(self, executed_trades: list[dict]) -> dict:
+        
+    async def is_entry_allowed(self, latest_trade: dict | None) -> bool:
         """
-        Check if a new entry is allowed based on executed trades.
-        Returns a dict with allowed=True/False and details.
-        Assumes executed_trades is already filtered for the symbol.
+        Returns True if a new entry is allowed based on the latest executed trade,
+        otherwise False. Times are checked in Helsinki timezone.
         """
         threshold_minutes = settings.MAX_ENTRY_FREQUENCY_MINUTES
+        helsinki_tz = pytz.timezone("Europe/Helsinki")
+        now = datetime.now(helsinki_tz)
 
         try:
-        
-            # --- If there are executed trades ---
-            if executed_trades:
-                # --- Latest execution time ---
-                latest_trade = max(executed_trades, key=lambda t: t["time"])
-                last_trade_time = latest_trade["time"]
-                if isinstance(last_trade_time, str):
-                    last_trade_time = datetime.fromisoformat(last_trade_time)
+            if not latest_trade:
+                logging.info("No executions found. Entry allowed.")
+                return True
 
-                # Current Helsinki time
-                helsinki_now = datetime.now(pytz.timezone("Europe/Helsinki"))
+            trade_time = latest_trade["time"]
 
-                elapsed = helsinki_now - last_trade_time
-                minutes = int(elapsed.total_seconds() // 60)
-                seconds = int(elapsed.total_seconds() % 60)
+            # Convert string to datetime if needed
+            if isinstance(trade_time, str):
+                trade_time = datetime.fromisoformat(trade_time)
 
-                if elapsed <= timedelta(minutes=threshold_minutes):
-                    message = (
-                        f"Last execution was {minutes}m {seconds}s ago "
-                        f"(limit: {threshold_minutes} minutes)"
-                    )
-                    logger.info(message)
-                    return {
-                        "allowed": False,
-                        "message": message,
-                        "last_execution_time": last_trade_time,
-                        "minutes_elapsed": minutes,
-                        "seconds_elapsed": seconds,
-                        "max_allowed_minutes": threshold_minutes
-                    }
+            elapsed = now - trade_time
 
-                message = (
-                    f"Entry allowed: last execution was {minutes}m {seconds}s ago "
-                    f"(limit: {threshold_minutes} minutes)"
-                )
-                logger.info(message)
-                return {
-                    "allowed": True,
-                    "message": message,
-                    "last_execution_time": last_trade_time,
-                    "minutes_elapsed": minutes,
-                    "seconds_elapsed": seconds,
-                    "max_allowed_minutes": threshold_minutes
-                }
+            if elapsed <= timedelta(minutes=threshold_minutes):
+                logging.info(f"Last execution was {elapsed}. Entry not allowed.")
+                return False
 
-            else:
-                # --- No executions → entry allowed ---
-                message = "No executions found. Entry allowed."
-                logger.info(message)
-                return {
-                    "allowed": True,
-                    "message": message
-                }
+            logging.info(f"Last execution was {elapsed}. Entry allowed.")
+            return True
 
         except Exception as e:
-            message = f"Error in is_entry_allowed: {e}"
-            logger.error(message)
-            return {
-                "allowed": False,
-                "message": message
-            }
+            logging.exception("Error in is_entry_allowed")
+            return False
 
-
-    async def process_entry_request(self, payload: EntryRequest):
+    async def process_entry_request(self, payload: EntryRequest)-> EntryRequestResponse:
         """
         Process an entry request:
         - Check if a new entry is allowed based on past executed trades
@@ -657,12 +631,15 @@ class PortfolioService:
             # --- Check if entry is allowed ---
             validation = await self.is_entry_allowed(executed_trades)
 
-            if validation.get("allowed") is False:
-                logger.info(f"Entry not allowed for {symbol}: {validation.get('message')}")
-                return None, None, False, validation.get("message")
+            if validation == False:
+                return EntryRequestResponse(
+                    allowed=False,
+                    message="Less than threshold limit passed from last execution",
+                    symbol=symbol,
+                )
 
             # --- Entry is allowed ---
-            logger.info(f"Entry allowed for {symbol}: {validation.get('message')}")
+            logger.info(f"Entry allowed for {symbol}")
 
             # --- Step 1: Get current ask price ---
             bid_ask = await self.get_bid_ask_price(symbol)
@@ -689,13 +666,23 @@ class PortfolioService:
             # --- Step 4: Place bracket order ---
             parent, stop = await self.place_bracket_order(order)
 
-            return parent, stop, True, validation.get("message")
+            return EntryRequestResponse(
+                allowed=True,
+                message="Entry ok",
+                symbol=symbol,
+                parentOrderId=parent.orderId if parent else None,
+                stopOrderId=stop.orderId if stop else None,
+            )
 
         except Exception as e:
-            logger.error(f"Error processing entry request for {symbol}: {e}")
-            return None, None, False, str(e)
+            logger.exception(f"Error processing entry request for {symbol}")
+            return EntryRequestResponse(
+                allowed=False,
+                message=str(e),
+                symbol=symbol,
+            )
 
-    async def process_add_request(self, payload: AddRequest):
+    async def process_add_request(self, payload: AddRequest)-> AddRequestResponse:
         """
         Process an add request:
         - Check if adding to the current position is allowed
@@ -716,12 +703,13 @@ class PortfolioService:
             # 1 Check if adding is allowed to that position
             validation = await self.is_add_allowed(position)
 
-            if validation.get("allowed") is True:
-                logger.info(f"Add allowed for {symbol}: {validation.get('message')}")
-
-            elif validation.get("allowed") is False:
+            if not validation.get("allowed"):
                 logger.info(f"Add not allowed for {symbol}: {validation.get('message')}")
-                return None, None, False, validation.get("message")
+                return AddRequestResponse(
+                    allowed=False,
+                    message=validation.get("message"),
+                    symbol=symbol,
+                )
 
         
 
@@ -749,6 +737,14 @@ class PortfolioService:
                 )
 
             new_qty = total_size - existing_position # Tämän verran pitää lisätä
+            
+            if existing_position > total_size:
+                return AddRequestResponse(
+                        allowed=False,
+                        message="Wanted position size is already in portfolio",
+                        symbol=symbol,
+                    )
+            
             modified_stp_qty = total_size # Tähän uusi kokonaismäärä
 
 
@@ -767,24 +763,22 @@ class PortfolioService:
             modify_result = await self.modify_stp_order_by_id(stp_order_id, modified_stp_qty)
 
 
-            return {
-                "new_order": new_order,
-                "place_result": place_result,
-                "modified_stp_qty": modify_result,
-                "allowed": True,
-                "message": "New order placed and STP modified successfully"
-            }
+            return AddRequestResponse(
+                allowed=True,
+                message="New order placed and STP modified successfully",
+                symbol=symbol,
+                new_order=new_order,
+                place_result=place_result,
+                modified_stp_qty=modify_result.get("new_quantity"),
+            )
 
         except Exception as e:
-            logger.error(f"Error processing add request for {payload.get('symbol')}: {e}")
-            return {
-                "new_order": None,
-                "place_result": None,
-                "modified_stp_qty": None,
-                "allowed": False,
-                "message": str(e)
-            }
-        
+            logger.exception(f"Error processing add request for {symbol}")
+            return AddRequestResponse(
+                allowed=False,
+                message=str(e),
+                symbol=symbol,
+            )
 
 
 
@@ -865,4 +859,7 @@ class PortfolioService:
 
 
 # Automatic exit handler. Checks if exit is requested and if signal is hit. If so, it will place a market order to exit the position.
-   # async def process_exit_request(self, payload: ExitRequest):
+    async def process_exit_request(self, payload: ExitRequest)-> dict:
+
+        requested_exits = await fetch_exits(self.db_conn)
+        return requested_exits

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, List
 from services.pending_orders import OrderService
-from dependencies import get_db_conn, release_db_conn,get_ib
+from dependencies import get_db_conn,get_ib
 
 from schemas.api_schemas import AutoOrderResponse
 
@@ -53,8 +53,6 @@ async def get_auto_orders(db_conn=Depends(get_db_conn),ib=Depends(get_ib)):
             status_code=500,
             detail=f"Failed to fetch auto orders: {str(e)}"
         )
-    finally:
-        await release_db_conn(db_conn)
 
 
 @router.post("/auto/{order_id}")
@@ -82,8 +80,7 @@ async def deactivate_auto_order(order_id: int, db_conn=Depends(get_db_conn),ib=D
             status_code=500,
             detail=f"Failed to deactivate auto order: {str(e)}"
         )
-    finally:
-        await release_db_conn(db_conn)
+
 
 
 
@@ -105,5 +102,3 @@ async def get_all_pending_orders(db_conn=Depends(get_db_conn),ib=Depends(get_ib)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    finally:
-        await release_db_conn(db_conn)

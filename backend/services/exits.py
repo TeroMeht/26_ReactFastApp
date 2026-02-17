@@ -1,29 +1,25 @@
-from fastapi import HTTPException
-from db.exits_repo import ExitRepository
+from db.exits import fetch_exits,update_exit_request
+from typing import List,Dict
+from schemas.api_schemas import ExitRequestResponse
+import logging
 
-class ExitService:
-    """
-    Business logic layer for exits_requests.
-    """
-
-    def __init__(self, conn):
-        self.repo = ExitRepository(conn)
-        self._initialized = False
-
-    async def initialize(self):
-        if not self._initialized:
-            await self.repo.ensure_table_exists()
-            self._initialized = True
-
-    async def get_all_exits(self):
-        await self.initialize()
-        return await self.repo.fetch_exits()
+logger = logging.getLogger(__name__)
 
 
-    async def update_exit_request(self, symbol: str, requested: bool):
-        await self.initialize()
-        exit_row = await self.repo.upsert_exit_request(symbol, requested)
-        return {
-            "status": "success",
-            **exit_row
-        }
+
+
+async def get_exits(db_conn)-> List[ExitRequestResponse]:
+    exit_requests = await fetch_exits(db_conn)
+
+    logger.info(f"Fetched {len(exit_requests)} exit requests from database.")
+    return [ExitRequestResponse(**exit) for exit in exit_requests]
+
+
+
+async def update_exit_requests(db_conn, symbol: str, requested: bool)-> Dict:
+
+    exit_row = await update_exit_request(db_conn,symbol, requested)
+    return {
+        "status": "success",
+        **exit_row
+    }

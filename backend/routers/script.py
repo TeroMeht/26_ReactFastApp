@@ -9,8 +9,8 @@ router = APIRouter(
 
 @router.post("/")
 def run_script():
+    service = ScriptService()
     try:
-        service = ScriptService()
         output = service.run_script()
         return {"output": output}
     except FileNotFoundError as e:
