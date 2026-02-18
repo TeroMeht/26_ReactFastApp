@@ -7,7 +7,7 @@ from schemas.api_schemas import AutoOrderResponse
 
 router = APIRouter(
     prefix="/api/pending_orders",
-    tags=["pending_orders"]
+    tags=["Pending orders"]
 )
 
 

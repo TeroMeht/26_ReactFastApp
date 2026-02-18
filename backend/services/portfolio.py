@@ -1,13 +1,13 @@
 import asyncio
-from ib_async import IB,Stock,LimitOrder, StopOrder
+from ib_async import IB,Stock,LimitOrder, StopOrder,MarketOrder
 import pytz
 import logging
 from services.orders import Order, build_order, calculate_position_size
-from db.exits import fetch_exits,update_exit_request
+from db.exits import fetch_exit_by_symbol,delete_exit_request
 import datetime
 from datetime import datetime, timedelta
 from core.config import settings
-from schemas.api_schemas import AddRequest, EntryRequest,EntryRequestResponse,AddRequestResponse,ExitRequest, ModifyOrderRequest, ModifyOrderByIdRequest
+from schemas.api_schemas import AddRequest, EntryRequest,EntryRequestResponse,AddRequestResponse,ExitRequest, ExitRequestResponseIB, ModifyOrderRequest, ModifyOrderByIdRequest
 from dataclasses import dataclass, asdict,field
 from typing import Optional,List
 
@@ -222,6 +222,29 @@ class PortfolioService:
         except Exception as e:
             logging.error(f"Error fetching STP order for {symbol}: {e}")
             return None
+        
+    async def get_mkt_order_by_symbol(self, symbol: str) -> dict | None:
+        """
+        Return the first open MKT (Market) order for the given symbol.
+        Returns None if not found.
+        """
+        try:
+            orders = await self.get_orders()
+
+            return next(
+                (
+                    o for o in orders
+                    if o["symbol"]
+                    and o["symbol"].upper() == symbol.upper()
+                    and o["ordertype"]
+                    and o["ordertype"].upper() == "MKT"
+                ),
+                None
+            )
+
+        except Exception as e:
+            logging.error(f"Error fetching MKT order for {symbol}: {e}")
+            return None
 
     async def get_position_by_symbol(self, symbol: str) -> dict | None:
         """
@@ -369,6 +392,40 @@ class PortfolioService:
         except Exception as e:
             logger.error(f"Error in place_limit_order for {order.symbol}: {e}")
             return None
+
+# This is for closing position
+    async def place_market_order(self, order:Order):
+        """
+        Place a market order asynchronously.
+        """
+        try:
+            contract = Stock(
+                symbol=order.symbol,
+                exchange="SMART",
+                currency="USD"
+            )
+
+            await self.ib.qualifyContractsAsync(contract)
+
+            market_order = MarketOrder(
+                action=order.action,
+                totalQuantity=order.position_size,
+                outsideRth=True,
+                transmit=True,
+            )
+
+            self.ib.placeOrder(contract, market_order)
+            logger.info(f"Market order submitted for {order.symbol}: "
+                        f"orderId={market_order.orderId}, "
+                        f"action={order.action}, quantity={order.position_size}")
+
+            return market_order
+
+        except Exception as e:
+            logger.error(f"Error in place_market_order for {order.symbol}: {e}")
+            return None
+
+
 
 
     async def modify_stp_order_by_id(self, order_id: int, new_qty: float) -> dict:
@@ -534,6 +591,27 @@ class PortfolioService:
                 "message": str(e)
             }
         
+    async def cancel_order_by_id(self, order_id: int) -> bool:
+        """
+        Cancel an open order by order ID.
+        """
+        try:
+            open_trades = await self.ib.reqOpenOrdersAsync()
+            print(open_trades)
+            target = next((t for t in open_trades if t.order.permId == order_id), None)
+
+            if not target:
+                logger.warning(f"No open order found with orderId={order_id}")
+                return False
+
+            self.ib.cancelOrder(target.order)
+            logger.info(f"Cancel request sent for orderId={order_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error cancelling order {order_id}: {e}")
+            return False
+
 
 # Checks if user is trying to add to losing position. Won't allow that. 
     async def is_add_allowed(self, position: dict) -> dict:
@@ -858,8 +936,91 @@ class PortfolioService:
 
 
 
-# Automatic exit handler. Checks if exit is requested and if signal is hit. If so, it will place a market order to exit the position.
-    async def process_exit_request(self, payload: ExitRequest)-> dict:
+    async def process_exit_request(self, payload: ExitRequest) -> ExitRequestResponseIB:
+        logger.info("Processing exit request | symbol=%s alarm=%s", payload.symbol, payload.alarm)
 
-        requested_exits = await fetch_exits(self.db_conn)
-        return requested_exits
+        alarm = payload.alarm
+
+        # Check exit requested
+        exit_request = await fetch_exit_by_symbol(self.db_conn, payload.symbol)
+        logger.info("Fetched exit_request from DB | symbol=%s result=%s", payload.symbol, exit_request)
+
+        if alarm == "euforia_exit" and exit_request and exit_request["exitrequested"]:
+            logger.info("Valid euforia_exit detected and exitrequested=True | symbol=%s", payload.symbol)
+
+            # Check position
+            position = await self.get_position_by_symbol(payload.symbol)
+            logger.info("Fetched position | symbol=%s position=%s", payload.symbol, position)
+
+            if not position:
+                logger.warning("No open position found | symbol=%s", payload.symbol)
+                return ExitRequestResponseIB(
+                    symbol=payload.symbol,
+                    message=f"No open position found for {payload.symbol}."
+                )
+
+            shares = position["position"]
+            logger.info("Position shares=%s | symbol=%s", shares, payload.symbol)
+
+            # Decide direction
+            if shares > 0:
+                action = "SELL"
+            elif shares < 0:
+                action = "BUY"
+            else:
+
+                return ExitRequestResponseIB(
+                    symbol=payload.symbol,
+                    message=f"Position size is zero for {payload.symbol}."
+                )
+
+            # Check for existing market order
+            existing_mkt_order = await self.get_mkt_order_by_symbol(payload.symbol)
+            if existing_mkt_order:
+                logger.info(
+                    "Market order already exists | symbol=%s order=%s",
+                    payload.symbol,
+                    existing_mkt_order
+                )
+
+                return ExitRequestResponseIB(
+                    symbol=payload.symbol,
+                    message=f"Market order already exists for {payload.symbol}."
+                    # If available:
+                    # order_id=existing_mkt_order.order.orderId
+                )
+
+            # Place market order
+            order = Order(
+                symbol=payload.symbol,
+                action=action,
+                position_size=abs(int(shares))
+            )
+
+
+            await self.place_market_order(order)
+            await delete_exit_request(self.db_conn,payload.symbol)
+
+            return ExitRequestResponseIB(
+                symbol=payload.symbol,
+                message=f"Market order placed to {action} {abs(shares)} shares of {payload.symbol}."
+            )
+
+        elif not exit_request:
+            return ExitRequestResponseIB(
+                symbol=payload.symbol,
+                message=f"No exit request record found for {payload.symbol}."
+            )
+
+        elif not exit_request["exitrequested"]:
+            logger.info("Exit request exists but exitrequested=False | symbol=%s", payload.symbol)
+            return ExitRequestResponseIB(
+                symbol=payload.symbol,
+                message=f"Exit not requested for {payload.symbol}."
+            )
+
+        else:
+            return ExitRequestResponseIB(
+                symbol=payload.symbol,
+                message=f"Unhandled exit request state: {payload.alarm}"
+            )

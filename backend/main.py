@@ -13,7 +13,7 @@ from ib_async import IB
 import uvicorn
 import dependencies
 import asyncpg
-from urllib.parse import urlparse
+
 
 # Import routers
 from routers import tickers, script, alarms, livestream, portfolio, pending_orders, exits

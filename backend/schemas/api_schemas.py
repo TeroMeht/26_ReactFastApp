@@ -36,6 +36,9 @@ class CreateAlarmRequest(BaseModel):
     Alarm: str
     Date: date
 
+
+# Tämä tulee livestreamista sisään 
+
 class LatestRow(BaseModel):
     TableName: str
     Symbol: str
@@ -121,6 +124,10 @@ class ExitRequestResponse(BaseModel):
     exitrequested:bool
     updated: datetime
 
+class ExitRequestResponseIB(BaseModel):
+    symbol: str
+    message: str
+    order_id :Optional[int] = None
 
 # Portfolio
 

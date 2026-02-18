@@ -3,11 +3,11 @@ from services.portfolio import PortfolioService
 from dependencies import get_ib,get_db_conn
 from typing import Optional,List
 
-from schemas.api_schemas import AddRequest, EntryRequestResponse, EntryRequest, ExitRequest,ModifyOrderRequest, ModifyOrderByIdRequest,PortfolioPositionModel, AddRequestResponse
+from schemas.api_schemas import AddRequest, EntryRequestResponse, EntryRequest, ExitRequest, ExitRequestResponseIB,ModifyOrderRequest, ModifyOrderByIdRequest,PortfolioPositionModel, AddRequestResponse
 
 router = APIRouter(
     prefix="/api/portfolio",
-    tags=["portfolio"]
+    tags=["Portfolio"]
 )
 
 @router.get("/positions")
@@ -76,6 +76,12 @@ async def add_request(payload: AddRequest,ib=Depends(get_ib),db_conn=Depends(get
     return await service.process_add_request(payload)
 
 
+@router.post("/exit-request", response_model=ExitRequestResponseIB)
+async def exit_request(payload: ExitRequest, ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
+    service = PortfolioService(ib,db_conn)
+    return await service.process_exit_request(payload)
+
+
 @router.post("/move-stop-be")
 async def move_stop_by_symbol(symbol: str, ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
     service = PortfolioService(ib,db_conn)
@@ -86,13 +92,24 @@ async def move_stop_by_symbol(symbol: str, ib=Depends(get_ib),db_conn=Depends(ge
  
 
 
-@router.post("/exit-request")
-async def exit_request(payload: ExitRequest, ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
-    service = PortfolioService(ib,db_conn)
-    return await service.process_exit_request(payload)
 
 
 
+@router.post("/cancel-order/{order_id}")
+async def cancel_order(order_id: int, ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
+    try:
+        service = PortfolioService(ib,db_conn)
+        cancelled = await service.cancel_order_by_id(order_id)
+
+        if not cancelled:
+            raise HTTPException(status_code=404, detail=f"No open order found with orderId={order_id}")
+
+        return {"status": "cancelled", "order_id": order_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to cancel order: {str(e)}")
 
 
 @router.get("/open-risk-table", response_model=List[PortfolioPositionModel])
@@ -114,23 +131,23 @@ async def get_open_risk_table(ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
 
 # Temporary endpoint to fetch open STP order for a symbol (used for testing modify flow)
 
-@router.get("/stp-order/{symbol}")
-async def get_stp_order(symbol: str, ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
-    """
-    Fetch the first open STP (Stop) order for the given symbol.
-    """
-    ib_service = PortfolioService(ib,db_conn)
+# @router.get("/stp-order/{symbol}")
+# async def get_stp_order(symbol: str, ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
+#     """
+#     Fetch the first open STP (Stop) order for the given symbol.
+#     """
+#     ib_service = PortfolioService(ib,db_conn)
 
-    return await ib_service.get_stp_order_by_symbol(symbol)
+#     return await ib_service.get_stp_order_by_symbol(symbol)
 
 
-@router.post("/modify-order-by-id")
-async def modify_order(request: ModifyOrderByIdRequest, ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
-    """
-    Modify the quantity of an open IB order using its orderId.
-    """
-    ib_service = PortfolioService(ib,db_conn)
-    return await ib_service.modify_stp_order_by_id(
-        order_id=request.order_id,
-        new_qty=request.new_quantity
-    )
+# @router.post("/modify-order-by-id")
+# async def modify_order(request: ModifyOrderByIdRequest, ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
+#     """
+#     Modify the quantity of an open IB order using its orderId.
+#     """
+#     ib_service = PortfolioService(ib,db_conn)
+#     return await ib_service.modify_stp_order_by_id(
+#         order_id=request.order_id,
+#         new_qty=request.new_quantity
+#     )

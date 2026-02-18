@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -9,8 +10,8 @@ class Order:
     symbol: str
     action: str
     position_size: int
-    entry_price: float
-    stop_price: float
+    entry_price: float = Optional
+    stop_price: float = Optional
 
 
 

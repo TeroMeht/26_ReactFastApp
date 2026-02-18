@@ -4,7 +4,7 @@ from schemas.api_schemas import TickerFile
 
 router = APIRouter(
     prefix="/api/tickers",
-    tags=["tickers"],
+    tags=["Tickers"],
 )
 
 @router.get("/")

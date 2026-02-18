@@ -5,7 +5,7 @@ from dependencies import get_db_conn
 
 router = APIRouter(
     prefix="/api/alarms",
-    tags=["alarms"]
+    tags=["Alarms"]
 )
 
 @router.get("/", response_model=List[AlarmResponse])

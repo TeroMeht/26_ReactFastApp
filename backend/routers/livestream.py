@@ -1,11 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+
 from typing import List
 from services.livestream import LiveStreamService, LatestRow
 from dependencies import get_db_conn
+from helpers.events import SSEEvent
+from sse_starlette.sse import EventSourceResponse
 
 router = APIRouter(
     prefix="/api/livestream",
-    tags=["livestream"]
+    tags=["Livestream data"]
 )
 
 
@@ -17,17 +20,23 @@ async def get_latest(db_conn=Depends(get_db_conn)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch latest rows: {str(e)}")
 
+# URL to receive event
+@router.post("/emit")
+async def new_event(event: LatestRow):
+    SSEEvent.add_event(event)
+    return {"message:": "Event added", "count": SSEEvent.count()}
 
 
 
-@router.put("/latest", response_model=LatestRow)
-async def receive_latest(row: LatestRow):
-    """
-    Receive the latest row from external software and update in-memory cache.
-    """
-    try:
-        service = LiveStreamService()
-        service.update_row(row)
-        return row
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update latest row: {str(e)}")
+# URL to stream event
+@router.get("/stream")
+async def stream_events(req:Request):
+    async def stream_generator():
+        while True:
+            if await req._is_disconnected():
+                print("SSE Disconnected")
+                break
+            sse_event = SSEEvent.get_event()
+            if sse_event:
+                yield "data:{}".format(sse_event.model_dump_json())
+    return EventSourceResponse(stream_generator())

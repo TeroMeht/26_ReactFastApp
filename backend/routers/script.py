@@ -3,7 +3,7 @@ from services.script import ScriptService
 
 router = APIRouter(
     prefix="/api/run-script",
-    tags=["scripts"]
+    tags=["Scripts"]
 )
 
 
