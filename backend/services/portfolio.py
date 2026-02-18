@@ -622,7 +622,7 @@ class PortfolioService:
         try:
             symbol = position.get("symbol")
             avg_cost = position.get("avgcost")
-            current_qty = position.get("position")
+            position = position.get("position")
 
             # 2️⃣ Get current ask price
             market_data = await self.get_bid_ask_price(symbol)
@@ -630,12 +630,22 @@ class PortfolioService:
             ask = market_data["ask"]
 
             # 3️⃣ Validate: allow if ask > avg cost
-            if ask > avg_cost:
+            if ask > avg_cost and position > 0:
                 return {
                     "allowed": True,
                     "symbol": symbol,
-                    "message": f"Current ask ({ask}) is above avg cost ({avg_cost})",
-                    "current_position": current_qty,
+                    "message": f"Current ask long({ask}) is above avg cost ({avg_cost})",
+                    "current_position": position,
+                    "avg_cost": avg_cost,
+                    "ask": ask
+                }
+            
+            elif ask < avg_cost and position < 0:
+                return {
+                    "allowed": True,
+                    "symbol": symbol,
+                    "message": f"Current ask short ({ask}) is below avg cost ({avg_cost})",
+                    "current_position": position,
                     "avg_cost": avg_cost,
                     "ask": ask
                 }
@@ -643,8 +653,8 @@ class PortfolioService:
                 return {
                     "allowed": False,
                     "symbol": symbol,
-                    "message": f"Current ask ({ask}) is not above avg cost ({avg_cost})",
-                    "current_position": current_qty,
+                    "message": f"You are trying to add losing position",
+                    "current_position": position,
                     "avg_cost": avg_cost,
                     "ask": ask
                 }
@@ -813,8 +823,13 @@ class PortfolioService:
                     stop_price=stp_order_aux_price,
                     risk=total_risk  # Use the configured risk value from settings
                 )
+            if existing_position < 0:
+                new_qty = total_size + existing_position
+            elif existing_position > 0:
+                new_qty = total_size - existing_position # Tämän verran pitää lisätä
 
-            new_qty = total_size - existing_position # Tämän verran pitää lisätä
+            # jos on shorttipositiossa niin new_qty on total_size -- existing eli 
+            
             
             if existing_position > total_size:
                 return AddRequestResponse(
@@ -996,9 +1011,13 @@ class PortfolioService:
                 action=action,
                 position_size=abs(int(shares))
             )
-
+            stp_to_delete= await self.get_stp_order_by_symbol(payload.symbol)
+            logger.info(f"Order to be cancelled: {stp_to_delete}")
 
             await self.place_market_order(order)
+            await asyncio.sleep(1)
+            order_id = stp_to_delete['orderid'] 
+            await self.cancel_order_by_id(order_id)
             await delete_exit_request(self.db_conn,payload.symbol)
 
             return ExitRequestResponseIB(

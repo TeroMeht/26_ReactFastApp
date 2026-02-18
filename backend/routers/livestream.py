@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
-
+import asyncio
 from typing import List
 from services.livestream import LiveStreamService, LatestRow
 from dependencies import get_db_conn
@@ -33,10 +33,11 @@ async def new_event(event: LatestRow):
 async def stream_events(req:Request):
     async def stream_generator():
         while True:
-            if await req._is_disconnected():
+            if await req.is_disconnected():
                 print("SSE Disconnected")
                 break
             sse_event = SSEEvent.get_event()
             if sse_event:
-                yield "data:{}".format(sse_event.model_dump_json())
+                yield "data: {}".format(sse_event.model_dump_json())
+                await asyncio.sleep(1)
     return EventSourceResponse(stream_generator())

@@ -64,6 +64,8 @@ app = FastAPI(
     lifespan=lifespan,  # <--- set lifespan instead of on_event
 )
 
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
