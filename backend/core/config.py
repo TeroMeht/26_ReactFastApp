@@ -4,6 +4,9 @@ from pydantic import field_validator
 import os
 from pathlib import Path
 
+ENV_REPO = Path("C:/Projects/env_repo")
+
+
 class Settings(BaseSettings):
     API_PREFIX: str = "/api"
     DEBUG: bool = False
@@ -61,7 +64,7 @@ class Settings(BaseSettings):
         return v
     
     class Config:
-        env_file = ".env"
+        env_file = ENV_REPO / "26_ReactFastApp.env" # centralized project configs
         env_file_encoding = "utf-8"
         case_sensitive = True
 
