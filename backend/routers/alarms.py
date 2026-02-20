@@ -4,11 +4,11 @@ from services.alarms import  AlarmResponse, CreateAlarmRequest, get_alarms,put_a
 from dependencies import get_db_conn
 
 router = APIRouter(
-    prefix="/api/alarms",
+    prefix="/api",
     tags=["Alarms"]
 )
 
-@router.get("/", response_model=List[AlarmResponse])
+@router.get("/alarms", response_model=List[AlarmResponse])
 async def read_alarms(db_conn=Depends(get_db_conn)):
 
     try:
@@ -19,7 +19,7 @@ async def read_alarms(db_conn=Depends(get_db_conn)):
 
 
 
-@router.post("/", response_model=AlarmResponse)
+@router.post("/alarms", response_model=AlarmResponse)
 async def create_alarm(request: CreateAlarmRequest, db_conn=Depends(get_db_conn)):
 
     try:

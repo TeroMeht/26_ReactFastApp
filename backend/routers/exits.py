@@ -6,13 +6,13 @@ from dependencies import get_db_conn
 from schemas.api_schemas import UpdateExitRequest,ExitRequestResponse
 
 router = APIRouter(
-    prefix="/api/exits",
+    prefix="/api",
     tags=["Exit requests"]
 )
 
 
 # GET all exits
-@router.get("/", response_model=List[ExitRequestResponse])
+@router.get("/exits", response_model=List[ExitRequestResponse])
 async def read_exits(db_conn=Depends(get_db_conn)):
     try:
         return await get_exits(db_conn)
@@ -22,7 +22,7 @@ async def read_exits(db_conn=Depends(get_db_conn)):
     
     
 
-@router.post("/", response_model=dict)
+@router.post("/exits", response_model=dict)
 async def update_exit(request: UpdateExitRequest, db_conn=Depends(get_db_conn)):
 
     try:

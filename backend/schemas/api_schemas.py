@@ -10,16 +10,15 @@ class TickerFile(BaseModel):
     content: str
 
 
-
-
-class AutoOrderResponse(BaseModel):
-    Id: int
-    Symbol: str
-    Time: time
-    Stop: float
-    Date: date
-    Status: str
-
+# Pending orders router
+class PendingOrder(BaseModel):
+    id: str
+    symbol: str
+    stop_price: float
+    latest_price: float
+    position_size: int
+    status: str
+    source: str
 
 
 
@@ -54,6 +53,23 @@ class LatestRow(BaseModel):
     Avg_volume: float
     Rvol: float
     Relatr: float
+
+# Livestream format
+class CandleRow(BaseModel):
+    symbol: str
+    date: date
+    time: time
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    vwap: float
+    ema9: float
+    avg_volume: float
+    rvol: float
+    relatR: float
+
 
 
 class ModifyOrderRequest(BaseModel):

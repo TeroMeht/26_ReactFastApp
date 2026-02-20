@@ -10,7 +10,7 @@ from core.config import settings
 from schemas.api_schemas import AddRequest, EntryRequest,EntryRequestResponse,AddRequestResponse,ExitRequest, ExitRequestResponseIB, ModifyOrderRequest, ModifyOrderByIdRequest
 from dataclasses import dataclass, asdict,field
 from typing import Optional,List
-
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -176,17 +176,16 @@ class PortfolioService:
             bid = ticker.bid
             ask = ticker.ask
 
-            # For testing
-            # bid = 100
-            # ask = 185
+            # Normalize NaN or invalid values to 0
+            if bid is None or (isinstance(bid, float) and math.isnan(bid)):
+                bid = 0
+
+            if ask is None or (isinstance(ask, float) and math.isnan(ask)):
+                ask = 0
 
             logger.info(f"Fetched bid/ask for {symbol}: bid={bid}, ask={ask}")
             # Cancel subscription (important)
             self.ib.cancelMktData(contract)
-
-            if bid is None and ask is None:
-                logging.warning(f"No bid/ask data available for {symbol}")
-                return None
 
             return {
                 "symbol": symbol,

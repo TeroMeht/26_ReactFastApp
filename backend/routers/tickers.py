@@ -3,11 +3,11 @@ from services.tickers import get_tickers,save_tickers
 from schemas.api_schemas import TickerFile
 
 router = APIRouter(
-    prefix="/api/tickers",
+    prefix="/api",
     tags=["Tickers"],
 )
 
-@router.get("/")
+@router.get("/tickers")
 async def read_input_tickers():
     """
     Return all tickers or files in the tickers path.
@@ -20,7 +20,7 @@ async def read_input_tickers():
 
 
 
-@router.post("/")
+@router.post("/tickers")
 async def write_input_tickers(payload: TickerFile):
     """
     Save content to a ticker file.

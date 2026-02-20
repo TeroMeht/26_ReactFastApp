@@ -2,12 +2,12 @@ from fastapi import APIRouter, HTTPException
 from services.script import ScriptService
 
 router = APIRouter(
-    prefix="/api/run-script",
+    prefix="/api",
     tags=["Scripts"]
 )
 
 
-@router.post("/")
+@router.post("/run-script")
 def run_script():
     service = ScriptService()
     try:

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 import asyncio
 from typing import List
 from services.livestream import LiveStreamService, LatestRow
+from schemas.api_schemas import CandleRow
 from dependencies import get_db_conn
 from helpers.events import SSEEvent
 from sse_starlette.sse import EventSourceResponse
@@ -22,7 +23,7 @@ async def get_latest(db_conn=Depends(get_db_conn)):
 
 # URL to receive event
 @router.post("/emit")
-async def new_event(event: LatestRow):
+async def new_event(event: CandleRow):
     SSEEvent.add_event(event)
     return {"message:": "Event added", "count": SSEEvent.count()}
 

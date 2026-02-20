@@ -1,11 +1,11 @@
 from collections import deque
-from schemas.api_schemas import LatestRow
+from schemas.api_schemas import CandleRow
 
 class SSEEvent:
     EVENTS = deque()
     
     @staticmethod
-    def add_event(event: LatestRow):
+    def add_event(event: CandleRow):
         SSEEvent.EVENTS.append(event)
     
     @staticmethod

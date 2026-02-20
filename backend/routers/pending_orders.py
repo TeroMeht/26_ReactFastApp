@@ -1,9 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, List
-from services.pending_orders import OrderService
 from dependencies import get_db_conn,get_ib
+from services.pending_orders import *
 
-from schemas.api_schemas import AutoOrderResponse
 
 router = APIRouter(
     prefix="/api/pending_orders",
@@ -11,94 +10,45 @@ router = APIRouter(
 )
 
 
+
 @router.get("/manual")
-async def get_open_orders(db_conn=Depends(get_db_conn),ib=Depends(get_ib)):
-
-    service = OrderService(db_conn,ib)
+async def get_open_orders():
     try:
-        orders = await service.fetch_manual_orders()
-
-        if orders is None:
-            raise HTTPException(
-                status_code=502,
-                detail="Failed to fetch orders from Alpaca"
-            )
-
-        return orders
-
+        return await fetch_manual_orders()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e))
     
     
 @router.delete("/manual/{order_id}")
-async def cancel_order(order_id: str,db_conn=Depends(get_db_conn),ib=Depends(get_ib)):
-
-    service = OrderService(db_conn,ib)
+async def cancel_order(order_id: str):
     try:
-        
-        return await service.cancel_manual_order(order_id)
-
+        return await cancel_manual_order(order_id)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e))
     
 
-@router.get("/auto", response_model=List[AutoOrderResponse])
-async def get_auto_orders(db_conn=Depends(get_db_conn),ib=Depends(get_ib)):
-
-    service = OrderService(db_conn,ib)
+@router.get("/auto")
+async def get_auto_orders(db_conn=Depends(get_db_conn)):
     try:
-        return await service.fetch_auto_orders()
+        return await fetch_auto_orders(db_conn)
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch auto orders: {str(e)}"
-        )
+        raise HTTPException(status_code=404,detail=f"Failed to fetch auto orders: {str(e)}")
 
 
 @router.post("/auto/{order_id}")
-async def deactivate_auto_order(order_id: int, db_conn=Depends(get_db_conn),ib=Depends(get_ib)):
-
-    service = OrderService(db_conn,ib)
+async def deactivate_auto_order(order_id: int, db_conn=Depends(get_db_conn))-> Dict:
     try:
-        result = await service.deactivate_auto_order(order_id)
-
-        if result["status"] == "not_found":
-            raise HTTPException(
-                status_code=404,
-                detail=f"No auto order found with ID {order_id}"
-            )
-
-        return {
-            "status": "success",
-            "message": f"Auto order {order_id} deactivated successfully"
-        }
-
-    except HTTPException:
-        raise
+        return await deactivate_auto_order1(order_id,db_conn)
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to deactivate auto order: {str(e)}"
-        )
+        # Only catch the custom "not found" error and return 404
+        raise HTTPException(status_code=404, detail=f"Failed to deactivate auto orders: {str(e)}")
 
 
-
-
-
-
-@router.get("/pending", response_model=List[Dict])
-async def get_all_pending_orders(db_conn=Depends(get_db_conn),ib=Depends(get_ib)):
-    """
-    Fetch all pending orders (Alpaca + DB auto orders combined).
-    Used for testing process_open_orders().
-    """
-    service = OrderService(db_conn, ib)
-
+@router.get("/orders")
+async def get_all_pending_orders(db_conn=Depends(get_db_conn),ib=Depends(get_ib))-> List[PendingOrder]:
     try:
-        result = await service.process_open_orders()
-
-        return result
-        
+        pending_orders = await process_open_orders(db_conn,ib)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e))
+    return [PendingOrder(**order.__dict__)for order in pending_orders]
 
