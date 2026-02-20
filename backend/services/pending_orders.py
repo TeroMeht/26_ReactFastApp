@@ -180,6 +180,8 @@ async def process_open_orders(db_conn,ib) -> List[PendingOrder]:
                     order["stop_price"],
                     settings.RISK
                 )
+                
+                size = position_size * ask
 
                 processed_orders.append(
                     PendingOrder(
@@ -188,6 +190,7 @@ async def process_open_orders(db_conn,ib) -> List[PendingOrder]:
                         stop_price=order["stop_price"],
                         latest_price=ask,
                         position_size=position_size,
+                        size = size,
                         status= order["status"],
                         source = order["source"]
                     )

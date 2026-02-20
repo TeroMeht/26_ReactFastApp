@@ -17,8 +17,10 @@ class PendingOrder(BaseModel):
     stop_price: float
     latest_price: float
     position_size: int
+    size: float
     status: str
     source: str
+    
 
 
 

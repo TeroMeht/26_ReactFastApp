@@ -2,7 +2,7 @@
 
 import HeaderBox from "@/components/HeaderBox";
 import PortfolioDashboard from "@/components/risk-levels/PortfolioDashboard";
-import PositionTable from "@/components/risk-levels/OpenOrdersTable";
+import PositionTable from "@/components/risk-levels/PendingOrders";
 
 
 const Risklevels = () => {
@@ -20,13 +20,13 @@ const Risklevels = () => {
 
         {/* ✅ Show Alpaca pending orders table first */}
         <div className="mt-6">
-          <PositionTable onComplete={() => console.log("Pending orders table loaded")} />
+          <PositionTable></PositionTable>
         </div>
 
         {/* ✅ Then show IB portfolio dashboard (Account, Risk, Orders) */}
-        <div className="mt-8">
+        {/* <div className="mt-8">
           <PortfolioDashboard />
-        </div>
+        </div> */}
       </div>
       
     </section>
