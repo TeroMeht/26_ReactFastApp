@@ -2,68 +2,51 @@
 
 import React from "react";
 import { useSearchParams } from "next/navigation";
+import { OpenPosition } from "@/lib/types";
 
-const PopupPage = () => {
+const ManagePage = () => {
   const params = useSearchParams();
+  const dataParam = params.get("data");
 
-  const symbol = params.get("symbol");
-  const auxPrice = params.get("aux");
-  const avgCost = params.get("avg");
-  const position = params.get("pos");
-  const openRisk = params.get("risk");
-  const orderId = params.get("orderid");
+  let position: OpenPosition | null = null;
 
-  const handleClose = () => {
-    window.close();
-  };
-
-  const handleStopBE = async () => {
+  if (dataParam) {
     try {
-      await fetch("http://localhost:8080/api/stop-be", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          symbol,
-          avgCost: Number(avgCost),
-          position: Number(position),
-        }),
-      });
-
-      alert("Stop BE order sent successfully.");
-    } catch (error) {
-      alert("Failed to send Stop BE order.");
-      console.error(error);
+      position = JSON.parse(atob(decodeURIComponent(dataParam))) as OpenPosition;
+    } catch (err) {
+      console.error("Failed to parse position data:", err);
     }
-  };
+  }
+
+  const handleClose = () => window.history.back();
+
+  if (!position) return <div>Loading position...</div>;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center">
-      <div className="bg-white rounded-lg p-6 w-full max-w-md shadow-lg text-center">
-        <h2 className="text-lg font-semibold mb-4">Manage Position – {symbol}</h2>
-        <div className="text-left space-y-2">
-          <p><strong>Aux Price:</strong> {auxPrice}</p>
-          <p><strong>Avg Cost:</strong> {avgCost}</p>
-          <p><strong>Position:</strong> {position}</p>
-          <p><strong>Open Risk:</strong> {openRisk}</p>
-          <p><strong>OrderId:</strong> {orderId}</p>
-        </div>
-        <div className="mt-6 flex justify-center gap-4">
-          <button
-            onClick={handleStopBE}
-            className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700"
-          >
-            Stop BE
-          </button>
-          <button
-            onClick={handleClose}
-            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
-          >
-            Close
-          </button>
-        </div>
+    <div className="p-6 max-w-md mx-auto bg-white shadow-lg rounded-md mt-10">
+      <h2 className="text-lg font-semibold mb-4">Position Management View – {position.symbol}</h2>
+      <div className="space-y-2 text-left">
+        <p>
+          <strong>Exit Requested:</strong>{" "}
+          {position.exit_request ? "Yes" : "No"}
+        </p>
+        <p><strong>Aux Price:</strong> {position.auxprice}</p>
+        <p><strong>Avg Cost:</strong> {position.avgcost}</p>
+        <p><strong>Position:</strong> {position.position}</p>
+        <p><strong>Open Risk:</strong> {position.openrisk}</p>
+        <p><strong>Allocation:</strong> {position.allocation}</p>
+        <p><strong>Size:</strong> {position.size}</p>
+      </div>
+      <div className="mt-6 flex justify-center gap-4">
+        <button
+          onClick={handleClose}
+          className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+        >
+          Close
+        </button>
       </div>
     </div>
   );
 };
 
-export default PopupPage;
+export default ManagePage;

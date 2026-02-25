@@ -3,7 +3,7 @@ from services.portfolio import PortfolioService
 from dependencies import get_ib,get_db_conn
 from typing import Optional,List
 
-from schemas.api_schemas import AddRequest, EntryRequestResponse, EntryRequest, ExitRequest, ExitRequestResponseIB,ModifyOrderRequest, ModifyOrderByIdRequest,PortfolioPositionModel, AddRequestResponse
+from schemas.api_schemas import AddRequest, EntryRequestResponse, EntryRequest, ExitRequest, ExitRequestResponseIB,ModifyOrderRequest, ModifyOrderByIdRequest, OpenPosition, AddRequestResponse
 
 router = APIRouter(
     prefix="/api/portfolio",
@@ -112,7 +112,7 @@ async def cancel_order(order_id: int, ib=Depends(get_ib),db_conn=Depends(get_db_
         raise HTTPException(status_code=500, detail=f"Failed to cancel order: {str(e)}")
 
 
-@router.get("/open-risk-table", response_model=List[PortfolioPositionModel])
+@router.get("/open-risk-table", response_model=List[OpenPosition])
 async def get_open_risk_table(ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
     """
     Fetch the current open risk table for all portfolio positions.

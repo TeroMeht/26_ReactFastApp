@@ -630,6 +630,25 @@ export interface components {
             /** Relatr */
             Relatr: number;
         };
+        /** OpenPosition */
+        OpenPosition: {
+            /** Exit Request */
+            exit_request: boolean;
+            /** Symbol */
+            symbol: string;
+            /** Allocation */
+            allocation: number;
+            /** Size */
+            size: number;
+            /** Avgcost */
+            avgcost: number;
+            /** Auxprice */
+            auxprice: number;
+            /** Position */
+            position: number;
+            /** Openrisk */
+            openrisk: number;
+        };
         /** PendingOrder */
         PendingOrder: {
             /** Id */
@@ -648,23 +667,6 @@ export interface components {
             status: string;
             /** Source */
             source: string;
-        };
-        /** PortfolioPositionModel */
-        PortfolioPositionModel: {
-            /** Symbol */
-            Symbol: string;
-            /** Allocation */
-            Allocation: number | null;
-            /** Size */
-            Size: number;
-            /** Avgcost */
-            AvgCost: number;
-            /** Auxprice */
-            AuxPrice: number;
-            /** Position */
-            Position: number;
-            /** Openrisk */
-            OpenRisk: number;
         };
         /** TickerFile */
         TickerFile: {
@@ -1187,7 +1189,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PortfolioPositionModel"][];
+                    "application/json": components["schemas"]["OpenPosition"][];
                 };
             };
         };

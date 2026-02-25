@@ -7,23 +7,11 @@ from db.exits import fetch_exit_by_symbol,delete_exit_request
 import datetime
 from datetime import datetime, timedelta
 from core.config import settings
-from schemas.api_schemas import AddRequest, EntryRequest,EntryRequestResponse,AddRequestResponse,ExitRequest, ExitRequestResponseIB, ModifyOrderRequest, ModifyOrderByIdRequest
-from dataclasses import dataclass, asdict,field
+from schemas.api_schemas import AddRequest, EntryRequest,EntryRequestResponse,AddRequestResponse,ExitRequest, ExitRequestResponseIB, ModifyOrderRequest, ModifyOrderByIdRequest, OpenPosition
 from typing import Optional,List
 import math
 
 logger = logging.getLogger(__name__)
-
-@dataclass
-class PortfolioPosition:
-    Symbol: str
-    Allocation: Optional[float]
-    Size: float
-    AvgCost: float
-    AuxPrice: Optional[float] = field(default=0.0)
-    Position: float = 0.0
-    OpenRisk: Optional[float] = field(default=0.0)
-
 
 
 
@@ -874,18 +862,11 @@ class PortfolioService:
 
 
 
-    async def process_openrisktable(self) -> List[PortfolioPosition]:
-        """
-        Build risk objects for each portfolio position:
-        - OpenRisk (based on stop)
-        - NetLiquidity% exposure
-        - Size (absolute position value)
-        """
+    async def process_openrisktable(self) -> List[OpenPosition]:
 
         # Fetch everything concurrently (faster)
-        positions, orders, account_summary = await asyncio.gather(
+        positions, account_summary = await asyncio.gather(
             self.get_positions(),
-            self.get_orders(),
             self.get_account_summary()
         )
 
@@ -894,16 +875,13 @@ class PortfolioService:
 
         netliq = float(account_summary.get("NetLiquidation", 0))
 
-        portfolio_positions: List[PortfolioPosition] = []
+        portfolio_positions: List[OpenPosition] = []
 
         for pos in positions:
             try:
                 symbol = pos.get("symbol")
                 position = float(pos.get("position", 0))
                 avgcost = float(pos.get("avgcost", 0))
-
-                if not symbol or position == 0:
-                    continue
 
                 size = round(abs(position * avgcost), 2)
                 allocation = (
@@ -913,14 +891,11 @@ class PortfolioService:
                 )
 
                 # Find STOP order for this symbol
-                stop_order = next(
-                    (
-                        o for o in orders
-                        if o.get("symbol") == symbol
-                        and o.get("ordertype") == "STP"
-                    ),
-                    None
-                )
+                stop_order = await self.get_stp_order_by_symbol(symbol)
+
+                # Find exit status from db
+                exit_row = await fetch_exit_by_symbol(self.db_conn, symbol)
+                exit_requested = exit_row["exitrequested"] if exit_row else 0
 
                 if stop_order and stop_order.get("auxprice") is not None:
                     aux_price = float(stop_order.get("auxprice"))
@@ -930,21 +905,22 @@ class PortfolioService:
                     open_risk = 999_999_999  # no stop = unlimited risk
 
                 portfolio_positions.append(
-                    PortfolioPosition(
-                        Symbol=symbol,
-                        Allocation=allocation,
-                        Size=size,
-                        AvgCost=avgcost,
-                        AuxPrice=aux_price,
-                        Position=position,
-                        OpenRisk=open_risk
+                    OpenPosition(
+                        exit_request=exit_requested,
+                        symbol=symbol,
+                        allocation=allocation,
+                        size=size,
+                        avgcost=avgcost,
+                        auxprice=aux_price,
+                        position=position,
+                        openrisk=open_risk
                     )
                 )
 
             except Exception as e:
                 logger.error("Error processing %s: %s", pos.get("symbol"), e)
                 continue
-        logger.info("Built open risk table for %d positions", len(portfolio_positions))
+        logger.info(portfolio_positions)
 
         return portfolio_positions
 

@@ -104,54 +104,75 @@ async def deactivate_auto_order1(order_id: int, db_conn) -> Dict:
 
 # Combine both
 
-async def wrapup_pending_orders(db_conn) -> List[Dict]:
+async def normalize_manual_orders() -> List[Dict]:
+    try:
+        manual_orders = await fetch_manual_orders()
+        normalized_manual_orders: List[Dict] = []
 
-    # --- Fetch Alpaca manual orders ---
-    manual_orders = await fetch_manual_orders()
+        if not manual_orders:
+            return normalized_manual_orders
 
-    # --- Normalize Alpaca manual orders ---
-    normalized_manual_orders = []
-
-    if manual_orders:
         for order in manual_orders:
-            # Prefer stop_price, fallback to limit_price
             effective_stop = order.get("stop_price") or order.get("limit_price")
 
             normalized_manual_orders.append({
                 "id": order.get("id"),
                 "symbol": order.get("symbol"),
-                "stop_price": float(effective_stop),  # unified field
+                "stop_price": float(effective_stop) if effective_stop else None,
                 "status": order.get("status"),
                 "source": "ALPACA"
             })
 
-    # --- Fetch DB auto orders ---
-    auto_orders = await fetch_auto_orders(db_conn)
+        return normalized_manual_orders
+
+    except Exception as e:
+        logger.exception("Failed to fetch/normalize manual (Alpaca) orders: %s", e)
+        return []
 
 
-    # --- Normalize DB auto orders ---
-    normalized_auto_orders = []
+async def normalize_auto_orders(db_conn) -> List[Dict]:
+    try:
+        auto_orders = await fetch_auto_orders(db_conn)
+        normalized_auto_orders: List[Dict] = []
 
-    if auto_orders:
+        if not auto_orders:
+            return normalized_auto_orders
+
         for order in auto_orders:
             normalized_auto_orders.append({
                 "id": str(order.get("Id")),
                 "symbol": order.get("Symbol"),
-                "stop_price": float(order.get("Stop")),
+                "stop_price": float(order.get("Stop")) if order.get("Stop") else None,
                 "status": order.get("Status"),
                 "source": "DB"
             })
 
-    # --- Combine both ---
-    combined_orders = normalized_manual_orders + normalized_auto_orders
+        return normalized_auto_orders
 
-    logger.info("Pending orders: %d total (%d Alpaca, %d DB)",
-        len(combined_orders),
-        len(normalized_manual_orders),
-        len(normalized_auto_orders),
-    )
+    except Exception as e:
+        logger.exception("Failed to fetch/normalize DB auto orders: %s", e)
+        return []
 
-    return combined_orders
+
+async def wrapup_pending_orders(db_conn) -> List[Dict]:
+    try:
+        manual_orders = await normalize_manual_orders()
+        auto_orders = await normalize_auto_orders(db_conn)
+
+        combined_orders = manual_orders + auto_orders
+
+        logger.info(
+            "Pending orders: %d total (%d Alpaca, %d DB)",
+            len(combined_orders),
+            len(manual_orders),
+            len(auto_orders),
+        )
+
+        return combined_orders
+
+    except Exception as e:
+        logger.exception("Unexpected failure in wrapup_pending_orders: %s", e)
+        return []
 
 
 # Calculate and generate PendingOrder for UI to show
@@ -182,6 +203,7 @@ async def process_open_orders(db_conn,ib) -> List[PendingOrder]:
                 )
                 
                 size = position_size * ask
+                size = round(size,2)
 
                 processed_orders.append(
                     PendingOrder(

@@ -1,8 +1,8 @@
 "use client";
 
 import HeaderBox from "@/components/HeaderBox";
-import PortfolioDashboard from "@/components/risk-levels/PortfolioDashboard";
-import PositionTable from "@/components/risk-levels/PendingOrders";
+import PortfolioTable from "@/components/risk-levels/Portfolio";
+import PendingOrdersTable from "@/components/risk-levels/PendingOrders";
 
 
 const Risklevels = () => {
@@ -18,15 +18,12 @@ const Risklevels = () => {
           />
         </header>
 
-        {/* ✅ Show Alpaca pending orders table first */}
+        {/*  Show Alpaca pending orders table first */}
         <div className="mt-6">
-          <PositionTable></PositionTable>
+          <PendingOrdersTable></PendingOrdersTable>
+          <PortfolioTable></PortfolioTable>
         </div>
 
-        {/* ✅ Then show IB portfolio dashboard (Account, Risk, Orders) */}
-        {/* <div className="mt-8">
-          <PortfolioDashboard />
-        </div> */}
       </div>
       
     </section>

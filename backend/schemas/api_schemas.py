@@ -23,6 +23,20 @@ class PendingOrder(BaseModel):
     
 
 
+# Open risk row model
+class OpenPosition(BaseModel):
+    exit_request:bool
+    symbol: str
+    allocation: float
+    size: float
+    avgcost: float
+    auxprice: float
+    position: float
+    openrisk: float
+
+
+
+
 
 class AlarmResponse(BaseModel):
     Id: int
@@ -111,14 +125,7 @@ class UpdateExitRequest(BaseModel):
     
 
 
-class PortfolioPositionModel(BaseModel):
-    Symbol: str
-    Allocation: float | None
-    Size: float
-    AvgCost: float
-    AuxPrice: float
-    Position: float
-    OpenRisk: float
+
 
 
 
