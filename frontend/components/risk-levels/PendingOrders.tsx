@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback} from "react";
 import { API_PREFIX } from "@/lib/api_prefix";
 import { paths } from "@/generated/api";
 
@@ -27,28 +27,26 @@ const PendingOrdersTable = () => {
   const [apiMessage, setApiMessage] = useState<string | null>(null);
   const [allowedOrders, setAllowedOrders] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState<string | null>(null); // add at top of component
+  const [loading, setLoading] = useState(false);
 
-
-  useEffect(() => {
-    const fetchPositions = async () => {
-      try {
-        const res = await fetch(`${API_PREFIX}/pending_orders/orders`);
-        const json = await res.json();
-        console.log(json)
-        // API returns the array directly, no "status" or "data"
-        setPositions(json as PendingOrder[]);
-      } catch (err) {
-        console.error("Fetch error:", err);
-        setPositions([]);
-      }
-    };
-
-    fetchPositions();
+  const fetchPositions = useCallback(async () => {
+    try {
+      setLoading(true);
+      const res = await fetch(`${API_PREFIX}/pending_orders/orders`);
+      const json = await res.json();
+      setPositions(json as PendingOrder[]);
+    } catch (err) {
+      console.error("Fetch error:", err);
+      setPositions([]);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-
-
-
+  // Initial load
+  useEffect(() => {
+    fetchPositions();
+  }, [fetchPositions]);
   
 const handleSend = async (order: PendingOrder) => {
   try {
@@ -96,7 +94,6 @@ const handleSend = async (order: PendingOrder) => {
   setTimeout(() => setApiMessage(null), 5000);
 };
 
-
 const handleCancel = async (order: PendingOrder) => {
   try {
     let res: Response;
@@ -135,12 +132,20 @@ const handleCancel = async (order: PendingOrder) => {
   setTimeout(() => setMessage(null), 3000);
 };
 
-
   return (
     
     <div className="p-4">
 
       <h2 className="text-xl font-bold mb-4">Pending Orders</h2>
+
+          {/* ✅ Refresh Button */}
+          <Button
+            variant="outline"
+            onClick={fetchPositions}
+            disabled={loading}
+          >
+            {loading ? "Refreshing..." : "Refresh"}
+          </Button>
               {message && (
           <div className="mb-4 p-2 bg-blue-100 text-blue-800 rounded-md text-sm">
             {message}

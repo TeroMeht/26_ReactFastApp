@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { API_PREFIX } from "@/lib/api_prefix";
 import { paths } from "@/generated/api";
@@ -21,25 +21,26 @@ type OpenPosition =
 const PortfolioTable = () => {
   const [positions, setPositions] = useState<OpenPosition[]>([]);
   const router = useRouter();
+  const [loading, setLoading] = useState(false);
 
-
-  useEffect(() => {
-    const fetchPortfolio = async () => {
-      try {
-        const res = await fetch(`${API_PREFIX}/portfolio/open-risk-table`);
-        const json = await res.json();
-        console.log(json)
-        setPositions(json as OpenPosition[]);
-      } catch (err) {
-        console.error("Fetch error:", err);
-        setPositions([]);
-      }
-    };
-
-    fetchPortfolio();
+  const fetchPortfolio = useCallback(async () => {
+    try {
+      setLoading(true);
+      const res = await fetch(`${API_PREFIX}/portfolio/open-risk-table`);
+      const json = await res.json();
+      console.log(json);
+      setPositions(json as OpenPosition[]);
+    } catch (err) {
+      console.error("Fetch error:", err);
+      setPositions([]);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-
+  useEffect(() => {
+    fetchPortfolio();
+  }, [fetchPortfolio]);
 
   const handleManage = (position: OpenPosition) => {
     // Serialize the object as base64
@@ -54,6 +55,15 @@ const PortfolioTable = () => {
   return (
     <div className="p-4">
       <h2 className="text-xl font-bold mb-4">Portfolio</h2>
+          
+          {/* ✅ Refresh Button */}
+          <Button
+            variant="outline"
+            onClick={fetchPortfolio}
+            disabled={loading}
+          >
+            {loading ? "Refreshing..." : "Refresh"}
+          </Button>
 
       <Table>
         <TableHeader>
