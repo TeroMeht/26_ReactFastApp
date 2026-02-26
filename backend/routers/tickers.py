@@ -28,6 +28,7 @@ async def write_input_tickers(payload: TickerFile):
     """
     try:
         return await save_tickers(payload.filename, payload.content)
+
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

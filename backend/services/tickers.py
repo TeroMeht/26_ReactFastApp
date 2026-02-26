@@ -41,4 +41,5 @@ async def save_tickers(filename: str, content: str) -> dict:
     file_path = BASE_PATH / filename
     async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
         await f.write(content)
+    logger.info(f"Saved ticker file: {filename}")
     return {"success": True, "filename": filename}

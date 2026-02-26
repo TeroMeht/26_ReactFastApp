@@ -3,35 +3,35 @@
 import * as React from "react";
 import { API_PREFIX } from '@/lib/api_prefix';
 
-type InputTickersResponse = {
-  files: Record<string, string>;
-};
+type InputTickersResponse = Record<string, string>;
 
 const TickBoxAllExpandableAutoRefresh: React.FC = () => {
   const [files, setFiles] = React.useState<Record<string, string>>({});
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState<boolean>(true);
-  const [saving, setSaving] = React.useState<boolean>(false);
+  const [savingFile, setSavingFile] = React.useState<string | null>(null);
 
   const fetchContent = React.useCallback(async () => {
     setLoading(true);
     setError(null);
-    try {
-      const res = await fetch(`${API_PREFIX}/tickers/`);
-      if (!res.ok) throw new Error("Failed to fetch tickers");
-      const data: InputTickersResponse = await res.json();
-      console.log(data)
-      setFiles(data.files || {});
 
-      // Initialize expanded state if empty
+    try {
+      const res = await fetch(`${API_PREFIX}/tickers`);
+      if (!res.ok) throw new Error("Failed to fetch tickers");
+
+      const data: InputTickersResponse = await res.json();
+      setFiles(data);
+
+      // Initialize expanded state
       setExpanded(prev => {
-        const newExpanded: Record<string, boolean> = {};
-        Object.keys(data.files || {}).forEach(f => {
-          newExpanded[f] = prev[f] ?? false;
+        const updated: Record<string, boolean> = {};
+        Object.keys(data).forEach(f => {
+          updated[f] = prev[f] ?? false;
         });
-        return newExpanded;
+        return updated;
       });
+
     } catch (err: unknown) {
       if (err instanceof Error) setError(err.message);
       else setError(String(err));
@@ -40,43 +40,47 @@ const TickBoxAllExpandableAutoRefresh: React.FC = () => {
     }
   }, []);
 
-
   const handleChange = (filename: string, value: string) => {
     setFiles(prev => ({ ...prev, [filename]: value }));
   };
 
   const handleSave = async (filename: string) => {
-    setSaving(true);
+    setSavingFile(filename);
     setError(null);
+
     try {
-      const res = await fetch(`http://127.0.0.1:8080/api/input_tickers?file=${filename}`, {
+      const res = await fetch(`${API_PREFIX}/tickers`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: files[filename] }),
+        body: JSON.stringify({
+          filename,
+          content: files[filename],
+        }),
       });
+
       if (!res.ok) throw new Error("Failed to save file");
-      // Optional: fetch fresh content after save
-      fetchContent();
+
+      await fetchContent();
+
     } catch (err: unknown) {
       if (err instanceof Error) setError(err.message);
       else setError(String(err));
     } finally {
-      setSaving(false);
+      console.log("Saved symbol to txt")
+      setSavingFile(null);
     }
   };
 
-  const toggleExpand = async (filename: string) => {
-    // If expanding, fetch fresh content first
-    if (!expanded[filename]) {
-      await fetchContent();
-    }
-    setExpanded(prev => ({ ...prev, [filename]: !prev[filename] }));
+  const toggleExpand = (filename: string) => {
+    setExpanded(prev => ({
+      ...prev,
+      [filename]: !prev[filename],
+    }));
   };
 
-  // ✅ Safe useEffect
   React.useEffect(() => {
     fetchContent();
-  }, [fetchContent]); // include fetchContent here
+  }, [fetchContent]);
 
   return (
     <div className="space-y-4">
@@ -88,16 +92,15 @@ const TickBoxAllExpandableAutoRefresh: React.FC = () => {
           key={filename}
           className="border rounded-md bg-white shadow-sm w-full max-w-md"
         >
-          <div
-            className="flex justify-between items-center p-4 cursor-pointer"
-            onClick={() => toggleExpand(filename)}
-          >
+          {/* Header */}
+          <div className="flex items-center justify-between p-4 cursor-pointer" onClick={() => toggleExpand(filename)}>
             <h3 className="font-semibold">{filename}</h3>
             <span className="text-sm text-gray-500">
               {expanded[filename] ? "▼" : "▶"}
             </span>
           </div>
 
+          {/* Expandable content */}
           {expanded[filename] && (
             <div className="p-4 border-t">
               <textarea
@@ -107,10 +110,10 @@ const TickBoxAllExpandableAutoRefresh: React.FC = () => {
               />
               <button
                 onClick={() => handleSave(filename)}
-                className="mt-2 px-3 py-1 bg-green-500 text-white rounded hover:bg-green-600 text-sm"
-                disabled={saving}
+                className="mt-2 px-3 py-1 bg-green-500 text-white rounded hover:bg-green-600 text-sm disabled:opacity-50"
+                disabled={savingFile === filename}
               >
-                {saving ? "Saving..." : "Save"}
+                {savingFile === filename ? "Saving..." : "Save"}
               </button>
             </div>
           )}

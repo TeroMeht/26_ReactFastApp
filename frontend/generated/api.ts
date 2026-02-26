@@ -46,7 +46,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/alarms": {
+    "/api/alarms/alarms": {
         parameters: {
             query?: never;
             header?: never;
@@ -54,10 +54,43 @@ export interface paths {
             cookie?: never;
         };
         /** Read Alarms */
-        get: operations["read_alarms_api_alarms_get"];
+        get: operations["read_alarms_api_alarms_alarms_get"];
         put?: never;
-        /** Create Alarm */
-        post: operations["create_alarm_api_alarms_post"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/alarms/emit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** New Event */
+        post: operations["new_event_api_alarms_emit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/alarms/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Stream Events */
+        get: operations["stream_events_api_alarms_stream_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -509,23 +542,6 @@ export interface components {
             /** Relatr */
             relatR: number;
         };
-        /** CreateAlarmRequest */
-        CreateAlarmRequest: {
-            /** Symbol */
-            Symbol: string;
-            /**
-             * Time
-             * Format: time
-             */
-            Time: string;
-            /** Alarm */
-            Alarm: string;
-            /**
-             * Date
-             * Format: date
-             */
-            Date: string;
-        };
         /** EntryRequest */
         EntryRequest: {
             /** Symbol */
@@ -776,7 +792,7 @@ export interface operations {
             };
         };
     };
-    read_alarms_api_alarms_get: {
+    read_alarms_api_alarms_alarms_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -796,7 +812,7 @@ export interface operations {
             };
         };
     };
-    create_alarm_api_alarms_post: {
+    new_event_api_alarms_emit_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -805,7 +821,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreateAlarmRequest"];
+                "application/json": components["schemas"]["AlarmResponse"];
             };
         };
         responses: {
@@ -815,7 +831,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AlarmResponse"];
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -825,6 +841,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_events_api_alarms_stream_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

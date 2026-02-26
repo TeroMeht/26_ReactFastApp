@@ -4,7 +4,7 @@ from pydantic import field_validator
 import os
 from pathlib import Path
 
-ENV_REPO = Path("C:/Projects/env_repo")
+ENV_REPO = Path("C:/Projects/env-repo")
 
 
 class Settings(BaseSettings):
