@@ -1,4 +1,11 @@
 import React from 'react'
+// Define the props type
+interface HeaderBoxProps {
+  type?: 'title' | 'greeting'   // optional, defaults to 'title'
+  title: string
+  subtext?: string
+  user?: string
+}
 
 const HeaderBox = ({type = 'title', title, subtext, user }: HeaderBoxProps) => 
     {
