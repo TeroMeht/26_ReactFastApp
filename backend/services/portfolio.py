@@ -927,13 +927,12 @@ class PortfolioService:
 
 
     async def process_exit_request(self, payload: ExitRequest) -> ExitRequestResponseIB:
-        logger.info("Processing exit request | symbol=%s alarm=%s", payload.symbol, payload.alarm)
+        logger.info("Received exit request | symbol = %s alarm = %s | time = %s", payload.symbol, payload.alarm, payload.time)
 
         alarm = payload.alarm
 
         # Check exit requested
         exit_request = await fetch_exit_by_symbol(self.db_conn, payload.symbol)
-        logger.info("Fetched exit_request from DB | symbol=%s result=%s", payload.symbol, exit_request)
 
         if alarm == "euforia_exit" and exit_request and exit_request["exitrequested"]:
             logger.info("Valid euforia_exit detected and exitrequested=True | symbol=%s", payload.symbol)
