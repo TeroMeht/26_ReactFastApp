@@ -94,7 +94,7 @@ const handleSend = async (order: PendingOrder) => {
   setTimeout(() => setApiMessage(null), 5000);
 };
 
-const handleCancel = async (order: PendingOrder) => {
+const handleDelete = async (order: PendingOrder) => {
   try {
     let res: Response;
 
@@ -138,7 +138,7 @@ const handleCancel = async (order: PendingOrder) => {
 
       <h2 className="text-xl font-bold mb-4">Pending Orders</h2>
 
-          {/* ✅ Refresh Button */}
+          {/*  Refresh Button */}
           <Button
             variant="outline"
             onClick={fetchPositions}
@@ -173,7 +173,7 @@ const handleCancel = async (order: PendingOrder) => {
         <TableBody>
           {positions.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={5} className="text-center text-gray-500">
+              <TableCell colSpan={5} className="text-gray-500">
                 No orders found.
               </TableCell>
             </TableRow>
@@ -189,9 +189,9 @@ const handleCancel = async (order: PendingOrder) => {
                 <TableCell className="text-center">
                   <Button
                     variant="ghost"
-                    onClick={() => handleCancel(order)}
+                    onClick={() => handleDelete(order)}
                   >
-                    Cancel
+                    Delete
                   </Button>
                   <Button
                     variant="outline"

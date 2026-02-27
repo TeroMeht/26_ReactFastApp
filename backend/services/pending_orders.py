@@ -86,16 +86,12 @@ async def fetch_auto_orders(db_conn) -> List[Dict]:
 
     return orders
 
-async def deactivate_auto_order1(order_id: int, db_conn) -> Dict:
+async def delete_auto_order1(order_id: int, db_conn) -> Dict:
     """
     Deactivate auto order by ID.
     Returns a dict with status and order_id.
     """
-    results = await update_auto_order_status(
-        db_conn=db_conn,
-        order_id=order_id,
-        new_status="deactive",
-    )
+    results = await delete_auto_order(db_conn=db_conn, order_id=order_id)
 
     if results is None:
         raise Exception(f"Order with ID {order_id} not found.")

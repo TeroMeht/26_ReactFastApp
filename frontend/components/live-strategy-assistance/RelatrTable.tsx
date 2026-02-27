@@ -68,17 +68,36 @@ export const LastRowsTable: React.FC = () => {
             ))}
           </TableRow>
         </TableHeader>
-        <TableBody>
-          {data.map((row, idx) => (
-            <TableRow key={idx}>
-              {displayedColumns.map((col) => (
-                <TableCell key={col}>
-                  {row[col] !== undefined ? row[col] : "-"}
-                </TableCell>
-              ))}
+      <TableBody>
+        {data.map((row, idx) => {
+          // Highlight the whole row if Rvol > 1.5
+          const rowClass = Number(row.Rvol) > 1.5 ? "bg-blue-100" : "";
+
+          return (
+            <TableRow key={idx} className={rowClass}>
+              {displayedColumns.map((col) => {
+                let cellClass = "";
+
+                // Relatr styling: bold green if < -0.45, bold red if > 0.45
+                if (col === "Relatr") {
+                  const val = Number(row[col]);
+                  if (val < -0.45) cellClass = "font-bold text-green-600";
+                  if (val > 0.45) cellClass = "font-bold text-red-600";
+                }
+              // Rvol styling: bold if > 1.5
+              if (col === "Rvol" && Number(row[col]) > 1.5) {
+                cellClass = "font-bold text-grey-900";
+              }
+                return (
+                  <TableCell key={col} className={cellClass}>
+                    {row[col] !== undefined ? row[col] : "-"}
+                  </TableCell>
+                );
+              })}
             </TableRow>
-          ))}
-        </TableBody>
+          );
+        })}
+      </TableBody>
       </Table>
     </>
   );

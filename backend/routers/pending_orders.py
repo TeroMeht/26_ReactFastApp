@@ -36,12 +36,12 @@ async def get_auto_orders(db_conn=Depends(get_db_conn)):
 
 
 @router.post("/auto/{order_id}")
-async def deactivate_auto_order(order_id: int, db_conn=Depends(get_db_conn))-> Dict:
+async def delete_auto_order(order_id: int, db_conn=Depends(get_db_conn))-> Dict:
     try:
-        return await deactivate_auto_order1(order_id,db_conn)
+        return await delete_auto_order1(order_id,db_conn)
     except Exception as e:
         # Only catch the custom "not found" error and return 404
-        raise HTTPException(status_code=404, detail=f"Failed to deactivate auto orders: {str(e)}")
+        raise HTTPException(status_code=404, detail=f"Failed to delete auto orders: {str(e)}")
 
 
 @router.get("/orders")

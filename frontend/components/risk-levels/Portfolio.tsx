@@ -56,7 +56,7 @@ const PortfolioTable = () => {
     <div className="p-4">
       <h2 className="text-xl font-bold mb-4">Portfolio</h2>
           
-          {/* ✅ Refresh Button */}
+          {/*  Refresh Button */}
           <Button
             variant="outline"
             onClick={fetchPortfolio}
@@ -83,7 +83,7 @@ const PortfolioTable = () => {
         <TableBody>
           {positions.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={8} className="text-center text-gray-500">
+              <TableCell colSpan={8} className="text-gray-500">
                 No open positions.
               </TableCell>
             </TableRow>

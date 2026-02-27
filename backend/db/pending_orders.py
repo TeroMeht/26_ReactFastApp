@@ -27,27 +27,22 @@ async def fetch_active_auto_orders(db_conn:asyncpg.Connection) -> List[Dict]:
 
 
 
-async def update_auto_order_status(
-    db_conn: asyncpg.Connection,
-    order_id: int,
-    new_status: str
-) -> Optional[Dict[str, str]]:
+async def delete_auto_order(db_conn: asyncpg.Connection, order_id: int) -> Optional[Dict[str, str]]:
 
     row = await db_conn.fetchrow(
         """
-        UPDATE orders
-        SET "Status" = $1
-        WHERE "Id" = $2
+        DELETE FROM orders
+        WHERE "Id" = $1
         RETURNING "Id", "Status", "Symbol";
         """,
-        new_status,
         order_id
     )
 
     if row:
         return {
             "order_id": row["Id"],
-            "status": "deactivated",
+            "status": "deleted",
             "symbol": row["Symbol"]
         }
+
     return None
