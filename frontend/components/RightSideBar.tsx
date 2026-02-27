@@ -1,4 +1,8 @@
+"use client";
 import React, { useState } from "react";
+import { paths } from "@/generated/api";
+import { API_PREFIX } from "@/lib/api_prefix"; // import your API prefix
+import { useRouter } from "next/navigation";
 import {
   Table,
   TableBody,
@@ -7,6 +11,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+
+
+
+
+type CandleRow =
+  paths["/api/livestream/pricedata"]["get"]["responses"]["200"]["content"]["application/json"][number];
 
 type AlarmData = {
   Symbol: string;
@@ -22,6 +32,9 @@ interface RightSidebarProps {
 
 const RightSidebar: React.FC<RightSidebarProps> = ({ pageSpecific, alarms }) => {
   const [showTodayOnly, setShowTodayOnly] = useState(true);
+  const [loadingSymbol, setLoadingSymbol] = useState<string | null>(null);
+  // inside RightSidebar
+  const router = useRouter();
 
   const isToday = (dateStr: string) => {
     const today = new Date();
@@ -32,6 +45,43 @@ const RightSidebar: React.FC<RightSidebarProps> = ({ pageSpecific, alarms }) => 
       inputDate.getFullYear() === today.getFullYear()
     );
   };
+const fetchCandleData = async (symbol: string) => {
+  try {
+    setLoadingSymbol(symbol);
+
+    const response = await fetch(`${API_PREFIX}/livestream/pricedata?symbol=${symbol}`);
+
+    if (!response.ok) {
+      // Try to parse backend error message
+      let errorMessage = `Failed to fetch price data (status ${response.status})`;
+      try {
+        const errData = await response.json();
+        if (errData?.detail) {
+          errorMessage = errData.detail; // show the backend message
+        }
+      } catch {
+        // fallback if response is not JSON
+      }
+      // Instead of throwing, show it to the user
+      alert(errorMessage);
+      return;
+    }
+
+    const data: CandleRow[] = await response.json();
+
+    if (data.length === 0) {
+      console.log(`No candle data for symbol ${symbol}`);
+    } else {
+      console.log("Candle data for", symbol, data);
+    }
+  } catch (err) {
+    // Network or other errors
+    console.error("Error fetching candle data:", err);
+    alert(`Error fetching candle data: ${err}`);
+  } finally {
+    setLoadingSymbol(null);
+  }
+};
 
   const sortedAlarms = alarms
     ? [...alarms]
@@ -74,15 +124,16 @@ const RightSidebar: React.FC<RightSidebarProps> = ({ pageSpecific, alarms }) => 
                 sortedAlarms.map((alarm, index) => {
                   const today = isToday(alarm.Date);
                   return (
-                    <TableRow
-                      key={index}
-                      className={`hover:bg-gray-100 ${today ? "bg-yellow-100" : ""}`}
-                    >
-                      <TableCell>{alarm.Symbol}</TableCell>
-                      <TableCell>{alarm.Alarm}</TableCell>
-                      <TableCell>{today ? "Today" : alarm.Date}</TableCell>
-                      <TableCell>{alarm.Time}</TableCell>
-                    </TableRow>
+                  <TableRow
+                    key={index}
+                    className={`hover:bg-gray-100 cursor-pointer ${today ? "bg-yellow-100" : ""}`}
+                    onClick={() => router.push(`/pricedata/${alarm.Symbol}`)}
+                  >
+                    <TableCell>{alarm.Symbol}</TableCell>
+                    <TableCell>{alarm.Alarm}</TableCell>
+                    <TableCell>{today ? "Today" : alarm.Date}</TableCell>
+                    <TableCell>{alarm.Time}</TableCell>
+                  </TableRow>
                   );
                 })
               ) : (

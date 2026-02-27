@@ -52,7 +52,7 @@ class CreateAlarmRequest(BaseModel):
     Date: date
 
 
-# Tämä tulee livestreamista sisään 
+
 
 class LatestRow(BaseModel):
     TableName: str
@@ -72,19 +72,19 @@ class LatestRow(BaseModel):
 
 # Livestream format
 class CandleRow(BaseModel):
-    symbol: str
-    date: date
-    time: time
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
-    vwap: float
-    ema9: float
-    avg_volume: float
-    rvol: float
-    relatR: float
+    Symbol: str
+    Date: date
+    Time: time
+    Open: float
+    High: float
+    Low: float
+    Close: float
+    Volume: float
+    VWAP: float
+    EMA9: float
+    Avg_volume: float
+    Rvol: float
+    Relatr: float
 
 
 

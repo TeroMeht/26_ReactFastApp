@@ -114,32 +114,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/livestream/emit": {
+    "/api/livestream/pricedata": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put?: never;
-        /** New Event */
-        post: operations["new_event_api_livestream_emit_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/livestream/stream": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Stream Events */
-        get: operations["stream_events_api_livestream_stream_get"];
+        /** Read Pricedata */
+        get: operations["read_pricedata_api_livestream_pricedata_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -402,8 +385,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Deactivate Auto Order */
-        post: operations["deactivate_auto_order_api_pending_orders_auto__order_id__post"];
+        /** Delete Auto Order */
+        post: operations["delete_auto_order_api_pending_orders_auto__order_id__post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -510,37 +493,37 @@ export interface components {
         /** CandleRow */
         CandleRow: {
             /** Symbol */
-            symbol: string;
+            Symbol: string;
             /**
              * Date
              * Format: date
              */
-            date: string;
+            Date: string;
             /**
              * Time
              * Format: time
              */
-            time: string;
+            Time: string;
             /** Open */
-            open: number;
+            Open: number;
             /** High */
-            high: number;
+            High: number;
             /** Low */
-            low: number;
+            Low: number;
             /** Close */
-            close: number;
+            Close: number;
             /** Volume */
-            volume: number;
+            Volume: number;
             /** Vwap */
-            vwap: number;
+            VWAP: number;
             /** Ema9 */
-            ema9: number;
+            EMA9: number;
             /** Avg Volume */
-            avg_volume: number;
+            Avg_volume: number;
             /** Rvol */
-            rvol: number;
+            Rvol: number;
             /** Relatr */
-            relatR: number;
+            Relatr: number;
         };
         /** EntryRequest */
         EntryRequest: {
@@ -885,42 +868,11 @@ export interface operations {
             };
         };
     };
-    new_event_api_livestream_emit_post: {
+    read_pricedata_api_livestream_pricedata_get: {
         parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CandleRow"];
+            query: {
+                symbol: string;
             };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    stream_events_api_livestream_stream_get: {
-        parameters: {
-            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
@@ -933,7 +885,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["CandleRow"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -1301,7 +1262,7 @@ export interface operations {
             };
         };
     };
-    deactivate_auto_order_api_pending_orders_auto__order_id__post: {
+    delete_auto_order_api_pending_orders_auto__order_id__post: {
         parameters: {
             query?: never;
             header?: never;

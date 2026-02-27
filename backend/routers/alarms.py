@@ -7,7 +7,6 @@ from sse_starlette.sse import EventSourceResponse
 import asyncio
 
 
-
 router = APIRouter(
     prefix="/api/alarms",
     tags=["Alarms"]
@@ -46,7 +45,7 @@ async def stream_events(request: Request):
                     "data": sse_event.model_dump_json(),
                 }
             else:
-                # 🔥 HEARTBEAT (VERY IMPORTANT)
+                #  HEARTBEAT (VERY IMPORTANT)
                 yield {
                     "event": "ping",
                     "data": "keep-alive",
@@ -55,3 +54,6 @@ async def stream_events(request: Request):
             await asyncio.sleep(1)
 
     return EventSourceResponse(event_generator())
+
+
+
