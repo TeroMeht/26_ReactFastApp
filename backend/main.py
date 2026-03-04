@@ -16,7 +16,7 @@ import asyncpg
 
 
 # Import routers
-from routers import tickers, script, alarms, livestream, portfolio, pending_orders, exits
+from routers import tickers, script, alarms, livestream, portfolio, pending_orders, exits,scanner
 
 
 # Global IBKR object
@@ -81,6 +81,8 @@ app.include_router(livestream.router)
 app.include_router(portfolio.router)
 app.include_router(pending_orders.router)
 app.include_router(exits.router)
+app.include_router(scanner.router)
+
 
 if __name__ == "__main__":
 
