@@ -934,7 +934,7 @@ class PortfolioService:
         # Check exit requested
         exit_request = await fetch_exit_by_symbol(self.db_conn, payload.symbol)
 
-        if alarm == "euforia_exit" and exit_request and exit_request["exitrequested"]:
+        if alarm == "euforia" and exit_request and exit_request["exitrequested"]:
             logger.info("Valid euforia_exit detected and exitrequested=True | symbol=%s", payload.symbol)
 
             # Check position
