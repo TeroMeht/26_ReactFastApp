@@ -198,11 +198,5 @@ class ScannerResponse(BaseModel):
     low: float            # Lowest price (e.g., 40.6)
     close: float          # Closing price (e.g., 40.6)
     volume: int           # Volume (e.g., 0)
-    avgvolume: float     # Average volume (e.g., 1125.25)
-    cumvolume: int       # Cumulative volume (e.g., 325853)
-    cumavgvolume: float # Cumulative average volume (e.g., 103140.75)
     rvol: float           # Relative volume (e.g., 3.16)
-    date_y: str          # Date for yesterday (e.g., "2026-03-03")
-    time_y: str          # Time for yesterday (e.g., "22:58:00")
-    close_y: float        # Closing price for yesterday (e.g., 38.855)
-    change: float 
+    change: float
