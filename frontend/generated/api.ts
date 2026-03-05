@@ -445,7 +445,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/scanner/": {
+    "/api/scanner": {
         parameters: {
             query?: never;
             header?: never;
@@ -453,7 +453,7 @@ export interface paths {
             cookie?: never;
         };
         /** Run Scanner */
-        get: operations["run_scanner_api_scanner__get"];
+        get: operations["run_scanner_api_scanner_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1449,7 +1449,7 @@ export interface operations {
             };
         };
     };
-    run_scanner_api_scanner__get: {
+    run_scanner_api_scanner_get: {
         parameters: {
             query: {
                 preset_name: string;

@@ -15,7 +15,7 @@ router = APIRouter(
 )
 
 
-@router.get("/", response_model=List[ScannerResponse])
+@router.get("", response_model=List[ScannerResponse])
 async def run_scanner(preset_name: str,ib=Depends(get_ib)):
     try:
         return await run_scanner_logic(

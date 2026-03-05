@@ -1,14 +1,15 @@
 import HeaderBox from '@/components/HeaderBox';
 import { SequentialScannerTables } from '@/components/scanner/SequentialScanTables';
 
+
 const Scanner = () => {
   const loggedIn = { firstName: 'Tero' };
 
   const scannerTables = [
 
-    { title: "High Activity", endpoint: "/api/ib_scanner?preset=high_activity_scan" },
-    { title: "Gap Up", endpoint: "/api/ib_scanner?preset=gap_up_scan" },
-    { title: "Gap Down", endpoint: "/api/ib_scanner?preset=gap_down_scan" },
+    { title: "High Activity", scan_preset: "high_activity_scan" },
+    { title: "Gap Up", scan_preset: "gap_up_scan" },
+    { title: "Gap Down", scan_preset: "gap_down_scan" },
   ];
 
   return (

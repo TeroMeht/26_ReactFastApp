@@ -5,7 +5,7 @@ import ScannerTable from "@/components/scanner/ScannerTable";
 
 type TableConfig = {
   title: string;
-  endpoint: string;
+  scan_preset: string;
 };
 
 type SequentialScannerProps = {
@@ -41,7 +41,7 @@ export const SequentialScannerTables: React.FC<SequentialScannerProps> = ({ tabl
             <ScannerTable
             key={table.title}
             title={table.title}
-            endpoint={table.endpoint}
+            scan={table.scan_preset}
             fetchTrigger={triggerFetch && idx === currentIndex} // only current table fetches
             onFetched={() => {
                 if (currentIndex !== null && currentIndex < tables.length - 1) {

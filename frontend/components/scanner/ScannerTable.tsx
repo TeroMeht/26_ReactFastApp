@@ -9,61 +9,42 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
+import { API_PREFIX } from "@/lib/api_prefix";
+import { paths } from "@/generated/api";
 
-type ScannerRow = {
-  symbol: string;
-  rank: number | null;
-  change: number | null;
-  rvol?: number | null;
-};
-
-// Raw API row (more fields exist, but we only pick 3)
-type ApiScannerRow = {
-  rank: number | null;
-  symbol: string | null;
-  change: number | null;
-  rvol?: number | null;
-};
+type ScannerResponse =
+  paths["/api/scanner"]["get"]["responses"]["200"]["content"]["application/json"][number];
 
 type ScannerTableProps = {
   title?: string;
-  endpoint: string;
+  scan: string;
   fetchTrigger?: boolean;
   onFetched?: () => void;
 };
 
 const ScannerTable: React.FC<ScannerTableProps> = ({
   title = "IB Scanner Results",
-  endpoint,
+  scan,
   fetchTrigger = false,
   onFetched,
 }) => {
-  const [data, setData] = React.useState<ScannerRow[]>([]);
+  const [data, setData] = React.useState<ScannerResponse[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   const fetchData = React.useCallback(async () => {
     setLoading(true);
     setError(null);
-    try {
-      const url = endpoint.startsWith("http")
-        ? endpoint
-        : `http://127.0.0.1:8080${endpoint}`;
 
-      const res = await fetch(url);
+    try {
+      const res = await fetch(`${API_PREFIX}/scanner?preset_name=${scan}`);
       if (!res.ok) throw new Error("Failed to fetch scanner data");
 
-      const json = await res.json();
+      // API returns ScannerResponse[] directly
+      const json: ScannerResponse[] = await res.json();
 
-      const results = (json.results as ApiScannerRow[] | undefined) ?? [];
-
-      const rows: ScannerRow[] = results.map((row) => ({
-        rank: row.rank ?? null,
-        symbol: row.symbol ?? "-",
-        change: row.change ?? null,
-        rvol: row.rvol ?? null,
-      }))
-      .filter((row) => row.rvol === null || row.rvol >= 2); // keep null or >=1
+      // Optionally filter rows based on rvol
+      const rows = json.filter((row) => row.rvol === null || row.rvol >= 2);
 
       setData(rows);
       onFetched?.();
@@ -72,34 +53,34 @@ const ScannerTable: React.FC<ScannerTableProps> = ({
     } finally {
       setLoading(false);
     }
-  }, [endpoint, onFetched]);
+  }, [scan, onFetched]);
 
   React.useEffect(() => {
     if (fetchTrigger) fetchData();
   }, [fetchTrigger, fetchData]);
 
-  const displayedColumns = ["rank", "symbol", "change", "rvol"];
+  const displayedColumns: (keyof ScannerResponse)[] = [
+    "symbol",
+    "change",
+    "rvol",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "date",
+    "time",
+  ];
 
-// --- gradient scaling for positive & negative values ---
-const maxAbsChange = Math.max(
-  ...data.map((d) => Math.abs(d.change ?? 0)),
-  0.001
-);
+  // --- gradient scaling for positive & negative values ---
+  const maxAbsChange = Math.max(...data.map((d) => Math.abs(d.change ?? 0)), 0.001);
 
-const getRowColor = (value: number | null) => {
-  if (value === null || value === 0) return "transparent";
-
-  const intensity = Math.min(Math.abs(value) / maxAbsChange, 1); // 0–1
-  const colorValue = Math.floor(100 + intensity * 155); // 100 → 255
-
-  if (value > 0) {
-    // green gradient
-    return `rgb(0, ${colorValue}, 0)`;
-  } else {
-    // red gradient
-    return `rgb(${colorValue}, 0, 0)`;
-  }
-};
+  const getRowColor = (value: number | null) => {
+    if (value === null || value === 0) return "transparent";
+    const intensity = Math.min(Math.abs(value) / maxAbsChange, 1); // 0–1
+    const colorValue = Math.floor(100 + intensity * 155); // 100 → 255
+    return value > 0 ? `rgb(0, ${colorValue}, 0)` : `rgb(${colorValue}, 0, 0)`;
+  };
 
   return (
     <div
@@ -137,11 +118,12 @@ const getRowColor = (value: number | null) => {
                 key={idx}
                 style={{ backgroundColor: getRowColor(row.change) }}
               >
-                {displayedColumns.map((col) => (
-                  <TableCell key={col} className="text-xs">
-                    {row[col as keyof ScannerRow] ?? "-"}
-                  </TableCell>
-                ))}
+                {displayedColumns.map((col) => {
+                  const val = row[col];
+                  <TableCell key={col}>{val ?? "-"}</TableCell>
+                  if (typeof val === "number") return <TableCell key={col}>{val.toFixed(2)}</TableCell>;
+                  return <TableCell key={col}>{val ?? "-"}</TableCell>;
+                })}
               </TableRow>
             ))}
           </TableBody>
