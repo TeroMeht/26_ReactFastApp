@@ -1,5 +1,6 @@
 from typing import List, Dict
 import asyncpg
+from decimal import Decimal
 
 
 
@@ -20,10 +21,7 @@ async def fetch_tables(db_conn:asyncpg.Connection, prefix: str) -> List[str]:
     return [row['table_name'] for row in rows]
 
 
-
-
-async def fetch_last_row(db_conn:asyncpg.Connection, table_name: str) -> Dict:
-    """Fetch the latest row from a specific table ordered by Date + Time descending."""
+async def fetch_last_row(db_conn: asyncpg.Connection, table_name: str) -> Dict:
     row = await db_conn.fetchrow(
         f"""
         SELECT *
@@ -32,7 +30,17 @@ async def fetch_last_row(db_conn:asyncpg.Connection, table_name: str) -> Dict:
         LIMIT 1;
         """
     )
-    return dict(row) if row else None
+    if not row:
+        return None
+
+    row_dict = dict(row)
+
+    # Convert NaN to None (only if DB can return NaN)
+    for k, v in row_dict.items():
+        if isinstance(v, Decimal) and v.is_nan():
+            row_dict[k] = None
+
+    return row_dict
 
 
 async def fetch_pricedata_by_symbol(db_conn: asyncpg.Connection, table_name: str, symbol: str) -> List[Dict]:

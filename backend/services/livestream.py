@@ -1,6 +1,7 @@
 from typing import List, Dict
 from db.livestream import *
 import logging
+from schemas.api_schemas import CandleRow
 
 logger = logging.getLogger(__name__)
 
@@ -8,16 +9,15 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------- DB Fetch ----------------
-async def fetch_latest_from_db(db_conn, prefix: str = "livestream") -> List[Dict]:
+async def fetch_latest_from_db(db_conn) -> List[CandleRow]:
 
-    tables = await fetch_tables(db_conn, prefix)
+    tables = await fetch_tables(db_conn, prefix= "livestream")
 
     latest_rows = []
     for table in tables:
         row = await fetch_last_row(db_conn,table)
-        if row:
-            row["TableName"] = table
-            latest_rows.append(row)
+        latest_rows.append(row)
+
     return latest_rows
 
 

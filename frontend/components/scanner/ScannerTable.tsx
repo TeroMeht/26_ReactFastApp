@@ -63,12 +63,6 @@ const ScannerTable: React.FC<ScannerTableProps> = ({
     "symbol",
     "change",
     "rvol",
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume",
-    "date",
     "time",
   ];
 

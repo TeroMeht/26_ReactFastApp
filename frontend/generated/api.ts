@@ -512,35 +512,30 @@ export interface components {
             /** Symbol */
             Symbol: string;
             /**
-             * Date
-             * Format: date
-             */
-            Date: string;
-            /**
              * Time
              * Format: time
              */
             Time: string;
             /** Open */
-            Open: number;
+            Open: string;
             /** High */
-            High: number;
+            High: string;
             /** Low */
-            Low: number;
+            Low: string;
             /** Close */
-            Close: number;
+            Close: string;
             /** Volume */
-            Volume: number;
+            Volume: string;
             /** Vwap */
-            VWAP: number;
+            VWAP: string;
             /** Ema9 */
-            EMA9: number;
+            EMA9: string;
             /** Avg Volume */
-            Avg_volume: number;
+            Avg_volume: string | null;
             /** Rvol */
-            Rvol: number;
+            Rvol: string;
             /** Relatr */
-            Relatr: number;
+            Relatr: string;
         };
         /** EntryRequest */
         EntryRequest: {
@@ -608,43 +603,6 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
-        };
-        /** LatestRow */
-        LatestRow: {
-            /** Tablename */
-            TableName: string;
-            /** Symbol */
-            Symbol: string;
-            /**
-             * Date
-             * Format: date
-             */
-            Date: string;
-            /**
-             * Time
-             * Format: time
-             */
-            Time: string;
-            /** Open */
-            Open: number;
-            /** High */
-            High: number;
-            /** Low */
-            Low: number;
-            /** Close */
-            Close: number;
-            /** Volume */
-            Volume: number;
-            /** Vwap */
-            VWAP: number;
-            /** Ema9 */
-            EMA9: number;
-            /** Avg Volume */
-            Avg_volume: number;
-            /** Rvol */
-            Rvol: number;
-            /** Relatr */
-            Relatr: number;
         };
         /** OpenPosition */
         OpenPosition: {
@@ -909,7 +867,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["LatestRow"][];
+                    "application/json": components["schemas"]["CandleRow"][];
                 };
             };
         };

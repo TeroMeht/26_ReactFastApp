@@ -3,6 +3,7 @@ from pydantic import BaseModel, field_validator,Field
 from datetime import date, time
 from datetime import datetime
 from typing import Optional,Any
+from decimal import Decimal
 
 
 class TickerFile(BaseModel):
@@ -54,38 +55,21 @@ class CreateAlarmRequest(BaseModel):
 
 
 
-class LatestRow(BaseModel):
-    TableName: str
-    Symbol: str
-    Date: date
-    Time: time
-    Open: float
-    High: float
-    Low: float
-    Close: float
-    Volume: float
-    VWAP: float
-    EMA9: float
-    Avg_volume: float
-    Rvol: float
-    Relatr: float
 
-# Livestream format
+
 class CandleRow(BaseModel):
     Symbol: str
-    Date: date
     Time: time
-    Open: float
-    High: float
-    Low: float
-    Close: float
-    Volume: float
-    VWAP: float
-    EMA9: float
-    Avg_volume: float
-    Rvol: float
-    Relatr: float
-
+    Open: Decimal
+    High: Decimal
+    Low: Decimal
+    Close: Decimal
+    Volume: Decimal
+    VWAP: Decimal
+    EMA9: Decimal
+    Avg_volume: Optional[Decimal] 
+    Rvol: Decimal
+    Relatr: Decimal
 
 
 class ModifyOrderRequest(BaseModel):

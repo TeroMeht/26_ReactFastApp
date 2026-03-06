@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from typing import List
 from services.livestream import *
-from schemas.api_schemas import LatestRow, CandleRow
+from schemas.api_schemas import CandleRow
 from dependencies import get_db_conn
 import asyncpg
 
@@ -11,7 +11,7 @@ router = APIRouter(
 )
 
 
-@router.get("/latest", response_model=List[LatestRow])
+@router.get("/latest", response_model=List[CandleRow])
 async def get_latest(db_conn=Depends(get_db_conn)):
     try:
         return await fetch_latest_from_db(db_conn)
