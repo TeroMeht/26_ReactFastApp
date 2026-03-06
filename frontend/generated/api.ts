@@ -512,6 +512,11 @@ export interface components {
             /** Symbol */
             Symbol: string;
             /**
+             * Date
+             * Format: date
+             */
+            Date: string;
+            /**
              * Time
              * Format: time
              */

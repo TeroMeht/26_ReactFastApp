@@ -25,7 +25,7 @@ async def read_pricedata(symbol: str, db_conn=Depends(get_db_conn)):
 
     try:
         result = await fetch_pricedata_from_db(db_conn, symbol)
-        print(result)
+
         if not result:
             print(f"No candle data found for symbol: {symbol}")
         return result  # empty list if no data

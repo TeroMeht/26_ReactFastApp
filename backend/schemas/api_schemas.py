@@ -59,6 +59,7 @@ class CreateAlarmRequest(BaseModel):
 
 class CandleRow(BaseModel):
     Symbol: str
+    Date:date
     Time: time
     Open: Decimal
     High: Decimal
