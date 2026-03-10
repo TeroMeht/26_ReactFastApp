@@ -14,7 +14,7 @@ const Home = () => {
             type="greeting"
             title="Welcome"
             user={loggedIn.firstName || 'Guest'}
-            subtext="Manage and review performance of Mehtanen Capital trading business"
+            subtext=""
           />
         </header>
 
