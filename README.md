@@ -6,9 +6,9 @@ The purpose of this project has been to improve individuals trading decision mak
 
 # Technologies used
 
-Backend using FastAPI asyncronously
-Database PostgreSQL
-Frontend built on Nextjs with Typescript
+- Backend using FastAPI asyncronously
+- Database PostgreSQL
+- Frontend built on Nextjs with Typescript
 
 # Project architecture 
 
