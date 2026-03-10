@@ -1,3 +1,9 @@
+# 26_ReactFastAPP
+
+The purpose of this project has been to improve individuals trading decision making capabilities. My approach has been to automate as much as possible. This can be considered semi-automated trading platform. The ultimate goals is help user to stick with the rules in high pressure environment and therefore improve performance. 
+
+
+
 # Technologies used
 
 Backend using FastAPI asyncronously
