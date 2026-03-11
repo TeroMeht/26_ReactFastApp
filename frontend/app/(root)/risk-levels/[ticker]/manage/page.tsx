@@ -56,6 +56,7 @@ const ManagePage = () => {
 
       const payload = {
         symbol: position.symbol,
+        contract_type: position.contract_type,
         total_risk: Number(totalRisk),
       };
 
@@ -133,7 +134,7 @@ const ManagePage = () => {
             />
           </button>
         </div>
-
+        <p><strong>Contract:</strong> {position.contract_type}</p>
         <p><strong>Aux Price:</strong> {position.auxprice}</p>
         <p><strong>Avg Cost:</strong> {position.avgcost}</p>
         <p><strong>Position:</strong> {position.position}</p>

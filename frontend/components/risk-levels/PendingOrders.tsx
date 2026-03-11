@@ -29,6 +29,9 @@ const PendingOrdersTable = () => {
   const [message, setMessage] = useState<string | null>(null); // add at top of component
   const [loading, setLoading] = useState(false);
 
+  const [contractTypes, setContractTypes] = useState<Record<string, "CFD" | "stock">>({});
+  const [openDropdown, setOpenDropdown] = useState<string | null>(null);
+
   const fetchPositions = useCallback(async () => {
     try {
       setLoading(true);
@@ -50,11 +53,13 @@ const PendingOrdersTable = () => {
   
 const handleSend = async (order: PendingOrder) => {
   try {
+    const contractType = contractTypes[order.id] ?? "stock";
     const payload = {
       symbol: order.symbol,
       entry_price: order.latest_price,
       stop_price: order.stop_price,
       position_size: order.position_size,
+      contract_type: contractType
     };
 
     const res = await fetch(`${API_PREFIX}/portfolio/entry-request`, {
@@ -162,6 +167,7 @@ const handleDelete = async (order: PendingOrder) => {
           <TableRow>
             <TableHead>Id</TableHead>
             <TableHead>Symbol</TableHead>
+            <TableHead>Contract</TableHead>
             <TableHead>Latest Price</TableHead>
             <TableHead>Stop Price</TableHead>
             <TableHead>Quantity</TableHead>
@@ -182,6 +188,41 @@ const handleDelete = async (order: PendingOrder) => {
               <TableRow key={order.id}>
                 <TableCell>{order.id}</TableCell>
                 <TableCell>{order.symbol}</TableCell>
+                <TableCell>
+                  <div className="relative">
+                    <button
+                      className="px-3 py-1 text-sm rounded-md border border-input bg-gray-200 hover:bg-gray-400 transition-colors"
+                      onClick={() => setOpenDropdown(openDropdown === order.id ? null : order.id)}
+                    >
+                      {contractTypes[order.id] ?? "stock"}
+                    </button>
+
+                    {openDropdown === order.id && (
+                      <div className="absolute z-50 mt-1 w-28 rounded-md border border-input bg-white shadow-md">
+                        {(["stock", "CFD"] as const).map((option) => (
+                          <button
+                            key={option}
+                            className={`w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors ${
+                              (contractTypes[order.id] ?? "stock") === option
+                                ? "bg-gray-200 text-primary font-medium"
+                                : "text-foreground hover:bg-gray-200"
+                            }`}
+                            onClick={() => {
+                              
+                              setContractTypes((prev) => ({ ...prev, [order.id]: option }));
+                              setOpenDropdown(null);
+                            }}
+                          >
+                            {option}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </TableCell>
+
+
+
                 <TableCell>{order.latest_price}</TableCell>
                 <TableCell>{order.stop_price}</TableCell>
                 <TableCell>{order.position_size}</TableCell>

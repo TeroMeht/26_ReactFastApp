@@ -28,6 +28,7 @@ class PendingOrder(BaseModel):
 class OpenPosition(BaseModel):
     exit_request:bool
     symbol: str
+    contract_type:str
     allocation: float
     size: float
     avgcost: float
@@ -127,8 +128,6 @@ class ExitRequest(BaseModel):
 
 
 
-
-
 class ExitRequestResponse(BaseModel):
     symbol: str
     exitrequested:bool
@@ -147,6 +146,7 @@ class EntryRequest(BaseModel):
     entry_price: float
     stop_price: float
     position_size: int
+    contract_type:str
 
 
 class EntryRequestResponse(BaseModel):
@@ -159,6 +159,7 @@ class EntryRequestResponse(BaseModel):
 
 class AddRequest(BaseModel):
     symbol: str
+    contract_type:str
     total_risk: int 
 
 

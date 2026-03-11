@@ -10,8 +10,10 @@ class Order:
     symbol: str
     action: str
     position_size: int
+    contract_type : str
     entry_price: float = Optional
     stop_price: float = Optional
+    
 
 
 
@@ -72,6 +74,7 @@ def build_order(data: dict) -> Order:
         position_size=position_size,
         entry_price=entry_price,
         stop_price=stop_price,
+        contract_type=data["contract_type"]
     )
 
 

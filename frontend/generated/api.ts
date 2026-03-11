@@ -552,6 +552,8 @@ export interface components {
             stop_price: number;
             /** Position Size */
             position_size: number;
+            /** Contract Type */
+            contract_type: string;
         };
         /** EntryRequestResponse */
         EntryRequestResponse: {
@@ -615,6 +617,8 @@ export interface components {
             exit_request: boolean;
             /** Symbol */
             symbol: string;
+            /** Contract Type */
+            contract_type: string;
             /** Allocation */
             allocation: number;
             /** Size */

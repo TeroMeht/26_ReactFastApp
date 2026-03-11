@@ -1,5 +1,5 @@
 import asyncio
-from ib_async import IB,Stock,LimitOrder, StopOrder,MarketOrder
+from ib_async import IB,Stock,LimitOrder, StopOrder,MarketOrder,CFD
 import pytz
 import logging
 from services.orders import Order, build_order, calculate_position_size
@@ -292,16 +292,18 @@ class PortfolioService:
 
 # Actions towards IB client: placing orders, modifying orders, and validation logic for entries and adds.
     async def place_bracket_order(self, order: Order):
-        """
-        Asynchronous bracket order placement (parent + stoploss).
-        No threads used.
-        """
+
         try:
-            contract = Stock(
-                symbol=order.symbol,
-                exchange="SMART",
-                currency="USD"
-            )
+            if order.contract_type == 'CFD':
+                contract = CFD(symbol=order.symbol,
+                            exchange="SMART",
+                            currency="USD")
+                
+            elif order.contract_type == 'stock' or 'STK':
+                contract = Stock(symbol=order.symbol,
+                            exchange="SMART",
+                            currency="USD"
+                        )
 
             # Properly await qualification
             await self.ib.qualifyContractsAsync(contract)
@@ -351,11 +353,17 @@ class PortfolioService:
         Place a simple limit order asynchronously.
         """
         try:
-            contract = Stock(
-                symbol=order.symbol,
-                exchange="SMART",
-                currency="USD"
-            )
+            if order.contract_type == 'CFD':
+                contract = CFD(symbol=order.symbol,
+                            exchange="SMART",
+                            currency="USD")
+                
+            elif order.contract_type == 'stock' or 'STK':
+                contract = Stock(symbol=order.symbol,
+                            exchange="SMART",
+                            currency="USD"
+                        )
+
 
             # Properly await qualification
             await self.ib.qualifyContractsAsync(contract)
@@ -386,11 +394,16 @@ class PortfolioService:
         Place a market order asynchronously.
         """
         try:
-            contract = Stock(
-                symbol=order.symbol,
-                exchange="SMART",
-                currency="USD"
-            )
+            if order.contract_type == 'CFD':
+                contract = CFD(symbol=order.symbol,
+                            exchange="SMART",
+                            currency="USD")
+                
+            elif order.contract_type == 'stock' or 'STK':
+                contract = Stock(symbol=order.symbol,
+                            exchange="SMART",
+                            currency="USD"
+                        )
 
             await self.ib.qualifyContractsAsync(contract)
 
@@ -699,6 +712,7 @@ class PortfolioService:
         symbol = payload.symbol
         stop_price = payload.stop_price
 
+
         try:
             # --- Fetch executed trades only for this symbol ---
             executed_trades = await self.get_trades_by_symbol(symbol)
@@ -734,7 +748,8 @@ class PortfolioService:
                 "symbol": symbol,
                 "entry_price": entry_price,
                 "stop_price": stop_price,
-                "position_size": position_size
+                "position_size": position_size,
+                "contract_type": payload.contract_type
             }
             order = self.create_order(order_data)
 
@@ -834,7 +849,8 @@ class PortfolioService:
                 "symbol": symbol,
                 "entry_price": ask,
                 "stop_price": stp_order_aux_price,
-                "position_size": new_qty
+                "position_size": new_qty,
+                "contract_type":payload.contract_type
             }
 
             # --- 3 Create new Order dataclass ---
@@ -879,10 +895,12 @@ class PortfolioService:
 
         for pos in positions:
             try:
+
                 symbol = pos.get("symbol")
+                contract_type = pos.get("sectype")
                 position = float(pos.get("position", 0))
                 avgcost = float(pos.get("avgcost", 0))
-
+                
                 size = round(abs(position * avgcost), 2)
                 allocation = (
                     round((size / netliq) * 100, 2)
@@ -908,6 +926,7 @@ class PortfolioService:
                     OpenPosition(
                         exit_request=exit_requested,
                         symbol=symbol,
+                        contract_type=contract_type,
                         allocation=allocation,
                         size=size,
                         avgcost=avgcost,
@@ -989,6 +1008,7 @@ class PortfolioService:
             # Place market order
             order = Order(
                 symbol=payload.symbol,
+                contract_type = position["sectype"],
                 action=action,
                 position_size=abs(int(shares))
             )
