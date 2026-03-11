@@ -11,7 +11,6 @@ from contextlib import asynccontextmanager
 from core.config import settings
 from ib_async import IB
 import uvicorn
-import dependencies
 import asyncpg
 
 
@@ -29,30 +28,41 @@ async def lifespan(app: FastAPI):
 
     try:
         # --- IBKR startup ---
+        logger.info("Connecting to IBKR | host=%s port=%s clientId=%s",
+                    settings.IB_HOST, settings.IB_PORT, settings.IB_CLIENT_ID)
+
         await ib.connectAsync(
             settings.IB_HOST,
             settings.IB_PORT,
             clientId=settings.IB_CLIENT_ID
         )
+        logger.info("Creating DB pool")
 
-        # --- Setup PostgreSQL pool ---
         db_pool = await asyncpg.create_pool(dsn=settings.DATABASE_URL)
-        await dependencies.setup_dependencies(ib, db_pool)
 
 
-        yield  # app runs here
+        # Store shared services
+        app.state.ib = ib
+        app.state.db_pool = db_pool
 
-    except Exception as e:
-        logger.exception("Error during startup: %s", e)
+    except Exception:
+        logger.exception("Startup failed")
         raise
 
-    finally:
-        # --- IBKR shutdown ---
-        if db_pool:
-            await db_pool.close()
-            logger.info("PostgreSQL pool closed")
-        ib.disconnect()
-        logger.info("IBKR disconnected")
+    # --- APP RUNS HERE ---
+    yield
+
+    # --- SHUTDOWN ---
+    try:
+        await app.state.db_pool.close()
+        logger.info("PostgreSQL pool closed")
+
+        if ib.isConnected():
+            ib.disconnect()
+            logger.info("IBKR disconnected")
+
+    except Exception:
+        logger.exception("Error during shutdown")
 
 # --- App instance ---
 app = FastAPI(

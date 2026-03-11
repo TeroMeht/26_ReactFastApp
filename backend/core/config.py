@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     RISK: int  # Default risk per trade in dollars
     MAX_ENTRY_FREQUENCY_MINUTES: int
 
+    # --- Exit triggers ---
+    EXIT_TRIGGERS: set[str]
+
+
     # --- Alpaca API Config ---
     ALPACA_API_KEY: str
     ALPACA_API_SECRET: str

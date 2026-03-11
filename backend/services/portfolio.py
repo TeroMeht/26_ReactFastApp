@@ -934,7 +934,14 @@ class PortfolioService:
         # Check exit requested
         exit_request = await fetch_exit_by_symbol(self.db_conn, payload.symbol)
 
-        if alarm == "euforia" and exit_request and exit_request["exitrequested"]:
+        if not exit_request:
+            return ExitRequestResponseIB(
+                symbol=payload.symbol,
+                message=f"No exit requested for: {payload.symbol}."
+            )
+
+
+        elif alarm in settings.EXIT_TRIGGERS:
             logger.info("Valid euforia_exit detected and exitrequested=True | symbol=%s", payload.symbol)
 
             # Check position
@@ -990,8 +997,11 @@ class PortfolioService:
 
             await self.place_market_order(order)
             await asyncio.sleep(1)
-            order_id = stp_to_delete['orderid'] 
-            await self.cancel_order_by_id(order_id)
+            if stp_to_delete and 'orderid' in stp_to_delete:
+                order_id = stp_to_delete['orderid']
+                await self.cancel_order_by_id(order_id)
+            else:
+                logger.info("No stop order found to cancel")
             await delete_exit_request(self.db_conn,payload.symbol)
 
             return ExitRequestResponseIB(
@@ -999,18 +1009,6 @@ class PortfolioService:
                 message=f"Market order placed to {action} {abs(shares)} shares of {payload.symbol}."
             )
 
-        elif not exit_request:
-            return ExitRequestResponseIB(
-                symbol=payload.symbol,
-                message=f"No exit request record found for {payload.symbol}."
-            )
-
-        elif not exit_request["exitrequested"]:
-            logger.info("Exit request exists but exitrequested=False | symbol=%s", payload.symbol)
-            return ExitRequestResponseIB(
-                symbol=payload.symbol,
-                message=f"Exit not requested for {payload.symbol}."
-            )
 
         else:
             return ExitRequestResponseIB(

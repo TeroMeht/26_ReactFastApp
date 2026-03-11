@@ -1,33 +1,18 @@
-from typing import Optional
+from typing import AsyncGenerator
+from fastapi import Request
 from ib_async import IB
 import asyncpg
 
-# Global instances
-_ib_instance: Optional[IB] = None
-_db_pool: Optional[asyncpg.pool.Pool] = None
 
 # --- IBKR dependency ---
-def get_ib() -> IB:
-    if _ib_instance is None:
-        raise RuntimeError("IB instance not initialized")
-    return _ib_instance
+def get_ib(request: Request) -> IB:
+    ib: IB = request.app.state.ib
+    return ib
 
-def set_ib_instance(ib: IB):
-    global _ib_instance
-    _ib_instance = ib
 
-async def get_db_conn():
-    db_conn = await _db_pool.acquire()
-    try:
-        yield db_conn
-    finally:
-        await _db_pool.release(db_conn)
+# --- Database dependency ---
+async def get_db_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:
+    pool: asyncpg.Pool = request.app.state.db_pool
 
-async def set_database_pool(pool: asyncpg.pool.Pool):
-    global _db_pool
-    _db_pool = pool
-
-# --- Combined setup ---
-async def setup_dependencies(ib: IB, db_pool: asyncpg.pool.Pool):
-    set_ib_instance(ib)
-    await set_database_pool(db_pool)
+    async with pool.acquire() as conn:
+        yield conn
