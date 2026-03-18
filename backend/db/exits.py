@@ -26,7 +26,12 @@ async def fetch_exit_by_symbol(db_conn: asyncpg.Connection, symbol: str) -> Dict
     return dict(row) if row else None
 
 
-
+async def clear_exit_requests(db_conn: asyncpg.Connection) -> None:
+    """
+    Completely removes all rows from exit_requests table.
+    Fastest method using TRUNCATE.
+    """
+    await db_conn.execute("TRUNCATE TABLE exit_requests;")
 
 
 async def update_exit_request(db_conn:asyncpg.Connection, symbol: str, requested: bool) -> Dict:

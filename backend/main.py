@@ -12,7 +12,7 @@ from core.config import settings
 from ib_async import IB
 import uvicorn
 import asyncpg
-
+from db.exits import clear_exit_requests
 
 # Import routers
 from routers import tickers, script, alarms, livestream, portfolio, pending_orders, exits,scanner
@@ -40,7 +40,11 @@ async def lifespan(app: FastAPI):
 
         db_pool = await asyncpg.create_pool(dsn=settings.DATABASE_URL)
 
-
+        #  CLEAN TABLE ON STARTUP
+        async with db_pool.acquire() as conn:
+            await clear_exit_requests(conn)
+            logger.info("exit_requests table cleared on startup")
+            
         # Store shared services
         app.state.ib = ib
         app.state.db_pool = db_pool
