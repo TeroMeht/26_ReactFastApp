@@ -186,3 +186,13 @@ class ScannerResponse(BaseModel):
     volume: int           # Volume (e.g., 0)
     rvol: float           # Relative volume (e.g., 3.16)
     change: float
+
+
+# schemas/api_schemas.py
+class NewsItem(BaseModel):
+    title: str
+    summary: str
+    url: str
+    source: str
+    published_at: str
+    thumbnail: str

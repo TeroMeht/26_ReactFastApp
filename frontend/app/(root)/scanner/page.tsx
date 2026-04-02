@@ -7,9 +7,10 @@ const Scanner = () => {
 
   const scannerTables = [
 
-    { title: "High Activity", scan_preset: "high_activity_scan" },
-    { title: "Gap Up", scan_preset: "gap_up_scan" },
-    { title: "Gap Down", scan_preset: "gap_down_scan" },
+    { title: "High Activity", scan_preset: "high_activity_scan"},
+  { title: "Gap Up", scan_preset: "gap_up_scan", sortOrder: "desc" as const },
+  { title: "Gap Down", scan_preset: "gap_down_scan", sortOrder: "asc" as const },
+    { title: "Small caps", scan_preset: "high_activity_smallcaps_scan"},
   ];
 
   return (

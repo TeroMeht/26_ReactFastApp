@@ -1,11 +1,11 @@
 'use client';
-
 import * as React from "react";
 import ScannerTable from "@/components/scanner/ScannerTable";
 
 type TableConfig = {
   title: string;
   scan_preset: string;
+  sortOrder?: "asc" | "desc";
 };
 
 type SequentialScannerProps = {
@@ -21,11 +21,6 @@ export const SequentialScannerTables: React.FC<SequentialScannerProps> = ({ tabl
     setTriggerFetch(true);
   };
 
-  // Auto-start on mount
-  React.useEffect(() => {
-    startSequentialFetch();
-  }, []);
-
   return (
     <div>
       <button
@@ -35,23 +30,23 @@ export const SequentialScannerTables: React.FC<SequentialScannerProps> = ({ tabl
       >
         {triggerFetch ? "Fetching..." : "Refresh All Scans"}
       </button>
-
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
         {tables.map((table, idx) => (
-            <ScannerTable
+          <ScannerTable
             key={table.title}
             title={table.title}
             scan={table.scan_preset}
-            fetchTrigger={triggerFetch && idx === currentIndex} // only current table fetches
+            sortOrder={table.sortOrder}
+            fetchTrigger={triggerFetch && idx === currentIndex}
             onFetched={() => {
-                if (currentIndex !== null && currentIndex < tables.length - 1) {
+              if (currentIndex !== null && currentIndex < tables.length - 1) {
                 setCurrentIndex(currentIndex + 1);
-                } else {
+              } else {
                 setTriggerFetch(false);
                 setCurrentIndex(null);
-                }
+              }
             }}
-            />
+          />
         ))}
       </div>
     </div>

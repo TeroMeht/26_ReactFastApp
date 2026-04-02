@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from services.tickers import get_tickers,save_tickers
+from services.tickers import get_tickers,save_tickers,add_tickers1
 from schemas.api_schemas import TickerFile
 
 router = APIRouter(
@@ -28,6 +28,21 @@ async def write_input_tickers(payload: TickerFile):
     """
     try:
         return await save_tickers(payload.filename, payload.content)
+
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+
+@router.post("/add-tickers-watchlist")
+async def add_tickers(payload: TickerFile):
+    """
+    Add tickers to a ticker file.
+    Body must include 'file' and 'content'.
+    """
+    try:
+        return await add_tickers1(payload.filename, payload.content)
 
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

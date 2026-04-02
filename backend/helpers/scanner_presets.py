@@ -6,7 +6,7 @@ Each preset is stored as a dictionary of parameters for ScannerSubscription.
 
 SCANNER_PRESETS = {
     "high_activity_scan": {
-        "numberOfRows": 20,
+        "numberOfRows": 10,
         "instrument": "STK",
         "locationCode": "STK.US.MAJOR",
         "scanCode": "HOT_BY_VOLUME",
@@ -17,17 +17,17 @@ SCANNER_PRESETS = {
     },
     
     "high_activity_smallcaps_scan": {
-        "numberOfRows": 20,
+        "numberOfRows": 10,
         "instrument": "STK",
         "locationCode": "STK.US.MAJOR",
         "scanCode": "HOT_BY_VOLUME",
         "marketCapAbove": 1,
         "abovePrice": 1,
-        "aboveVolume": 1,
+        "aboveVolume": 1000,
         "stockTypeFilter": "CORP"
     },
     "gap_up_scan": {
-        "numberOfRows": 20,
+        "numberOfRows": 10,
         "instrument": "STK",
         "locationCode": "STK.US.MAJOR",
         "scanCode": "TOP_PERC_GAIN",  # top % gainers
@@ -37,7 +37,7 @@ SCANNER_PRESETS = {
         "stockTypeFilter": "CORP"
     },
     "gap_down_scan": {
-        "numberOfRows": 20,
+        "numberOfRows": 10,
         "instrument": "STK",
         "locationCode": "STK.US.MAJOR",
         "scanCode": "TOP_PERC_LOSE",  # top % losers
