@@ -45,7 +45,7 @@ class PortfolioService:
                     "sectype": p.contract.secType if p.contract else None,
                     "currency": p.contract.currency if p.contract else None,
                     "position": p.position,
-                    "avgcost": p.avgCost
+                    "avgcost": round(p.avgCost, 2)
                 }
                 for p in positions
                 if p.position != 0
@@ -201,7 +201,7 @@ class PortfolioService:
                     if o["symbol"]
                     and o["symbol"].upper() == symbol.upper()
                     and o["ordertype"]
-                    and o["ordertype"].upper() == "STP"
+                    and o["ordertype"].upper() == "STP" or o["ordertype"].upper() == "STP LMT"
                 ),
                 None
             )
@@ -316,6 +316,7 @@ class PortfolioService:
                 lmtPrice=order.entry_price,
                 orderId=self.ib.client.getReqId(),
                 transmit=False,  # IMPORTANT for bracket logic
+                outsideRth=True,
             )
 
             stoploss = StopOrder(
@@ -374,6 +375,7 @@ class PortfolioService:
                 lmtPrice=order.entry_price,
                 orderId=self.ib.client.getReqId(),
                 transmit=True,
+                outsideRth=True,
             )
 
             self.ib.placeOrder(contract, limit_order)
