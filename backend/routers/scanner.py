@@ -60,9 +60,10 @@ async def get_symbol_news(symbol: str):
         news_items = []
         seen_urls = set()
 
-        # Primary: yfinance (no item cap, filter by time)
+
         ticker = yf.Ticker(symbol)
-        for item in (ticker.news or []):
+        yf_news = ticker.news or []
+        for item in yf_news:
             content = item.get("content", {})
             published_at = content.get("pubDate", "")
             if not is_within_24h(published_at):
@@ -79,7 +80,8 @@ async def get_symbol_news(symbol: str):
                 "published_at": published_at,
                 "thumbnail": (content.get("thumbnail") or {}).get("resolutions", [{}])[0].get("url", ""),
             })
-
+    except Exception:
+        logger.warning(f"yfinance news unavailable for {symbol}, falling back to RSS")
         # Supplement (or fallback): RSS feed
         rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
         feed = feedparser.parse(rss_url)

@@ -10,6 +10,7 @@ from core.config import settings
 from schemas.api_schemas import AddRequest, EntryRequest,EntryRequestResponse,AddRequestResponse,ExitRequest, ExitRequestResponseIB, ModifyOrderRequest, ModifyOrderByIdRequest, OpenPosition
 from typing import Optional,List
 import math
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
@@ -615,6 +616,74 @@ class PortfolioService:
             return False
 
 
+    def _calculate_pnl(self, trades: list[dict]) -> dict:
+            """
+            Calculate overall realized PnL from a list of fragmented trade executions.
+            Groups fragments by tradeid, aggregates cost/proceeds, then matches
+            BOT orders against SLD orders using FIFO to compute realized PnL.
+            """
+
+            # Step 1: Aggregate fragments into complete orders by tradeid
+            orders = defaultdict(lambda: {"action": None, "total_quantity": 0, "total_cost": 0.0, "commission": 0.0, "symbol": None})
+
+            for trade in trades:
+                tid = trade["tradeid"]
+                orders[tid]["action"] = trade["action"]
+                orders[tid]["symbol"] = trade["symbol"]
+                orders[tid]["total_quantity"] += trade["quantity"]
+                orders[tid]["total_cost"] += trade["quantity"] * trade["price"]
+                orders[tid]["commission"] += trade["commission"]
+
+            # Step 2: Separate into buys and sells, compute avg price per order
+            buys = []
+            sells = []
+
+            for tid, order in orders.items():
+                avg_price = order["total_cost"] / order["total_quantity"]
+                entry = {
+                    "tradeid": tid,
+                    "symbol": order["symbol"],
+                    "quantity": order["total_quantity"],
+                    "avg_price": avg_price,
+                    "commission": order["commission"],
+                }
+                if order["action"] == "BOT":
+                    buys.append(entry)
+                elif order["action"] == "SLD":
+                    sells.append(entry)
+
+            # Step 3: FIFO matching of buys vs sells
+            buy_queue = list(buys)
+            total_pnl = 0.0
+            total_commission = sum(o["commission"] for o in orders.values())
+
+            for sell in sells:
+                remaining_sell_qty = sell["quantity"]
+
+                while remaining_sell_qty > 0 and buy_queue:
+                    buy = buy_queue[0]
+                    matched_qty = min(remaining_sell_qty, buy["quantity"])
+                    total_pnl += matched_qty * (sell["avg_price"] - buy["avg_price"])
+                    buy["quantity"] -= matched_qty
+                    remaining_sell_qty -= matched_qty
+
+                    if buy["quantity"] == 0:
+                        buy_queue.pop(0)
+
+            net_pnl = total_pnl - total_commission
+
+            return {
+                "total_executions": len(orders),
+                "gross_pnl": round(total_pnl, 4),
+                "total_commission": round(total_commission, 4),
+                "net_pnl": round(net_pnl, 4),
+            }
+
+
+
+
+
+
 # Checks if user is trying to add to losing position. Won't allow that. 
     async def is_add_allowed(self, position: dict) -> dict:
         """
@@ -669,10 +738,10 @@ class PortfolioService:
                 "message": str(e)
             }
         
-    async def is_entry_allowed(self, latest_trade: dict | None) -> bool:
+    async def is_entry_allowed(self, latest_trade: dict | None) -> tuple[bool, timedelta | None]:
         """
-        Returns True if a new entry is allowed based on the latest executed trade,
-        otherwise False. Times are checked in Helsinki timezone.
+        Returns (is_allowed, elapsed) where elapsed is the time since the last trade,
+        or None if there is no previous trade. Times are checked in Helsinki timezone.
         """
         threshold_minutes = settings.MAX_ENTRY_FREQUENCY_MINUTES
         helsinki_tz = pytz.timezone("Europe/Helsinki")
@@ -681,26 +750,25 @@ class PortfolioService:
         try:
             if not latest_trade:
                 logging.info("No executions found. Entry allowed.")
-                return True
+                return True, None
 
             trade_time = latest_trade["time"]
 
-            # Convert string to datetime if needed
             if isinstance(trade_time, str):
                 trade_time = datetime.fromisoformat(trade_time)
 
             elapsed = now - trade_time
 
-            if elapsed <= timedelta(minutes=threshold_minutes):
-                logging.info(f"Last execution was {elapsed}. Entry not allowed.")
-                return False
+            if elapsed > timedelta(minutes=threshold_minutes):
+                logging.info(f"Last execution was {elapsed}. Entry allowed.")
+                return True, elapsed
 
-            logging.info(f"Last execution was {elapsed}. Entry allowed.")
-            return True
+            logging.info(f"Last execution was {elapsed}. Entry not allowed.")
+            return False, elapsed
 
         except Exception as e:
             logging.exception("Error in is_entry_allowed")
-            return False
+            return False, None
 
     async def process_entry_request(self, payload: EntryRequest)-> EntryRequestResponse:
         """
@@ -716,16 +784,22 @@ class PortfolioService:
 
 
         try:
+
+
             # --- Fetch executed trades only for this symbol ---
             executed_trades = await self.get_trades_by_symbol(symbol)
+            all_trades = await self.get_trades()
 
+            today_pnl = self._calculate_pnl(all_trades)
+            print(f"Today's PnL:{today_pnl}")
             # --- Check if entry is allowed ---
-            validation = await self.is_entry_allowed(executed_trades)
+            allowed, elapsed = await self.is_entry_allowed(executed_trades)
 
-            if validation == False:
+            if not allowed:
+                elapsed_str = str(elapsed).split(".")[0] if elapsed else "unknown"
                 return EntryRequestResponse(
                     allowed=False,
-                    message="Less than threshold limit passed from last execution",
+                    message=f"Too soon to re-enter. Your last execution was just {elapsed_str} ago.",
                     symbol=symbol,
                 )
 
