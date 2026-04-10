@@ -78,7 +78,7 @@ const PendingOrdersTable = () => {
       } = await res.json();
 
       setApiMessage(
-        `Symbol: ${data.symbol}, Allowed: ${data.allowed}, Message: ${data.message}, ParentOrderId: ${data.parentOrderId}, StopOrderId: ${data.stopOrderId}`
+        `Symbol: ${data.symbol}, Allowed: ${data.allowed}, Message: ${data.message}`
       );
       setApiMessageAllowed(data.allowed);
 
@@ -94,7 +94,7 @@ const PendingOrdersTable = () => {
     setTimeout(() => {
       setApiMessage(null);
       setApiMessageAllowed(null);
-    }, 7000);
+    }, 10000);
   };
 
   const handleDelete = async (order: PendingOrder) => {

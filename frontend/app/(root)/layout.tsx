@@ -43,8 +43,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       }
     };
 
-    eventSource.onerror = (err) => {
-      console.error("SSE connection error:", err);
+    eventSource.onerror = () => {
+      // Browser auto-reconnects — only log if permanently closed
+      if (eventSource.readyState === EventSource.CLOSED) {
+        setError("SSE stream closed unexpectedly.");
+      }
     };
 
     return () => {

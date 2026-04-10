@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     # --- Strategy parameters ---
     RISK: int  # Default risk per trade in dollars
     MAX_ENTRY_FREQUENCY_MINUTES: int
+    MAX_DAILY_LOSS: int
 
     # --- Exit triggers ---
     EXIT_TRIGGERS: set[str]

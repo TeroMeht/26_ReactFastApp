@@ -1,4 +1,5 @@
 import asyncio
+from blinker import signal
 from ib_async import IB,Stock,LimitOrder, StopOrder,MarketOrder,CFD
 import pytz
 import logging
@@ -10,7 +11,9 @@ from core.config import settings
 from schemas.api_schemas import AddRequest, EntryRequest,EntryRequestResponse,AddRequestResponse,ExitRequest, ExitRequestResponseIB, ModifyOrderRequest, ModifyOrderByIdRequest, OpenPosition
 from typing import Optional,List
 import math
-from collections import defaultdict
+import os
+import platform
+import subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -104,47 +107,52 @@ class PortfolioService:
     async def get_trades(self) -> list[dict]:
         """
         Fetch all executed trades (completed fills) asynchronously from IB.
+        Uses event-driven reqExecutions to ensure all data is populated before processing.
         Converts execution time to Helsinki timezone and returns a list of dicts.
         """
         try:
             helsinki_tz = pytz.timezone("Europe/Helsinki")
 
-            # Async fetch all trades
-            trades = self.ib.trades()
-            await asyncio.sleep(1)  # small delay to ensure all data is populated
+            # Request fresh executions and wait for IB to signal completion
+            # reqExecutions triggers execDetailsEnd event when all data is delivered
+            trades = await asyncio.wait_for(
+                self.ib.reqExecutionsAsync(),
+                timeout=10.0
+            )
 
             executed = []
 
-            for t in trades:
-                if not t.fills:
+            for fill in trades:
+                # reqExecutionsAsync returns Fill objects directly
+                if not fill.execution:
                     continue
 
-                for fill in t.fills:
-                    if not fill.execution:
-                        continue
+                time_utc = fill.execution.time
+                time_helsinki = time_utc.astimezone(helsinki_tz)
 
-                    # Convert IB timestamp (UTC) → Helsinki
-                    time_utc = fill.execution.time  # datetime in UTC
-                    time_helsinki = time_utc.astimezone(helsinki_tz)
+                # Resolve commission — may be None if report hasn't arrived yet
+                commission = None
+                if fill.commissionReport:
+                    commission = fill.commissionReport.commission
 
-                    executed.append({
-                        "tradeid": t.order.permId if t.order else None,
-                        "symbol": t.contract.symbol if t.contract else None,
-                        "sectype": t.contract.secType if t.contract else None,
-                        "action": fill.execution.side if fill.execution else None,
-                        "quantity": fill.execution.shares if fill.execution else None,
-                        "price": fill.execution.price if fill.execution else None,
-                        "time": time_helsinki.isoformat(),
-                        "exchange": fill.execution.exchange if fill.execution else None,
-                        "commission": (
-                            fill.commissionReport.commission
-                            if fill.commissionReport else None
-                        ),
-                    })
+                executed.append({
+                    "tradeid":    fill.execution.permId,
+                    "symbol":     fill.contract.symbol    if fill.contract   else None,
+                    "sectype":    fill.contract.secType   if fill.contract   else None,
+                    "action":     fill.execution.side,
+                    "quantity":   fill.execution.shares,
+                    "price":      fill.execution.price,
+                    "time":       time_helsinki.isoformat(),
+                    "exchange":   fill.execution.exchange,
+                    "commission": commission,
+                })
 
             logging.debug(f"Fetched executed trades: {executed}")
             return executed
 
+        except asyncio.TimeoutError:
+            logging.error("Timeout waiting for executions from IB (>10s)")
+            return []
         except Exception as e:
             logging.error(f"Error fetching executed trades: {e}")
             return []
@@ -288,6 +296,114 @@ class PortfolioService:
         except Exception as e:
             logging.error(f"Error fetching latest executed trade for {symbol}: {e}")
             return None
+
+
+    async def get_realized_pnl_today(self) -> dict:
+        """
+        Calculate total realized PnL for today across all symbols.
+        """
+        try:
+            from datetime import date
+            from collections import defaultdict
+
+            trades = await self.get_trades()
+            today = date.today()
+
+            today_trades = [
+                t for t in trades
+                if t["time"] and date.fromisoformat(t["time"][:10]) == today
+            ]
+
+            if not today_trades:
+                return {"realized_pnl": 0.0, "total_commission": 0.0, "net_pnl": 0.0, "fills": 0}
+
+            fills_by_symbol = defaultdict(list)
+            for fill in today_trades:
+                fills_by_symbol[fill["symbol"]].append(fill)
+
+            total_realized = 0.0
+            total_commission = 0.0
+          #  log_lines = ["", "─" * 60, f"  PnL BREAKDOWN — {today}", "─" * 60]
+
+            for symbol, fills in fills_by_symbol.items():
+                fills.sort(key=lambda x: x["time"])
+                buy_queue: list[tuple[float, float]] = []
+                symbol_realized = 0.0
+                symbol_commission = 0.0
+                # log_lines.append(f"\n  {symbol}")
+                # log_lines.append(f"  {'Time':<10} {'Action':<6} {'Qty':>6} {'Price':>8}  {'Matched':>6} {'Fill PnL':>10}")
+                # log_lines.append(f"  {'─'*10} {'─'*6} {'─'*6} {'─'*8}  {'─'*6} {'─'*10}")
+
+                for fill in fills:
+                    qty        = float(fill["quantity"]   or 0)
+                    price      = float(fill["price"]      or 0)
+                    commission = float(fill["commission"] or 0)
+                    action     = (fill["action"] or "").upper()
+                    time_str   = fill["time"][11:16]  # HH:MM
+
+                    symbol_commission += commission
+
+                    if action in ("BUY", "BOT"):
+                        buy_queue.append((qty, price))
+                        # log_lines.append(
+                        #     f"  {time_str:<10} {'BOT':<6} {qty:>6.0f} {price:>8.4f}  {'—':>6} {'—':>10}"
+                        # )
+
+                    elif action in ("SELL", "SLD"):
+                        remaining = qty
+                        fill_pnl = 0.0
+
+                        while remaining > 0 and buy_queue:
+                            buy_qty, buy_price = buy_queue[0]
+                            matched = min(remaining, buy_qty)
+                            leg_pnl = matched * (price - buy_price)
+                            fill_pnl += leg_pnl
+                            symbol_realized += leg_pnl
+                            remaining -= matched
+                            if matched == buy_qty:
+                                buy_queue.pop(0)
+                            else:
+                                buy_queue[0] = (buy_qty - matched, buy_price)
+
+                        # log_lines.append(
+                        #     f"  {time_str:<10} {'SLD':<6} {qty:>6.0f} {price:>8.4f}  "
+                        #     f"{qty - remaining:>6.0f} {fill_pnl:>+10.4f}"
+                        # )
+
+                symbol_net = symbol_realized - symbol_commission
+                total_realized += symbol_realized
+                total_commission += symbol_commission
+
+                # log_lines.append(f"  {'─'*52}")
+                # log_lines.append(f"  {'Gross PnL:':>36} {symbol_realized:>+10.4f}")
+                # log_lines.append(f"  {'Commission:':>36} {-symbol_commission:>+10.4f}")
+                # log_lines.append(f"  {'Net PnL:':>36} {symbol_net:>+10.4f}")
+                if buy_queue:
+                    open_qty = sum(q for q, _ in buy_queue)
+            #         log_lines.append(f"  {'Open lots (unrealized):':>36} {open_qty:>10.0f} shares")
+
+            # log_lines += [
+            #     "",
+            #     "─" * 60,
+            #     f"  {'TOTAL GROSS PnL:':>36} {total_realized:>+10.4f}",
+            #     f"  {'TOTAL COMMISSION:':>36} {-total_commission:>+10.4f}",
+            #     f"  {'TOTAL NET PnL:':>36} {(total_realized - total_commission):>+10.4f}",
+            #     f"  {'FILLS:':>36} {len(today_trades):>10}",
+            #     "─" * 60,
+            # ]
+
+           # logging.info("\n".join(log_lines))
+
+            return {
+                "realized_pnl":     round(total_realized, 4),
+                "total_commission": round(total_commission, 4),
+                "net_pnl":          round(total_realized - total_commission, 4),
+                "fills":            len(today_trades),
+            }
+
+        except Exception as e:
+            logging.error(f"Error calculating today's realized PnL: {e}")
+            return {"realized_pnl": 0.0, "total_commission": 0.0, "net_pnl": 0.0, "fills": 0}
 
 
 
@@ -616,69 +732,46 @@ class PortfolioService:
             return False
 
 
-    def _calculate_pnl(self, trades: list[dict]) -> dict:
-            """
-            Calculate overall realized PnL from a list of fragmented trade executions.
-            Groups fragments by tradeid, aggregates cost/proceeds, then matches
-            BOT orders against SLD orders using FIFO to compute realized PnL.
-            """
+# Portfolio level risk limit monitoring
 
-            # Step 1: Aggregate fragments into complete orders by tradeid
-            orders = defaultdict(lambda: {"action": None, "total_quantity": 0, "total_cost": 0.0, "commission": 0.0, "symbol": None})
+    async def check_daily_loss_limit(self) -> tuple[bool, str]:
+        """
+        Check if daily loss limit has been exceeded.
+        If exceeded, logs the breakdown, force closes TWS, and shuts down the program.
+        Returns (allowed: bool, message: str).
+        """
+        daily_pnl = await self.get_realized_pnl_today()
+        net_pnl = daily_pnl["net_pnl"]
+        limit = -settings.MAX_DAILY_LOSS
 
-            for trade in trades:
-                tid = trade["tradeid"]
-                orders[tid]["action"] = trade["action"]
-                orders[tid]["symbol"] = trade["symbol"]
-                orders[tid]["total_quantity"] += trade["quantity"]
-                orders[tid]["total_cost"] += trade["quantity"] * trade["price"]
-                orders[tid]["commission"] += trade["commission"]
+        if net_pnl < limit:
+            message = (
+                f"Daily loss limit exceeded (net PnL: {net_pnl:.2f}, limit: {limit:.2f}). "
+                f"TWS has been shut down. No new entries allowed today."
+            )
+            logger.warning(
+                f"Daily loss limit exceeded — net PnL: {net_pnl:.4f}, limit: {limit:.4f}. "
+                f"Forcing TWS shutdown."
+            )
 
-            # Step 2: Separate into buys and sells, compute avg price per order
-            buys = []
-            sells = []
+            # 1. Disconnect IB API cleanly first
+            try:
+                self.ib.disconnect()
+                logger.warning("IB API disconnected.")
+            except Exception as e:
+                logger.error(f"Failed to disconnect IB API: {e}")
 
-            for tid, order in orders.items():
-                avg_price = order["total_cost"] / order["total_quantity"]
-                entry = {
-                    "tradeid": tid,
-                    "symbol": order["symbol"],
-                    "quantity": order["total_quantity"],
-                    "avg_price": avg_price,
-                    "commission": order["commission"],
-                }
-                if order["action"] == "BOT":
-                    buys.append(entry)
-                elif order["action"] == "SLD":
-                    sells.append(entry)
+            # 2. Force kill TWS process
+            try:
+                subprocess.call(["taskkill", "/F", "/IM", "tws.exe"])
+                logger.warning("TWS process killed.")
+            except Exception as e:
+                logger.error(f"Failed to kill TWS process: {e}")
 
-            # Step 3: FIFO matching of buys vs sells
-            buy_queue = list(buys)
-            total_pnl = 0.0
-            total_commission = sum(o["commission"] for o in orders.values())
+            return False, message
 
-            for sell in sells:
-                remaining_sell_qty = sell["quantity"]
-
-                while remaining_sell_qty > 0 and buy_queue:
-                    buy = buy_queue[0]
-                    matched_qty = min(remaining_sell_qty, buy["quantity"])
-                    total_pnl += matched_qty * (sell["avg_price"] - buy["avg_price"])
-                    buy["quantity"] -= matched_qty
-                    remaining_sell_qty -= matched_qty
-
-                    if buy["quantity"] == 0:
-                        buy_queue.pop(0)
-
-            net_pnl = total_pnl - total_commission
-
-            return {
-                "total_executions": len(orders),
-                "gross_pnl": round(total_pnl, 4),
-                "total_commission": round(total_commission, 4),
-                "net_pnl": round(net_pnl, 4),
-            }
-
+        logger.info(f"Daily loss check passed — net PnL: {net_pnl:.4f}, limit: {limit:.4f}")
+        return True, ""
 
 
 
@@ -782,16 +875,15 @@ class PortfolioService:
         symbol = payload.symbol
         stop_price = payload.stop_price
 
-
         try:
-
+            # --- Check daily loss limit ---
+            allowed, message = await self.check_daily_loss_limit()
+            if not allowed:
+                return EntryRequestResponse(allowed=allowed, message=message, symbol=symbol)
 
             # --- Fetch executed trades only for this symbol ---
             executed_trades = await self.get_trades_by_symbol(symbol)
-            all_trades = await self.get_trades()
 
-            today_pnl = self._calculate_pnl(all_trades)
-            print(f"Today's PnL:{today_pnl}")
             # --- Check if entry is allowed ---
             allowed, elapsed = await self.is_entry_allowed(executed_trades)
 
@@ -860,7 +952,7 @@ class PortfolioService:
         total_risk = payload.total_risk
 
         try:
-            
+
             # 2 Get existing position quantity
             position = await self.get_position_by_symbol(symbol)
             # Get existing stp order
