@@ -909,6 +909,17 @@ class PortfolioService:
         now = datetime.now(helsinki_tz)
 
         try:
+
+            # --- Check 3: Blocked time window (16:30–16:50 Helsinki time) ---
+            block_start = now.replace(hour=16, minute=30, second=0, microsecond=0).time()
+            block_end = now.replace(hour=16, minute=50, second=0, microsecond=0).time()
+
+            if block_start <= now.time() <= block_end:
+                message = f"Entry blocked during 16:30–16:50 window (current time: {now.strftime('%H:%M')})."
+                logging.info(message)
+                return False, message
+
+
             # --- Check 1: Loss cooldown ---
             trades = await self.get_trades_with_pnl()
             last_loss = next((t for t in reversed(trades) if t["is_loss"]), None)
@@ -947,6 +958,7 @@ class PortfolioService:
             message = f"Too soon to re-enter. Last execution was {elapsed_str} ago."
             logging.info(message)
             return False,  message
+        
 
         except Exception as e:
             logging.exception("Error in is_entry_allowed")
