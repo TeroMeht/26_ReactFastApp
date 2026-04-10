@@ -915,7 +915,7 @@ class PortfolioService:
             block_end = now.replace(hour=16, minute=50, second=0, microsecond=0).time()
 
             if block_start <= now.time() <= block_end:
-                message = f"Entry blocked during 16:30–16:50 window (current time: {now.strftime('%H:%M')})."
+                message = f"Entry blocked during {block_start}–{block_end} window (current time: {now.strftime('%H:%M')})."
                 logging.info(message)
                 return False, message
 
