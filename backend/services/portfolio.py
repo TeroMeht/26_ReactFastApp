@@ -11,9 +11,9 @@ from core.config import settings
 from schemas.api_schemas import AddRequest, EntryRequest,EntryRequestResponse,AddRequestResponse,ExitRequest, ExitRequestResponseIB, ModifyOrderRequest, ModifyOrderByIdRequest, OpenPosition
 from typing import Optional,List
 import math
-import os
-import platform
 import subprocess
+from datetime import date
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
@@ -263,25 +263,22 @@ class PortfolioService:
             logging.error(f"Error fetching position for {symbol}: {e}")
             return None
 
-    async def get_trades_by_symbol(self, symbol: str) -> list[dict]:
-        """
-        Fetch executed trades for a specific symbol.
-        Reuses get_trades() to avoid extra IB calls.
-        """
+    async def get_trades_by_symbol(self, symbol: str) -> dict | None:
         try:
-            # 1️⃣ Fetch all executed trades
             trades = await self.get_trades()
             if not trades:
-                logging.info(f"No executed trades found at all for {symbol}")
-                return []
+                logging.debug(f"No executed trades found at all for {symbol}")
+                return None
 
-            # 2️⃣ Filter trades by symbol (case-insensitive)
             symbol_trades = [
                 t for t in trades
                 if t.get("symbol") and t["symbol"].upper() == symbol.upper()
             ]
 
-            # --- Find the latest trade ---
+            if not symbol_trades:
+                logging.debug(f"No executed trades found for {symbol}")
+                return None
+
             def parse_time(trade):
                 trade_time = trade.get("time")
                 if isinstance(trade_time, str):
@@ -289,8 +286,7 @@ class PortfolioService:
                 return trade_time
 
             latest_trade = max(symbol_trades, key=parse_time)
-
-            logging.info(f"Latest executed trade for {symbol}: {latest_trade}")
+            logging.debug(f"Latest executed trade for {symbol}: {latest_trade}")
             return latest_trade
 
         except Exception as e:
@@ -303,8 +299,7 @@ class PortfolioService:
         Calculate total realized PnL for today across all symbols.
         """
         try:
-            from datetime import date
-            from collections import defaultdict
+
 
             trades = await self.get_trades()
             today = date.today()
@@ -405,7 +400,84 @@ class PortfolioService:
             logging.error(f"Error calculating today's realized PnL: {e}")
             return {"realized_pnl": 0.0, "total_commission": 0.0, "net_pnl": 0.0, "fills": 0}
 
+    async def get_trades_with_pnl(self) -> list[dict]:
+        """
+        Returns a list of completed trades (round-trips) with PnL, sorted by time.
+        Each dict represents one closed trade (BOT + matched SLD).
+        """
+        try:
+            trades = await self.get_trades()
+            today = date.today()
 
+            today_trades = [
+                t for t in trades
+                if t["time"] and date.fromisoformat(t["time"][:10]) == today
+            ]
+
+            if not today_trades:
+                return []
+
+            fills_by_symbol = defaultdict(list)
+            for fill in today_trades:
+                fills_by_symbol[fill["symbol"]].append(fill)
+
+            completed_trades = []
+
+            for symbol, fills in fills_by_symbol.items():
+                fills.sort(key=lambda x: x["time"])
+                buy_queue: list[tuple[float, float, str]] = []  # (qty, price, time)
+
+                for fill in fills:
+                    qty        = float(fill["quantity"]   or 0)
+                    price      = float(fill["price"]      or 0)
+                    commission = float(fill["commission"] or 0)
+                    action     = (fill["action"] or "").upper()
+                    time_str   = fill["time"]
+
+                    if action in ("BUY", "BOT"):
+                        buy_queue.append((qty, price, time_str, commission))
+
+                    elif action in ("SELL", "SLD"):
+                        remaining = qty
+                        sell_commission = commission
+
+                        while remaining > 0 and buy_queue:
+                            buy_qty, buy_price, buy_time, buy_commission = buy_queue[0]
+                            matched = min(remaining, buy_qty)
+                            gross_pnl = matched * (price - buy_price)
+
+                            # Prorate commission based on matched qty
+                            prorated_buy_commission = buy_commission * (matched / buy_qty)
+                            prorated_sell_commission = sell_commission * (matched / qty)
+                            total_commission = prorated_buy_commission + prorated_sell_commission
+                            net_pnl = gross_pnl - total_commission
+
+                            completed_trades.append({
+                                "symbol":           symbol,
+                                "entry_time":       buy_time,
+                                "exit_time":        time_str,
+                                "entry_price":      buy_price,
+                                "exit_price":       price,
+                                "quantity":         matched,
+                                "gross_pnl":        round(gross_pnl, 4),
+                                "commission":       round(total_commission, 4),
+                                "net_pnl":          round(net_pnl, 4),
+                                "is_loss":          net_pnl < 0,
+                            })
+
+                            remaining -= matched
+                            if matched == buy_qty:
+                                buy_queue.pop(0)
+                            else:
+                                buy_queue[0] = (buy_qty - matched, buy_price, buy_time, buy_commission - prorated_buy_commission)
+
+            # Sort all completed trades by exit time
+            completed_trades.sort(key=lambda x: x["exit_time"])
+            return completed_trades
+
+        except Exception as e:
+            logging.error(f"Error calculating trade-by-trade PnL: {e}")
+            return []
 
 # Actions towards IB client: placing orders, modifying orders, and validation logic for entries and adds.
     async def place_bracket_order(self, order: Order):
@@ -773,7 +845,7 @@ class PortfolioService:
         logger.info(f"Daily loss check passed — net PnL: {net_pnl:.4f}, limit: {limit:.4f}")
         return True, ""
 
-
+ 
 
 
 
@@ -831,42 +903,61 @@ class PortfolioService:
                 "message": str(e)
             }
         
-    async def is_entry_allowed(self, latest_trade: dict | None) -> tuple[bool, timedelta | None]:
-        """
-        Returns (is_allowed, elapsed) where elapsed is the time since the last trade,
-        or None if there is no previous trade. Times are checked in Helsinki timezone.
-        """
+    async def is_entry_allowed(self, latest_trade: dict | None) -> tuple[bool, str]:
         threshold_minutes = settings.MAX_ENTRY_FREQUENCY_MINUTES
         helsinki_tz = pytz.timezone("Europe/Helsinki")
         now = datetime.now(helsinki_tz)
 
         try:
+            # --- Check 1: Loss cooldown ---
+            trades = await self.get_trades_with_pnl()
+            last_loss = next((t for t in reversed(trades) if t["is_loss"]), None)
+
+            if last_loss:
+                loss_exit_time = last_loss["exit_time"]
+                if isinstance(loss_exit_time, str):
+                    loss_exit_time = datetime.fromisoformat(loss_exit_time)
+                if loss_exit_time.tzinfo is None:
+                    loss_exit_time = helsinki_tz.localize(loss_exit_time)
+
+                elapsed_since_loss = now - loss_exit_time
+
+                if elapsed_since_loss <= timedelta(minutes=threshold_minutes):
+                    elapsed_str = str(elapsed_since_loss).split(".")[0]
+                    message = f"Loss cooldown active. Last loss was {elapsed_str} ago (PnL: {last_loss['net_pnl']})."
+                    logging.info(message)
+                    return False, message
+
+            # --- Check 2: Entry frequency ---
             if not latest_trade:
                 logging.info("No executions found. Entry allowed.")
-                return True, None
+                return True,  ""
 
             trade_time = latest_trade["time"]
-
             if isinstance(trade_time, str):
                 trade_time = datetime.fromisoformat(trade_time)
 
             elapsed = now - trade_time
+            elapsed_str = str(elapsed).split(".")[0]
 
             if elapsed > timedelta(minutes=threshold_minutes):
                 logging.info(f"Last execution was {elapsed}. Entry allowed.")
-                return True, elapsed
+                return True,  ""
 
-            logging.info(f"Last execution was {elapsed}. Entry not allowed.")
-            return False, elapsed
+            message = f"Too soon to re-enter. Last execution was {elapsed_str} ago."
+            logging.info(message)
+            return False,  message
 
         except Exception as e:
             logging.exception("Error in is_entry_allowed")
-            return False, None
-
+            return False, "Internal error in entry validation."
+    
     async def process_entry_request(self, payload: EntryRequest)-> EntryRequestResponse:
         """
         Process an entry request:
+        - Check if daily loss limit has been exceeded
         - Check if a new entry is allowed based on past executed trades
+        - Check if break is needed because of loss
         - Fetch current ask price
         - Calculate position size
         - Build order with correct size and price
@@ -885,13 +976,12 @@ class PortfolioService:
             executed_trades = await self.get_trades_by_symbol(symbol)
 
             # --- Check if entry is allowed ---
-            allowed, elapsed = await self.is_entry_allowed(executed_trades)
+            allowed, message = await self.is_entry_allowed(executed_trades)
 
             if not allowed:
-                elapsed_str = str(elapsed).split(".")[0] if elapsed else "unknown"
                 return EntryRequestResponse(
                     allowed=False,
-                    message=f"Too soon to re-enter. Your last execution was just {elapsed_str} ago.",
+                    message=message,
                     symbol=symbol,
                 )
 
@@ -1044,75 +1134,6 @@ class PortfolioService:
                 symbol=symbol,
             )
 
-
-
-    async def process_openrisktable(self) -> List[OpenPosition]:
-
-        # Fetch everything concurrently (faster)
-        positions, account_summary = await asyncio.gather(
-            self.get_positions(),
-            self.get_account_summary()
-        )
-
-        if not positions:
-            return []
-
-        netliq = float(account_summary.get("NetLiquidation", 0))
-
-        portfolio_positions: List[OpenPosition] = []
-
-        for pos in positions:
-            try:
-
-                symbol = pos.get("symbol")
-                contract_type = pos.get("sectype")
-                position = float(pos.get("position", 0))
-                avgcost = float(pos.get("avgcost", 0))
-                
-                size = round(abs(position * avgcost), 2)
-                allocation = (
-                    round((size / netliq) * 100, 2)
-                    if netliq > 0
-                    else None
-                )
-
-                # Find STOP order for this symbol
-                stop_order = await self.get_stp_order_by_symbol(symbol)
-
-                # Find exit status from db
-                exit_row = await fetch_exit_by_symbol(self.db_conn, symbol)
-                exit_requested = exit_row["exitrequested"] if exit_row else 0
-
-                if stop_order and stop_order.get("auxprice") is not None:
-                    aux_price = float(stop_order.get("auxprice"))
-                    open_risk = round(abs(position * (aux_price - avgcost)), 2)
-                else:
-                    aux_price = 0.0
-                    open_risk = 999_999_999  # no stop = unlimited risk
-
-                portfolio_positions.append(
-                    OpenPosition(
-                        exit_request=exit_requested,
-                        symbol=symbol,
-                        contract_type=contract_type,
-                        allocation=allocation,
-                        size=size,
-                        avgcost=avgcost,
-                        auxprice=aux_price,
-                        position=position,
-                        openrisk=open_risk
-                    )
-                )
-
-            except Exception as e:
-                logger.error("Error processing %s: %s", pos.get("symbol"), e)
-                continue
-        logger.info(portfolio_positions)
-
-        return portfolio_positions
-
-
-
     async def process_exit_request(self, payload: ExitRequest) -> ExitRequestResponseIB:
         logger.info("Received exit request | symbol = %s alarm = %s | time = %s", payload.symbol, payload.alarm, payload.time)
 
@@ -1203,3 +1224,73 @@ class PortfolioService:
                 symbol=payload.symbol,
                 message=f"Unhandled exit request state: {payload.alarm}"
             )
+
+
+
+    async def process_openrisktable(self) -> List[OpenPosition]:
+
+        # Fetch everything concurrently (faster)
+        positions, account_summary = await asyncio.gather(
+            self.get_positions(),
+            self.get_account_summary()
+        )
+
+        if not positions:
+            return []
+
+        netliq = float(account_summary.get("NetLiquidation", 0))
+
+        portfolio_positions: List[OpenPosition] = []
+
+        for pos in positions:
+            try:
+
+                symbol = pos.get("symbol")
+                contract_type = pos.get("sectype")
+                position = float(pos.get("position", 0))
+                avgcost = float(pos.get("avgcost", 0))
+                
+                size = round(abs(position * avgcost), 2)
+                allocation = (
+                    round((size / netliq) * 100, 2)
+                    if netliq > 0
+                    else None
+                )
+
+                # Find STOP order for this symbol
+                stop_order = await self.get_stp_order_by_symbol(symbol)
+
+                # Find exit status from db
+                exit_row = await fetch_exit_by_symbol(self.db_conn, symbol)
+                exit_requested = exit_row["exitrequested"] if exit_row else 0
+
+                if stop_order and stop_order.get("auxprice") is not None:
+                    aux_price = float(stop_order.get("auxprice"))
+                    open_risk = round(abs(position * (aux_price - avgcost)), 2)
+                else:
+                    aux_price = 0.0
+                    open_risk = 999_999_999  # no stop = unlimited risk
+
+                portfolio_positions.append(
+                    OpenPosition(
+                        exit_request=exit_requested,
+                        symbol=symbol,
+                        contract_type=contract_type,
+                        allocation=allocation,
+                        size=size,
+                        avgcost=avgcost,
+                        auxprice=aux_price,
+                        position=position,
+                        openrisk=open_risk
+                    )
+                )
+
+            except Exception as e:
+                logger.error("Error processing %s: %s", pos.get("symbol"), e)
+                continue
+        logger.info(portfolio_positions)
+
+        return portfolio_positions
+
+
+

@@ -50,7 +50,7 @@ async def get_trades(ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
 async def get_pnl(ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
     try:
         service = PortfolioService(ib,db_conn)
-        return await service.get_realized_pnl_today()
+        return await service.get_trades_with_pnl()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
