@@ -195,6 +195,8 @@ class PortfolioService:
             return None
 
 
+
+
 # Helpers filtering functions and order placement logic
     async def get_stp_order_by_symbol(self, symbol: str) -> dict | None:
         """
@@ -905,14 +907,20 @@ class PortfolioService:
         
     async def is_entry_allowed(self, latest_trade: dict | None) -> tuple[bool, str]:
         threshold_minutes = settings.MAX_ENTRY_FREQUENCY_MINUTES
+
+        START_HOUR = settings.BLOCK_START_HOUR
+        START_MINUTE = settings.BLOCK_START_MINUTE
+        END_HOUR = settings.BLOCK_END_HOUR
+        END_MINUTE = settings.BLOCK_END_MINUTE
+
         helsinki_tz = pytz.timezone("Europe/Helsinki")
         now = datetime.now(helsinki_tz)
 
         try:
 
-            # --- Check 3: Blocked time window (16:30–16:50 Helsinki time) ---
-            block_start = now.replace(hour=16, minute=30, second=0, microsecond=0).time()
-            block_end = now.replace(hour=16, minute=50, second=0, microsecond=0).time()
+            # --- Check 3: Blocked time window (16:30–17:00 Helsinki time) ---
+            block_start = now.replace(hour=START_HOUR, minute=START_MINUTE).time()
+            block_end = now.replace(hour=END_HOUR, minute=END_MINUTE).time()
 
             if block_start <= now.time() <= block_end:
                 message = f"Entry blocked during {block_start}–{block_end} window (current time: {now.strftime('%H:%M')})."

@@ -31,6 +31,16 @@ class Settings(BaseSettings):
     # --- Strategy parameters ---
     RISK: int  # Default risk per trade in dollars
     MAX_ENTRY_FREQUENCY_MINUTES: int
+
+    # Block entry for time period
+
+    BLOCK_START_HOUR:int
+    BLOCK_START_MINUTE:int
+    BLOCK_END_HOUR:int
+    BLOCK_END_MINUTE:int
+
+
+    # Daily loss limit
     MAX_DAILY_LOSS: int
 
     # --- Exit triggers ---
