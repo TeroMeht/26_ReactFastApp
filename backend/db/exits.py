@@ -1,12 +1,13 @@
 from typing import List, Dict
 import asyncpg
 from datetime import datetime
+from decimal import Decimal
 
 
-async def fetch_exits(db_conn:asyncpg.Connection) -> List[Dict]:
+async def fetch_exits(db_conn: asyncpg.Connection) -> List[Dict]:
     rows = await db_conn.fetch(
         f"""
-        SELECT symbol, exitrequested, updated
+        SELECT symbol, exitrequested, trim_percentage, updated
         FROM exit_requests
         ORDER BY Symbol ASC
         """
@@ -17,7 +18,7 @@ async def fetch_exits(db_conn:asyncpg.Connection) -> List[Dict]:
 async def fetch_exit_by_symbol(db_conn: asyncpg.Connection, symbol: str) -> Dict | None:
     row = await db_conn.fetchrow(
         """
-        SELECT symbol, exitrequested, updated
+        SELECT symbol, exitrequested, trim_percentage, updated
         FROM exit_requests
         WHERE symbol = $1
         """,
@@ -34,23 +35,30 @@ async def clear_exit_requests(db_conn: asyncpg.Connection) -> None:
     await db_conn.execute("TRUNCATE TABLE exit_requests;")
 
 
-async def update_exit_request(db_conn:asyncpg.Connection, symbol: str, requested: bool) -> Dict:
+async def update_exit_request(
+    db_conn: asyncpg.Connection,
+    symbol: str,
+    requested: bool,
+    trim_percentage: float = 1.0,
+) -> Dict:
     """
-    Insert new row if not exists, else update Exitrequested and updated timestamp.
+    Insert new row if not exists, else update Exitrequested, trim_percentage and updated timestamp.
     """
     now = datetime.utcnow()
     row = await db_conn.fetchrow(
         f"""
-        INSERT INTO exit_requests (Symbol, Exitrequested, updated)
-        VALUES ($1, $2, $3)
+        INSERT INTO exit_requests (Symbol, Exitrequested, trim_percentage, updated)
+        VALUES ($1, $2, $3, $4)
         ON CONFLICT (Symbol) DO UPDATE
         SET Exitrequested = EXCLUDED.Exitrequested,
+            trim_percentage = EXCLUDED.trim_percentage,
             updated = EXCLUDED.updated
-        RETURNING Symbol, Exitrequested, updated;
+        RETURNING Symbol, Exitrequested, trim_percentage, updated;
         """,
         symbol.upper(),
         requested,
-        now
+        Decimal(str(trim_percentage)),
+        now,
     )
     return dict(row)
 
@@ -63,7 +71,7 @@ async def delete_exit_request(db_conn: asyncpg.Connection, symbol: str) -> Dict 
         """
         DELETE FROM exit_requests
         WHERE symbol = $1
-        RETURNING symbol, exitrequested, updated;
+        RETURNING symbol, exitrequested, trim_percentage, updated;
         """,
         symbol.upper()
     )

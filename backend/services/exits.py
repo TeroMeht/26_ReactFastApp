@@ -25,9 +25,16 @@ async def get_exit_by_symbol(db_conn, symbol: str) -> ExitRequestResponse | None
     return ExitRequestResponse(**exit_request)
 
 
-async def update_exit_requests(db_conn, symbol: str, requested: bool)-> Dict:
+async def update_exit_requests(
+    db_conn,
+    symbol: str,
+    requested: bool,
+    trim_percentage: float = 1.0,
+) -> Dict:
 
-    exit_row = await update_exit_request(db_conn,symbol, requested)
+    exit_row = await update_exit_request(
+        db_conn, symbol, requested, trim_percentage=trim_percentage
+    )
     return {
         "status": "success",
         **exit_row

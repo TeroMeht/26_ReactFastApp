@@ -1168,9 +1168,28 @@ class PortfolioService:
                 message=f"No exit requested for: {payload.symbol}."
             )
 
-
         elif alarm in settings.EXIT_TRIGGERS:
             logger.info("Valid euforia_exit detected and exitrequested=True | symbol=%s", payload.symbol)
+
+            # Resolve trim_percentage (default full exit)
+            trim_percentage = exit_request.get("trim_percentage")
+            try:
+                trim_percentage = float(trim_percentage) if trim_percentage is not None else 1.0
+            except (TypeError, ValueError):
+                trim_percentage = 1.0
+
+            if trim_percentage <= 0 or trim_percentage > 1:
+                logger.warning(
+                    "Invalid trim_percentage=%s for %s, defaulting to 1.0",
+                    trim_percentage, payload.symbol
+                )
+                trim_percentage = 1.0
+
+            is_partial = trim_percentage < 1.0
+            logger.info(
+                "Exit request | symbol=%s trim_percentage=%s partial=%s",
+                payload.symbol, trim_percentage, is_partial
+            )
 
             # Check position
             position = await self.get_position_by_symbol(payload.symbol)
@@ -1198,6 +1217,24 @@ class PortfolioService:
                     message=f"Position size is zero for {payload.symbol}."
                 )
 
+            # Compute exit qty based on trim_percentage
+            total_abs = abs(int(shares))
+            exit_qty = int(round(total_abs * trim_percentage))
+
+            # Floor to 1 when partial exit would round down to 0 but position exists
+            if is_partial and exit_qty <= 0:
+                exit_qty = 1
+
+            # Cap so we never try to exit more than we hold
+            if exit_qty > total_abs:
+                exit_qty = total_abs
+
+            remaining_qty = total_abs - exit_qty
+            logger.info(
+                "Exit qty calculated | symbol=%s total=%s exit_qty=%s remaining=%s",
+                payload.symbol, total_abs, exit_qty, remaining_qty
+            )
+
             # Check for existing market order
             existing_mkt_order = await self.get_mkt_order_by_symbol(payload.symbol)
             if existing_mkt_order:
@@ -1214,29 +1251,86 @@ class PortfolioService:
                     # order_id=existing_mkt_order.order.orderId
                 )
 
-            # Place market order
+            # Place market order for the (partial or full) exit qty
             order = Order(
                 symbol=payload.symbol,
-                contract_type = position["sectype"],
+                contract_type=position["sectype"],
                 action=action,
-                position_size=abs(int(shares))
+                position_size=exit_qty,
             )
-            stp_to_delete= await self.get_stp_order_by_symbol(payload.symbol)
-            logger.info(f"Order to be cancelled: {stp_to_delete}")
+
+            existing_stp_order = await self.get_stp_order_by_symbol(payload.symbol)
+            logger.info(f"Existing STP order: {existing_stp_order}")
 
             await self.place_market_order(order)
             await asyncio.sleep(1)
-            if stp_to_delete and 'orderid' in stp_to_delete:
-                order_id = stp_to_delete['orderid']
-                await self.cancel_order_by_id(order_id)
-            else:
-                logger.info("No stop order found to cancel")
-            await delete_exit_request(self.db_conn,payload.symbol)
 
-            return ExitRequestResponseIB(
-                symbol=payload.symbol,
-                message=f"Market order placed to {action} {abs(shares)} shares of {payload.symbol}."
-            )
+            if is_partial:
+                # Partial exit: resize the existing STP to match the remaining
+                # position size and move the stop price to avg cost (breakeven).
+                stop_moved_to = None
+                if existing_stp_order and 'orderid' in existing_stp_order and remaining_qty > 0:
+                    stp_order_id = existing_stp_order['orderid']
+                    logger.info(
+                        "Modifying STP order qty | symbol=%s order_id=%s new_qty=%s",
+                        payload.symbol, stp_order_id, remaining_qty
+                    )
+                    await self.modify_stp_order_by_id(stp_order_id, remaining_qty)
+
+                    # Move stop to avg cost after the qty has been updated.
+                    avgcost = position.get("avgcost")
+                    if avgcost is not None:
+                        new_stop = round(float(avgcost), 2)
+                        logger.info(
+                            "Moving STP to avg cost | symbol=%s order_id=%s new_stop=%s",
+                            payload.symbol, stp_order_id, new_stop,
+                        )
+                        await self.move_stp_auxprice_to_avgcost(
+                            order_id=stp_order_id,
+                            new_auxprice=new_stop,
+                        )
+                        stop_moved_to = new_stop
+                    else:
+                        logger.warning(
+                            "avgcost missing on position, skipping stop move | symbol=%s",
+                            payload.symbol,
+                        )
+                elif existing_stp_order and 'orderid' in existing_stp_order and remaining_qty == 0:
+                    # Shouldn't really happen with is_partial but be safe
+                    await self.cancel_order_by_id(existing_stp_order['orderid'])
+                else:
+                    logger.info("No stop order found to modify for partial exit")
+
+                # Keep the exit_request row around (do not delete) so user can trigger
+                # another trim later. Caller/UI can toggle it off if desired.
+                msg = (
+                    f"Partial exit: {action} {exit_qty} / {total_abs} shares of "
+                    f"{payload.symbol} at {trim_percentage*100:.0f}%. "
+                    f"Remaining position: {remaining_qty}."
+                )
+                if stop_moved_to is not None:
+                    msg += f" STP resized and moved to avg cost {stop_moved_to}."
+                else:
+                    msg += " STP resized."
+
+                return ExitRequestResponseIB(
+                    symbol=payload.symbol,
+                    message=msg,
+                )
+            else:
+                # Full exit: cancel the STP as before and clear exit request
+                if existing_stp_order and 'orderid' in existing_stp_order:
+                    order_id = existing_stp_order['orderid']
+                    await self.cancel_order_by_id(order_id)
+                else:
+                    logger.info("No stop order found to cancel")
+
+                await delete_exit_request(self.db_conn, payload.symbol)
+
+                return ExitRequestResponseIB(
+                    symbol=payload.symbol,
+                    message=f"Market order placed to {action} {exit_qty} shares of {payload.symbol}."
+                )
 
 
         else:

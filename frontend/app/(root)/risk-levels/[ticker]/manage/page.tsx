@@ -5,6 +5,13 @@ import { useSearchParams } from "next/navigation";
 import { OpenPosition } from "@/lib/types";
 import { API_PREFIX } from "@/lib/api_prefix";
 
+const TRIM_OPTIONS = [
+  { value: 0.25, label: "25% (trim)" },
+  { value: 0.5, label: "50% (trim)" },
+  { value: 0.75, label: "75% (trim)" },
+  { value: 1, label: "100% (full exit)" },
+];
+
 const ManagePage = () => {
   const params = useSearchParams();
   const dataParam = params.get("data");
@@ -14,6 +21,7 @@ const ManagePage = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [exitSwitchOn, setExitSwitchOn] = useState(false);
+  const [trimPercentage, setTrimPercentage] = useState<number>(1);
   const [updatingExit, setUpdatingExit] = useState(false);
 
   let position: OpenPosition | null = null;
@@ -35,16 +43,47 @@ const ManagePage = () => {
       try {
         const res = await fetch(`${API_PREFIX}/exits`);
         if (!res.ok) throw new Error("Failed to fetch exit state");
-        const data: { symbol: string; exitrequested: boolean; updated: string }[] =
-          await res.json();
+        const data: {
+          symbol: string;
+          exitrequested: boolean;
+          trim_percentage?: number | string;
+          updated: string;
+        }[] = await res.json();
         const match = data.find((item) => item.symbol === position!.symbol);
-        if (match) setExitSwitchOn(match.exitrequested);
+        if (match) {
+          setExitSwitchOn(match.exitrequested);
+          if (match.trim_percentage !== undefined && match.trim_percentage !== null) {
+            const parsed = Number(match.trim_percentage);
+            if (!Number.isNaN(parsed)) setTrimPercentage(parsed);
+          }
+        }
       } catch (err: any) {
         console.error("Error fetching exit state:", err);
       }
     };
     fetchExitState();
   }, [position]);
+
+  const persistExitRequest = async (
+    requested: boolean,
+    trim: number,
+  ) => {
+    if (!position) return;
+    const res = await fetch(`${API_PREFIX}/exits`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        symbol: position.symbol,
+        requested,
+        trim_percentage: trim,
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text);
+    }
+  };
 
   const handleAdd = async () => {
     if (!position) return;
@@ -86,25 +125,32 @@ const ManagePage = () => {
     const newValue = !exitSwitchOn;
     try {
       setUpdatingExit(true);
-      const res = await fetch(`${API_PREFIX}/exits`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          symbol: position.symbol,
-          requested: newValue,
-        }),
-      });
-
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text);
-      }
-
+      await persistExitRequest(newValue, trimPercentage);
       setExitSwitchOn(newValue);
     } catch (err: any) {
       setError(`Exit update failed: ${err.message || err}`);
     } finally {
       setUpdatingExit(false);
+    }
+  };
+
+  const handleTrimChange = async (
+    e: React.ChangeEvent<HTMLSelectElement>,
+  ) => {
+    const next = Number(e.target.value);
+    setTrimPercentage(next);
+
+    // If exit is already armed, update the row server-side right away so the
+    // backend process_exit_request sees the latest trim when an alarm fires.
+    if (exitSwitchOn) {
+      try {
+        setUpdatingExit(true);
+        await persistExitRequest(exitSwitchOn, next);
+      } catch (err: any) {
+        setError(`Trim update failed: ${err.message || err}`);
+      } finally {
+        setUpdatingExit(false);
+      }
     }
   };
 
@@ -134,6 +180,27 @@ const ManagePage = () => {
             />
           </button>
         </div>
+
+        {/* Trim Percentage Dropdown */}
+        <div className="flex items-center gap-2">
+          <label htmlFor="trim-percentage" className="font-bold">
+            Trim %:
+          </label>
+          <select
+            id="trim-percentage"
+            value={trimPercentage}
+            onChange={handleTrimChange}
+            disabled={updatingExit}
+            className="border rounded px-2 py-1"
+          >
+            {TRIM_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
         <p><strong>Contract:</strong> {position.contract_type}</p>
         <p><strong>Aux Price:</strong> {position.auxprice}</p>
         <p><strong>Avg Cost:</strong> {position.avgcost}</p>

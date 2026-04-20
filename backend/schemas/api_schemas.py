@@ -90,7 +90,10 @@ class ModifyOrderByIdRequest(BaseModel):
 
 
 
-     
+
+ALLOWED_TRIM_PERCENTAGES = {Decimal("0.25"), Decimal("0.5"), Decimal("0.75"), Decimal("1")}
+
+
 class UpdateExitRequest(BaseModel):
     symbol: str = Field(
         ...,
@@ -98,6 +101,10 @@ class UpdateExitRequest(BaseModel):
         description="Trading symbol (auto uppercased)"
     )
     requested: bool
+    trim_percentage: Decimal = Field(
+        default=Decimal("1"),
+        description="Fraction of the position to exit. Allowed: 0.25, 0.5, 0.75, 1 (1 = full exit)."
+    )
 
     @field_validator("symbol")
     @classmethod
@@ -108,6 +115,18 @@ class UpdateExitRequest(BaseModel):
             raise ValueError("Symbol cannot be empty")
 
         return v
+
+    @field_validator("trim_percentage")
+    @classmethod
+    def validate_trim_percentage(cls, v: Decimal) -> Decimal:
+        # Normalize values like 1.0 → 1, 0.50 → 0.5 for comparison
+        normalized = v.normalize() if v != 0 else v
+        allowed_normalized = {p.normalize() for p in ALLOWED_TRIM_PERCENTAGES}
+        if normalized not in allowed_normalized:
+            raise ValueError(
+                f"trim_percentage must be one of 0.25, 0.5, 0.75, or 1 (got {v})"
+            )
+        return v
     
 
 
@@ -116,6 +135,13 @@ class UpdateExitRequest(BaseModel):
 
 
 # Exits
+class ExitRequestResponse(BaseModel):
+    symbol: str
+    exitrequested:bool
+    trim_percentage:Decimal
+    updated: datetime
+
+
 
 # Watchlist streamer lähettää tällaisen sanoman POST endpointtiin, jossa tarkastetaan ensin että onko sille symbolille tilattu exit
 class ExitRequest(BaseModel):
@@ -124,31 +150,22 @@ class ExitRequest(BaseModel):
     alarm: str
     symbol: str
      
-
-
-
-
-class ExitRequestResponse(BaseModel):
-    symbol: str
-    exitrequested:bool
-    updated: datetime
-
 class ExitRequestResponseIB(BaseModel):
     symbol: str
     message: str
     order_id :Optional[int] = None
 
-# Portfolio
 
 
+
+# Entry
 class EntryRequest(BaseModel):
     symbol: str
+    contract_type:str
     entry_price: float
     stop_price: float
     position_size: int
-    contract_type:str
-
-
+    
 class EntryRequestResponse(BaseModel):
     allowed: bool
     message: str
@@ -157,11 +174,11 @@ class EntryRequestResponse(BaseModel):
     stopOrderId: Optional[int] = None
 
 
+# Add
 class AddRequest(BaseModel):
     symbol: str
     contract_type:str
     total_risk: int 
-
 
 class AddRequestResponse(BaseModel):
     allowed: bool
@@ -170,6 +187,11 @@ class AddRequestResponse(BaseModel):
     new_order: Optional[Any] = None
     place_result: Optional[Any] = None
     modified_stp_qty: Optional[int] = None
+
+
+
+
+
 
 
 

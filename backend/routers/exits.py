@@ -30,7 +30,8 @@ async def update_exit(request: UpdateExitRequest, db_conn=Depends(get_db_conn)):
         result = await update_exit_request(
             db_conn,
             symbol=request.symbol,
-            requested=request.requested
+            requested=request.requested,
+            trim_percentage=float(request.trim_percentage),
         )
         return result
 
