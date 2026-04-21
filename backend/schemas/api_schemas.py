@@ -218,3 +218,60 @@ class NewsItem(BaseModel):
     source: str
     published_at: str
     thumbnail: str
+
+
+
+
+# ---------------- Auto Assist ----------------
+
+class AutoAssistStartRequest(BaseModel):
+    symbol: str = Field(..., min_length=1, description="Ticker to start streaming")
+
+    @field_validator("symbol")
+    @classmethod
+    def _uppercase_symbol(cls, v: str) -> str:
+        v = v.strip().upper()
+        if not v:
+            raise ValueError("symbol cannot be empty")
+        return v
+
+
+class AutoAssistBar(BaseModel):
+    time: float                # UTC epoch seconds at bar-open
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: Optional[float] = None
+    ema9: Optional[float] = None
+    vwap: Optional[float] = None
+
+
+class AutoAssistTick(BaseModel):
+    time: float                # UTC epoch seconds of the tick
+    price: float
+    bar_time: float
+    bar_open: float
+    bar_high: float
+    bar_low: float
+    bar_close: float
+    bar_volume: Optional[float] = None
+    bar_vwap: Optional[float] = None
+
+
+class AutoAssistSignal(BaseModel):
+    symbol: str
+    price: float               # price that broke the level (entry trigger)
+    last2_high: float          # max high of previous 2 completed bars
+    stop_level: float          # min low of last 5 completed bars minus 0.06
+    position_size: int         # computed from configured per-trade risk
+    contract_type: str = "stock"
+    bar_time: float            # bar-open time (UTC sec) that contained the trigger
+    ts: float
+
+
+class AutoAssistState(BaseModel):
+    symbol: str
+    bars: list[AutoAssistBar]
+    last2_high: Optional[float] = None
+    stop_level: Optional[float] = None
