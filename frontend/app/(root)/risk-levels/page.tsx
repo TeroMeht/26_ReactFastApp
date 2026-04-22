@@ -19,17 +19,15 @@ const Risklevels = () => {
           />
         </header>
 
-        {/* Auto Assist — live tick-driven breakout assistant */}
-        <div className="mt-6">
-          <AutoAssistPanel />
-        </div>
-
         {/*  Pending orders (manual) and open portfolio */}
         <div className="mt-6">
           <PendingOrdersTable></PendingOrdersTable>
           <PortfolioTable></PortfolioTable>
         </div>
-
+        {/* Auto Assist — live tick-driven breakout assistant */}
+        <div className="mt-6">
+          <AutoAssistPanel />
+        </div>
       </div>
 
     </section>
