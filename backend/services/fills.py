@@ -35,8 +35,7 @@ logger = logging.getLogger(__name__)
 
 HELSINKI_TZ = pytz.timezone("Europe/Helsinki")
 
-# How often the background poll loop refreshes IB state and diffs rows.
-POLL_INTERVAL_SECONDS = 2.0
+
 
 
 def _today_helsinki():
@@ -223,8 +222,7 @@ class FillsTracker:
         self._last_signatures = {_row_key(r): _row_signature(r) for r in rows}
         q.put_nowait({"type": "snapshot", "rows": rows})
         self.subscribers.append(q)
-        # Start the polling loop if we're the first subscriber.
-        self._ensure_poll_task()
+
         return q
 
     def remove_subscriber(self, q: asyncio.Queue) -> None:
@@ -297,48 +295,6 @@ class FillsTracker:
         rows.sort(key=_sort_key, reverse=True)
         return rows
 
-    # ---- polling fallback ----
-    def _ensure_poll_task(self) -> None:
-        if self._poll_task is None or self._poll_task.done():
-            try:
-                self._poll_task = asyncio.create_task(self._poll_loop())
-            except RuntimeError:
-                # No running loop — shouldn't happen inside FastAPI, but be safe
-                logger.warning("Could not start FillsTracker poll loop: no loop")
-
-    async def _poll_loop(self) -> None:
-        """
-        While any subscriber is connected, refresh IB state every
-        POLL_INTERVAL_SECONDS and broadcast per-row updates whose signature
-        changed since the last poll.  This is the safety net for missed
-        orderStatus events.
-        """
-        try:
-            while self.subscribers:
-                await asyncio.sleep(POLL_INTERVAL_SECONDS)
-                if not self.subscribers:
-                    break
-                try:
-                    rows = await self.current_rows()
-                    current_keys = set()
-                    for row in rows:
-                        key = _row_key(row)
-                        current_keys.add(key)
-                        sig = _row_signature(row)
-                        if self._last_signatures.get(key) != sig:
-                            self._last_signatures[key] = sig
-                            self._broadcast({"type": "order", "row": row})
-                    # Forget signatures for rows that left the snapshot so we
-                    # re-broadcast if they reappear.
-                    stale = [k for k in self._last_signatures if k not in current_keys]
-                    for k in stale:
-                        self._last_signatures.pop(k, None)
-                except Exception:
-                    logger.exception("FillsTracker poll loop iteration failed")
-        except asyncio.CancelledError:
-            raise
-        finally:
-            self._poll_task = None
 
     # ---- event handlers ----
     def _emit(self, event_type: str, trade) -> None:
