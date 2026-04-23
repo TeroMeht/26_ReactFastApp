@@ -24,6 +24,17 @@ const ManagePage = () => {
   const [trimPercentage, setTrimPercentage] = useState<number>(1);
   const [updatingExit, setUpdatingExit] = useState(false);
 
+  // Move-stop-to-breakeven state — kept separate from the Add flow so the two
+  // operations' results don't collide when the user runs both on one visit.
+  const [moveBeLoading, setMoveBeLoading] = useState(false);
+  const [moveBeResult, setMoveBeResult] = useState<{
+    status: string;
+    message: string;
+    symbol?: string;
+    order_id?: number;
+    new_stop_price?: number;
+  } | null>(null);
+
   let position: OpenPosition | null = null;
 
   if (dataParam) {
@@ -82,6 +93,39 @@ const ManagePage = () => {
     if (!res.ok) {
       const text = await res.text();
       throw new Error(text);
+    }
+  };
+
+  // Move the open STP order for this symbol to breakeven (avg cost).  Backend:
+  // POST /api/portfolio/move-stop-be?symbol=<symbol>.  The router declares
+  // `symbol` as a plain str parameter, so FastAPI reads it from the query
+  // string rather than the JSON body.
+  const handleMoveBreakeven = async () => {
+    if (!position) return;
+
+    try {
+      setMoveBeLoading(true);
+      setMoveBeResult(null);
+
+      const url = `${API_PREFIX}/portfolio/move-stop-be?symbol=${encodeURIComponent(
+        position.symbol,
+      )}`;
+      const res = await fetch(url, { method: "POST" });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text);
+      }
+
+      const data = await res.json();
+      setMoveBeResult(data);
+    } catch (err: any) {
+      setMoveBeResult({
+        status: "error",
+        message: err.message || String(err),
+      });
+    } finally {
+      setMoveBeLoading(false);
     }
   };
 
@@ -223,13 +267,23 @@ const ManagePage = () => {
       </div>
 
       {/* Buttons */}
-      <div className="mt-6 flex justify-center gap-4">
+      <div className="mt-6 flex justify-center gap-4 flex-wrap">
         <button
           onClick={handleAdd}
           disabled={loading || !totalRisk}
           className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-50"
         >
           {loading ? "Adding..." : "Add"}
+        </button>
+
+        {/* Move stop to breakeven — live IB modify, no Total Risk needed. */}
+        <button
+          onClick={handleMoveBreakeven}
+          disabled={moveBeLoading}
+          className="bg-amber-600 text-white px-4 py-2 rounded hover:bg-amber-700 disabled:opacity-50"
+          title="Move the open STP order for this symbol to the position's average cost"
+        >
+          {moveBeLoading ? "Moving..." : "Move Stop to BE"}
         </button>
 
         <button
@@ -259,6 +313,27 @@ const ManagePage = () => {
               <p>Limit Price: {responseData.place_result.lmtPrice}</p>
               <p>Stop Price: {responseData.place_result.stopPrice}</p>
             </div>
+          )}
+        </div>
+      )}
+
+      {/* Move-stop-to-BE result — green on success, red on error.  Kept in a
+          separate panel so it doesn't overwrite the Add response. */}
+      {moveBeResult && (
+        <div
+          className={`mt-4 p-3 border rounded text-sm space-y-1 ${
+            moveBeResult.status === "success"
+              ? "bg-green-50 border-green-200 text-green-800"
+              : "bg-red-50 border-red-200 text-red-800"
+          }`}
+        >
+          <p><strong>Move Stop to BE:</strong> {moveBeResult.status}</p>
+          <p><strong>Message:</strong> {moveBeResult.message}</p>
+          {moveBeResult.order_id !== undefined && (
+            <p><strong>Order ID:</strong> {moveBeResult.order_id}</p>
+          )}
+          {moveBeResult.new_stop_price !== undefined && (
+            <p><strong>New Stop Price:</strong> {moveBeResult.new_stop_price}</p>
           )}
         </div>
       )}

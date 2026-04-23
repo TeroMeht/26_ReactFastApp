@@ -3,7 +3,7 @@
 import HeaderBox from "@/components/HeaderBox";
 import PortfolioTable from "@/components/risk-levels/Portfolio";
 import PendingOrdersTable from "@/components/risk-levels/PendingOrders";
-import AutoAssistPanel from "@/components/risk-levels/AutoAssistPanel";
+import FillsTable from "@/components/risk-levels/FillsTable";
 
 
 const Risklevels = () => {
@@ -19,14 +19,11 @@ const Risklevels = () => {
           />
         </header>
 
-        {/*  Pending orders (manual) and open portfolio */}
-        <div className="mt-6">
+        {/*  Pending orders (manual), IB fills and open portfolio */}
+        <div>
           <PendingOrdersTable></PendingOrdersTable>
+          <FillsTable></FillsTable>
           <PortfolioTable></PortfolioTable>
-        </div>
-        {/* Auto Assist — live tick-driven breakout assistant */}
-        <div className="mt-6">
-          <AutoAssistPanel />
         </div>
       </div>
 

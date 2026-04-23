@@ -47,6 +47,35 @@ const PendingOrdersTable = () => {
     fetchPositions();
   }, [fetchPositions]);
 
+  // Server-side removal of a pending order row.  Used both by the explicit
+  // Delete button and by the Send flow (on a successful IB entry request we
+  // don't want the now-live order hanging around in the pending list).
+  // Returns true on success so callers can decide whether to update the UI.
+  const removeOrderServerSide = async (order: PendingOrder): Promise<boolean> => {
+    let res: Response;
+
+    if (order.source === "ALPACA") {
+      res = await fetch(`${API_PREFIX}/pending_orders/manual/${order.id}`, {
+        method: "DELETE",
+      });
+    } else if (order.source === "DB") {
+      res = await fetch(`${API_PREFIX}/pending_orders/auto/${order.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: order.id }),
+      });
+    } else {
+      console.warn("Unknown order source, cannot remove", order);
+      return false;
+    }
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Remove failed: ${text}`);
+    }
+    return true;
+  };
+
   const handleSend = async (order: PendingOrder) => {
     try {
       const contractType = contractTypes[order.id] ?? "stock";
@@ -82,8 +111,28 @@ const PendingOrdersTable = () => {
       );
       setApiMessageAllowed(data.allowed);
 
+      // Order accepted by IB — remove it from the pending list so the row
+      // doesn't linger after the entry has gone live.  Do this both in local
+      // state (immediate) and server-side (so a refresh doesn't resurrect it).
       if (data.allowed) {
-        setAllowedOrders((prev) => new Set(prev).add(order.id));
+        setPositions((prev) => prev.filter((o) => o.id !== order.id));
+        setAllowedOrders((prev) => {
+          const next = new Set(prev);
+          next.delete(order.id);
+          return next;
+        });
+        try {
+          await removeOrderServerSide(order);
+        } catch (cleanupErr: any) {
+          // Send succeeded but we couldn't clean up the pending row.  Surface
+          // the problem rather than silently leaving a stale row; next
+          // Refresh will bring it back into the table.
+          console.error("Failed to remove pending order after send:", cleanupErr);
+          setMessage(
+            `Order sent but failed to remove pending row: ${cleanupErr.message || cleanupErr}`
+          );
+          setTimeout(() => setMessage(null), 5000);
+        }
       }
     } catch (err: any) {
       console.error("Error sending order:", err);
@@ -99,27 +148,8 @@ const PendingOrdersTable = () => {
 
   const handleDelete = async (order: PendingOrder) => {
     try {
-      let res: Response;
-
-      if (order.source === "ALPACA") {
-        res = await fetch(`${API_PREFIX}/pending_orders/manual/${order.id}`, {
-          method: "DELETE",
-        });
-      } else if (order.source === "DB") {
-        res = await fetch(`${API_PREFIX}/pending_orders/auto/${order.id}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: order.id }),
-        });
-      } else {
-        console.warn("Unknown order source, cannot cancel", order);
-        return;
-      }
-
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Cancel failed: ${text}`);
-      }
+      const ok = await removeOrderServerSide(order);
+      if (!ok) return;
 
       setPositions((prev) => prev.filter((o) => o.id !== order.id));
       setMessage(`Order ${order.id} canceled successfully.`);

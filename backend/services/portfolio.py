@@ -1010,7 +1010,7 @@ class PortfolioService:
 
             # --- Step 1: Get current ask price ---
             bid_ask = await self.get_bid_ask_price(symbol)
-            entry_price = bid_ask["ask"]
+            entry_price = bid_ask["ask"]+0.02
 
             # --- Step 2: Calculate position size ---
             position_size = calculate_position_size(

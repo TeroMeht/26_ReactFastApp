@@ -25,6 +25,11 @@ export const sidebarLinks = [
     route: "/chart",
     label: "Charts",
   },
+  {
+    imgURL: "/icons/money-send.svg",
+    route: "/auto-assist",
+    label: "Auto Assist",
+  },
 
 ];
 

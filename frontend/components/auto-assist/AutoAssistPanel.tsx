@@ -19,7 +19,7 @@ type Bar = {
 };
 
 /**
- * Auto Assist panel shown on the Risk Levels page.
+ * Auto Assist panel — tick-driven breakout assistant.
  *
  * Owns the lifecycle for the per-symbol live session:
  *  - POST /api/auto-assist/start    to begin a session (server seeds 12h history)
