@@ -848,7 +848,24 @@ class PortfolioService:
         return True, ""
 
  
-
+# helper function 
+    def _calculate_entry_price(self,bid_ask, stop_price, offset=0.02):
+        """
+        Decide which entry price to use relative to position direction.
+        Goal is to avoid moving entry manually.
+        
+        Args:
+            bid_ask: Dictionary with 'ask' and 'bid' keys
+            stop_price: The stop price threshold
+            offset: Price adjustment amount (default 0.02)
+            
+        Returns:
+            The calculated entry price
+        """
+        if bid_ask["ask"] > stop_price:
+            return round(bid_ask["ask"] + offset, 2)
+        elif bid_ask["bid"] < stop_price:
+            return round(bid_ask["bid"] - offset, 2)
 
 
 # Checks if user is trying to add to losing position. Won't allow that. 
@@ -1010,7 +1027,9 @@ class PortfolioService:
 
             # --- Step 1: Get current ask price ---
             bid_ask = await self.get_bid_ask_price(symbol)
-            entry_price = bid_ask["ask"]+0.02
+
+            entry_price = self._calculate_entry_price(bid_ask, stop_price)
+
 
             # --- Step 2: Calculate position size ---
             position_size = calculate_position_size(
