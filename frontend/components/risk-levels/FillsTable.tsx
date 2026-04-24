@@ -224,6 +224,7 @@ const FillsTable = () => {
   // every subsequent event upserts a single row keyed by permId/orderId.
   useEffect(() => {
     const es = new EventSource(`${API_PREFIX}/portfolio/fills/stream`);
+ 
     esRef.current = es;
     setStreamStatus("connecting");
 
@@ -232,6 +233,7 @@ const FillsTable = () => {
     es.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data) as SseMessage;
+        console.log("Received SSE message:", msg);
         if (msg.type === "snapshot") {
           setRows(sortRows(msg.rows ?? []));
           setError(null);

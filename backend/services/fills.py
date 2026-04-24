@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import sys
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -34,6 +36,47 @@ logger = logging.getLogger(__name__)
 
 
 HELSINKI_TZ = pytz.timezone("Europe/Helsinki")
+
+# IB API uses these sentinels to mean "field not used by this order".
+# ib_async leaves them on the local Order object until IB echoes the order
+# back normalized (typically to 0).  The first newOrderEvent therefore fires
+# synchronously from placeOrder() with these sentinels still in place — if
+# we ship them to the UI as-is, the numeric validators reject the row.
+_UNSET_DOUBLE = sys.float_info.max  # 1.7976931348623157e+308
+_UNSET_INTEGER = 2 ** 31 - 1        # 2147483647
+
+
+def _clean_price(value):
+    """Return a price suitable for the UI, or None if IB hasn't set one yet.
+
+    Filters out IB's UNSET_DOUBLE marker as well as NaN/inf which the JSON
+    serializer would emit as non-standard literals.
+    """
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(v) or math.isinf(v):
+        return None
+    # >= covers UNSET_DOUBLE itself plus any near-sentinel float drift.
+    if abs(v) >= _UNSET_DOUBLE:
+        return None
+    return value
+
+
+def _clean_int(value):
+    """Same idea as _clean_price for integer-typed IB fields."""
+    if value is None:
+        return None
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return value
+    if v >= _UNSET_INTEGER:
+        return None
+    return value
 
 
 
@@ -100,9 +143,9 @@ def _row_from_trade(trade) -> dict:
         "secType": getattr(contract, "secType", None) if contract else None,
         "action": getattr(order, "action", None),
         "orderType": getattr(order, "orderType", None),
-        "totalQty": getattr(order, "totalQuantity", None),
-        "lmtPrice": getattr(order, "lmtPrice", None),
-        "auxPrice": getattr(order, "auxPrice", None),
+        "totalQty": _clean_int(getattr(order, "totalQuantity", None)),
+        "lmtPrice": _clean_price(getattr(order, "lmtPrice", None)),
+        "auxPrice": _clean_price(getattr(order, "auxPrice", None)),
         "status": getattr(status, "status", None),
         "filled": getattr(status, "filled", 0),
         "remaining": getattr(status, "remaining", 0),
@@ -173,6 +216,43 @@ class FillsTracker:
         self._auto_open_orders_bound = False
         self._poll_task: Optional[asyncio.Task] = None
         self._last_signatures: Dict[str, Tuple] = {}
+        # Most-recent *real* IB status per row key, used to mask ib_async's
+        # transient "ValidationError" pseudo-status — see _normalize_status.
+        self._last_real_status: Dict[str, str] = {}
+
+    # ---- status normalization ----
+    def _normalize_status(self, row: dict) -> dict:
+        """Hide ib_async's transient ``ValidationError`` status from the UI.
+
+        ib_async sets ``trade.orderStatus.status = 'ValidationError'`` when
+        IB returns a *warning* error code about an order (codes 105, 110,
+        165, 321, 329, 399, 404, 434, 492, 10167, and the 2100-2199 range —
+        see ib_async/wrapper.py).  The order is still live at the broker:
+        on submit the flow is ``PreSubmitted -> ValidationError ->
+        Submitted`` if the warning can be auto-ignored, and on a modify
+        the previous order state remains active even though only a
+        ``ValidationError`` event is delivered.
+
+        Either way, surfacing the intermediate string to the UI looks like
+        a hard rejection.  We replace it with the most recent real status
+        we've seen for this row (defaulting to ``PreSubmitted`` when the
+        warning fires before any real status has arrived — that's the
+        state IB will report next).
+        """
+        key = _row_key(row)
+        status = row.get("status")
+        if status == "ValidationError":
+            prior = self._last_real_status.get(key) or "PreSubmitted"
+            logger.debug(
+                "Suppressing transient ValidationError on %s; reporting %s",
+                key,
+                prior,
+            )
+            row = dict(row)
+            row["status"] = prior
+        elif status:
+            self._last_real_status[key] = status
+        return row
 
     @classmethod
     def get(cls, ib: IB) -> "FillsTracker":
@@ -279,7 +359,7 @@ class FillsTracker:
             try:
                 if not _trade_belongs_to_today(trade):
                     continue
-                rows.append(_row_from_trade(trade))
+                rows.append(self._normalize_status(_row_from_trade(trade)))
             except Exception:
                 logger.exception("Error building fills row")
                 continue
@@ -299,9 +379,15 @@ class FillsTracker:
     # ---- event handlers ----
     def _emit(self, event_type: str, trade) -> None:
         try:
-            row = _row_from_trade(trade)
+            row = self._normalize_status(_row_from_trade(trade))
             key = _row_key(row)
             sig = _row_signature(row)
+            # Skip rebroadcasting an event whose only "change" was a
+            # ValidationError that we just normalized back to the prior
+            # status — otherwise the UI sees a no-op update for every
+            # warning IB emits.
+            if self._last_signatures.get(key) == sig:
+                return
             # Update the signature cache so the poll loop doesn't
             # redundantly re-broadcast the same change.
             self._last_signatures[key] = sig
