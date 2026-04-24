@@ -66,7 +66,7 @@ const TickBoxAllExpandableAutoRefresh: React.FC = () => {
       if (err instanceof Error) setError(err.message);
       else setError(String(err));
     } finally {
-      console.log("Saved symbol to txt")
+      console.log("Saved symbol to txt");
       setSavingFile(null);
     }
   };
@@ -83,18 +83,23 @@ const TickBoxAllExpandableAutoRefresh: React.FC = () => {
   }, [fetchContent]);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {error && <p className="text-red-500">{error}</p>}
       {loading && <p>Loading...</p>}
 
       {Object.entries(files).map(([filename, content]) => (
         <div
           key={filename}
-          className="border rounded-md bg-white shadow-sm w-full max-w-md"
+          className={`border rounded-md bg-white shadow-sm transition-all ${
+            expanded[filename] ? "w-full max-w-md" : "w-1/2 mx-auto"
+          }`}
         >
-          {/* Header */}
-          <div className="flex items-center justify-between p-4 cursor-pointer" onClick={() => toggleExpand(filename)}>
-            <h3 className="font-semibold">{filename}</h3>
+          {/* Header (click to expand) */}
+          <div
+            className="flex items-center justify-between px-3 py-2 cursor-pointer"
+            onClick={() => toggleExpand(filename)}
+          >
+            <h3 className="font-semibold text-sm truncate">{filename}</h3>
             <span className="text-sm text-gray-500">
               {expanded[filename] ? "▼" : "▶"}
             </span>

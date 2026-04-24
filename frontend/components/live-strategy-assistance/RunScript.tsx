@@ -26,7 +26,7 @@ export default function RunScript({ onSymbolsChange }: RunScriptProps) {
 
       // Optionally notify parent (if needed)
       if (onSymbolsChange) {
-        onSymbolsChange([]); 
+        onSymbolsChange([]);
       }
     } catch (err) {
       console.error(err);
@@ -37,13 +37,13 @@ export default function RunScript({ onSymbolsChange }: RunScriptProps) {
   };
 
   return (
-    <div className="w-80 p-3 bg-white rounded-lg shadow-sm border border-gray-200 text-sm space-y-2">
+    <div className="w-full max-w-md p-3 bg-white rounded-lg shadow-sm border border-gray-200 text-sm space-y-2">
       <div className="font-medium text-gray-700">Start Streamer</div>
 
       <button
         onClick={handleRun}
         disabled={loading}
-        className="w-full bg-blue-600 text-white py-1 rounded hover:bg-blue-700 disabled:opacity-60"
+        className="block w-1/2 mx-auto bg-blue-600 text-white py-1 rounded hover:bg-blue-700 disabled:opacity-60"
       >
         {loading ? 'Starting...' : 'Start'}
       </button>

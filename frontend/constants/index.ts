@@ -1,14 +1,14 @@
 export const sidebarLinks = [
-  {
-    imgURL: "/icons/home.svg",
-    route: "/",
-    label: "Home",
-  },
-  {
-    imgURL: "/icons/dollar-circle.svg",
-    route: "/live-strategy-assistance",
-    label: "Live Strategy Assistance",
-  },
+  // {
+  //   imgURL: "/icons/home.svg",
+  //   route: "/",
+  //   label: "Home",
+  // },
+  // {
+  //   imgURL: "/icons/dollar-circle.svg",
+  //   route: "/live-strategy-assistance",
+  //   label: "Live Strategy Assistance",
+  // },
 
   {
     imgURL: "/icons/money-send.svg",
@@ -20,16 +20,16 @@ export const sidebarLinks = [
     route: "/scanner",
     label: "Scanner",
   },
-      {
-    imgURL: "/icons/money-send.svg",
-    route: "/chart",
-    label: "Charts",
-  },
-  {
-    imgURL: "/icons/money-send.svg",
-    route: "/auto-assist",
-    label: "Auto Assist",
-  },
+  //     {
+  //   imgURL: "/icons/money-send.svg",
+  //   route: "/chart",
+  //   label: "Charts",
+  // },
+  // {
+  //   imgURL: "/icons/money-send.svg",
+  //   route: "/auto-assist",
+  //   label: "Auto Assist",
+  // },
 
 ];
 

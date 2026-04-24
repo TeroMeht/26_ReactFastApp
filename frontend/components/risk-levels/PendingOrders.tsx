@@ -162,7 +162,7 @@ const PendingOrdersTable = () => {
   };
 
   return (
-    <div className="p-4">
+    <div className="py-4">
       <h2 className="text-xl font-bold mb-4">Pending Orders</h2>
 
       <Button

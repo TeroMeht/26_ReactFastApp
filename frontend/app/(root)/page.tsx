@@ -1,26 +1,8 @@
-import HeaderBox from '@/components/HeaderBox';
+import { redirect } from "next/navigation";
 
-
-const Home = () => {
-  const loggedIn = { firstName: 'Tero' };
-
-
-
-  return (
-    <section className="home">
-      <div className="home-content">
-        <header className="home-header">
-          <HeaderBox
-            type="greeting"
-            title="Welcome"
-            user={loggedIn.firstName || 'Guest'}
-            subtext=""
-          />
-        </header>
-
-      </div>
-    </section>
-  );
-};
-
-export default Home;
+// The app's "homepage" is Risk Levels — hitting "/" forwards there so the
+// URL bar reflects the route the user is actually viewing and the sidebar
+// highlights the right item.
+export default function Home() {
+  redirect("/risk-levels");
+}
