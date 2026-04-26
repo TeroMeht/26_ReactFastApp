@@ -4,6 +4,25 @@ from datetime import datetime
 from decimal import Decimal
 
 
+async def create_exit_requests_table(db_conn: asyncpg.Connection) -> None:
+    """
+    Create the exit_requests table if it doesn't already exist.
+    """
+    await db_conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS exit_requests (
+            symbol TEXT PRIMARY KEY,
+            exitrequested BOOLEAN NOT NULL DEFAULT FALSE,
+            trim_percentage NUMERIC(5, 4) NOT NULL DEFAULT 1.0,
+            updated TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC')
+        );
+        """
+    )
+
+
+
+
+
 async def fetch_exits(db_conn: asyncpg.Connection) -> List[Dict]:
     rows = await db_conn.fetch(
         f"""

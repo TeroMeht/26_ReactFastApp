@@ -4,18 +4,18 @@ from pydantic import field_validator
 import os
 from pathlib import Path
 
-ENV_REPO = Path("C:/Projects/env-repo")
+ENV_REPO = Path("C:/codebase/env-repo")
 
 
 class Settings(BaseSettings):
+    
+    DATABASE_URL: str
+
+
     API_PREFIX: str = "/api"
     DEBUG: bool = False
-
-    DATABASE_URL: str = None
-
     ALLOWED_ORIGINS: str
 
-    OPENAI_API_KEY: str
 
     # --- IBKR settings ---
     IB_HOST: str
@@ -24,16 +24,14 @@ class Settings(BaseSettings):
 
     # --- Folder Paths ---
     INPUT_TICKERS_PATH: Path
-
-    SCRIPT_DIR: str  # folder where scripts live
-    TARGET_SCRIPT: str  # script filename to run
+    SCRIPT_DIR: Path
+    TARGET_SCRIPT: str
 
     # --- Strategy parameters ---
-    RISK: int  # Default risk per trade in dollars
+    RISK: int
     MAX_ENTRY_FREQUENCY_MINUTES: int
 
     # Block entry for time period
-
     BLOCK_START_HOUR:int
     BLOCK_START_MINUTE:int
     BLOCK_END_HOUR:int

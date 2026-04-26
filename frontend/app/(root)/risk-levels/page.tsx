@@ -22,8 +22,10 @@ const Risklevels = () => {
         {/*  Pending orders (manual), IB fills and open portfolio */}
         <div>
           <PendingOrdersTable></PendingOrdersTable>
-          <FillsTable></FillsTable>
           <PortfolioTable></PortfolioTable>
+          <FillsTable></FillsTable>
+
+          
         </div>
       </div>
 

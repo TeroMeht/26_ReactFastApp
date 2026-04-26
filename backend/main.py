@@ -12,7 +12,7 @@ from core.config import settings
 from ib_async import IB
 import uvicorn
 import asyncpg
-from db.exits import clear_exit_requests
+from db.exits import clear_exit_requests,create_exit_requests_table
 from services.fills import FillsTracker
 
 # Import routers
@@ -41,8 +41,10 @@ async def lifespan(app: FastAPI):
 
         db_pool = await asyncpg.create_pool(dsn=settings.DATABASE_URL)
 
-        #  CLEAN TABLE ON STARTUP
+        # ENSURE TABLE EXISTS, THEN CLEAN ON STARTUP
         async with db_pool.acquire() as conn:
+            await create_exit_requests_table(conn)
+            logger.info("exit_requests table ensured")
             await clear_exit_requests(conn)
             logger.info("exit_requests table cleared on startup")
             
