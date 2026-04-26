@@ -29,6 +29,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/add-tickers-watchlist": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Tickers
+         * @description Add tickers to a ticker file.
+         *     Body must include 'file' and 'content'.
+         */
+        post: operations["add_tickers_api_add_tickers_watchlist_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/run-script": {
         parameters: {
             query?: never;
@@ -191,6 +212,72 @@ export interface paths {
         };
         /** Get Trades */
         get: operations["get_trades_api_portfolio_trades_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/portfolio/pnl": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Pnl */
+        get: operations["get_pnl_api_portfolio_pnl_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/portfolio/fills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Fills
+         * @description Snapshot of today's IB orders/fills for the Risk Levels fills table.
+         *
+         *     Returns one row per order with current status (Submitted / PartiallyFilled /
+         *     Filled / Cancelled / ...), filled / remaining quantities and the
+         *     volume-weighted average fill price.  Calls reqAllOpenOrdersAsync +
+         *     reqExecutionsAsync first so the snapshot reflects IB-side reality even if
+         *     a cancel/fill happened outside this backend (TWS, mobile, etc.).  The SSE
+         *     stream at ``/fills/stream`` delivers live updates for the same rows.
+         */
+        get: operations["get_fills_api_portfolio_fills_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/portfolio/fills/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream Fills
+         * @description Server-Sent Events stream that pushes order-status / fill / commission
+         *     updates as they arrive from IB.  Subscribers first receive a ``snapshot``
+         *     event carrying today's rows, then incremental events keyed by ``permId``.
+         */
+        get: operations["stream_fills_api_portfolio_fills_stream_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -462,6 +549,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/scanner/news/{symbol}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Symbol News */
+        get: operations["get_symbol_news_api_scanner_news__symbol__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auto-assist/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start */
+        post: operations["start_api_auto_assist_start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auto-assist/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop */
+        post: operations["stop_api_auto_assist_stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auto-assist/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Stream */
+        get: operations["stream_api_auto_assist_stream_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -470,6 +625,8 @@ export interface components {
         AddRequest: {
             /** Symbol */
             symbol: string;
+            /** Contract Type */
+            contract_type: string;
             /** Total Risk */
             total_risk: number;
         };
@@ -506,6 +663,14 @@ export interface components {
              * Format: date
              */
             Date: string;
+        };
+        /** AutoAssistStartRequest */
+        AutoAssistStartRequest: {
+            /**
+             * Symbol
+             * @description Ticker to start streaming
+             */
+            symbol: string;
         };
         /** CandleRow */
         CandleRow: {
@@ -546,14 +711,14 @@ export interface components {
         EntryRequest: {
             /** Symbol */
             symbol: string;
+            /** Contract Type */
+            contract_type: string;
             /** Entry Price */
             entry_price: number;
             /** Stop Price */
             stop_price: number;
             /** Position Size */
             position_size: number;
-            /** Contract Type */
-            contract_type: string;
         };
         /** EntryRequestResponse */
         EntryRequestResponse: {
@@ -591,6 +756,8 @@ export interface components {
             symbol: string;
             /** Exitrequested */
             exitrequested: boolean;
+            /** Trim Percentage */
+            trim_percentage: string;
             /**
              * Updated
              * Format: date-time
@@ -610,6 +777,21 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** NewsItem */
+        NewsItem: {
+            /** Title */
+            title: string;
+            /** Summary */
+            summary: string;
+            /** Url */
+            url: string;
+            /** Source */
+            source: string;
+            /** Published At */
+            published_at: string;
+            /** Thumbnail */
+            thumbnail: string;
         };
         /** OpenPosition */
         OpenPosition: {
@@ -696,6 +878,12 @@ export interface components {
             symbol: string;
             /** Requested */
             requested: boolean;
+            /**
+             * Trim Percentage
+             * @description Fraction of the position to exit. Allowed: 0.25, 0.5, 0.75, 1 (1 = full exit).
+             * @default 1
+             */
+            trim_percentage: number | string;
         };
         /** ValidationError */
         ValidationError: {
@@ -705,6 +893,10 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+            /** Input */
+            input?: unknown;
+            /** Context */
+            ctx?: Record<string, never>;
         };
     };
     responses: never;
@@ -736,6 +928,39 @@ export interface operations {
         };
     };
     write_input_tickers_api_tickers_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TickerFile"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_tickers_api_add_tickers_watchlist_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -973,6 +1198,66 @@ export interface operations {
         };
     };
     get_trades_api_portfolio_trades_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_pnl_api_portfolio_pnl_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_fills_api_portfolio_fills_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    stream_fills_api_portfolio_fills_stream_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -1434,6 +1719,134 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScannerResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_symbol_news_api_scanner_news__symbol__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                symbol: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NewsItem"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_api_auto_assist_start_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutoAssistStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stop_api_auto_assist_stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AutoAssistStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_api_auto_assist_stream_get: {
+        parameters: {
+            query: {
+                symbol: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
