@@ -56,14 +56,22 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   }, []);
 
   return (
-    <main className="flex h-screen w-full font-inter">
+    <main className="flex h-screen w-full font-inter overflow-hidden">
       {/* Sidebar with portfolio/control system data */}
       <Sidebar />
 
-      {/* Main content area */}
-      <div className="flex-grow p-1">{children}</div>
+      {/*
+        Main content area.
+        - flex-1 + min-w-0 lets this column take remaining space WITHOUT being
+          forced wider by its content's intrinsic min-width (default min-width:auto
+          on flex items will otherwise let wide tables push the right sidebar
+          off-screen).
+        - overflow-hidden clips anything that would spill horizontally so the
+          two sidebars stay at their fixed widths regardless of what renders here.
+      */}
+      <div className="flex-1 min-w-0 overflow-hidden p-1">{children}</div>
 
-      {/* Right Sidebar with alarms */}
+      {/* Right Sidebar with alarms — fixed 450px (xl+) */}
       <RightSidebar alarms={alarms} pageSpecific={true} />
 
       {/* Optional error display */}

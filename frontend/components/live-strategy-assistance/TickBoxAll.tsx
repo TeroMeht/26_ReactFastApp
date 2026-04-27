@@ -72,10 +72,17 @@ const TickBoxAllExpandableAutoRefresh: React.FC = () => {
   };
 
   const toggleExpand = (filename: string) => {
-    setExpanded(prev => ({
-      ...prev,
-      [filename]: !prev[filename],
-    }));
+    setExpanded(prev => {
+      const isCurrentlyExpanded = !!prev[filename];
+      // If we're collapsing (was expanded -> now collapsing), auto-save first
+      if (isCurrentlyExpanded) {
+        handleSave(filename);
+      }
+      return {
+        ...prev,
+        [filename]: !isCurrentlyExpanded,
+      };
+    });
   };
 
   React.useEffect(() => {
@@ -89,37 +96,32 @@ const TickBoxAllExpandableAutoRefresh: React.FC = () => {
 
       {Object.entries(files).map(([filename, content]) => (
         <div
-          key={filename}
+                  key={filename}
           className={`border rounded-md bg-white shadow-sm transition-all ${
             expanded[filename] ? "w-full max-w-md" : "w-1/2 mx-auto"
-          }`}
-        >
+          }`}        >
           {/* Header (click to expand) */}
           <div
-            className="flex items-center justify-between px-3 py-2 cursor-pointer"
+            className="flex items-center justify-between px-2 py-1 cursor-pointer"
             onClick={() => toggleExpand(filename)}
           >
-            <h3 className="font-semibold text-sm truncate">{filename}</h3>
-            <span className="text-sm text-gray-500">
+            <span className="font-semibold text-[12px] leading-[16px] truncate">{filename}</span>
+            <span className="text-[12px] leading-[16px] text-gray-500 ml-1">
               {expanded[filename] ? "▼" : "▶"}
             </span>
           </div>
 
           {/* Expandable content */}
           {expanded[filename] && (
-            <div className="p-4 border-t">
+            <div className="p-2 border-t">
               <textarea
                 value={content}
                 onChange={(e) => handleChange(filename, e.target.value)}
-                className="w-full h-32 p-2 border rounded text-sm font-mono"
+                className="w-full h-10 p-1 border rounded text-xs font-mono"
               />
-              <button
-                onClick={() => handleSave(filename)}
-                className="mt-2 px-3 py-1 bg-green-500 text-white rounded hover:bg-green-600 text-sm disabled:opacity-50"
-                disabled={savingFile === filename}
-              >
-                {savingFile === filename ? "Saving..." : "Save"}
-              </button>
+              {savingFile === filename && (
+                <p className="mt-1 text-xs text-gray-500">Saving...</p>
+              )}
             </div>
           )}
         </div>

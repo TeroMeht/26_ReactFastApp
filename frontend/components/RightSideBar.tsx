@@ -115,41 +115,41 @@ const RightSidebar: React.FC<RightSidebarProps> = ({ pageSpecific, alarms }) => 
               </label>
             </div>
 
-            <Table>
-              <TableHeader className="bg-[#f9fafb]">
-                <TableRow>
-                  <TableHead>Symbol</TableHead>
-                  <TableHead>Alarm</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Time</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {sortedAlarms.length > 0 ? (
-                  sortedAlarms.map((alarm, index) => {
-                    const today = isToday(alarm.Date);
-                    return (
-                      <TableRow
-                        key={index}
-                        className={`hover:bg-gray-100 cursor-pointer ${today ? "bg-yellow-100" : ""}`}
-                        onClick={() => router.push(`/pricedata/${alarm.Symbol}`)}
-                      >
-                        <TableCell>{alarm.Symbol}</TableCell>
-                        <TableCell>{alarm.Alarm}</TableCell>
-                        <TableCell>{today ? "Today" : alarm.Date}</TableCell>
-                        <TableCell>{alarm.Time}</TableCell>
-                      </TableRow>
-                    );
-                  })
-                ) : (
+            <div className="max-h-[300px] overflow-y-auto border rounded-md">
+              <Table className="table-fixed w-full text-xs">
+                <TableHeader className="bg-[#f9fafb] sticky top-0 z-10">
                   <TableRow>
-                    <TableCell colSpan={4} className="text-center text-sm">
-                      No alarms to display.
-                    </TableCell>
+                    <TableHead className="h-7 px-1.5 text-xs w-[26%]">Symbol</TableHead>
+                    <TableHead className="h-7 px-1.5 text-xs w-[48%]">Alarm</TableHead>
+                    <TableHead className="h-7 px-1.5 text-xs w-[26%]">Time</TableHead>
                   </TableRow>
-                )}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {sortedAlarms.length > 0 ? (
+                    sortedAlarms.map((alarm, index) => {
+                      const today = isToday(alarm.Date);
+                      return (
+                        <TableRow
+                          key={index}
+                          className={`hover:bg-gray-100 cursor-pointer ${today ? "bg-yellow-100" : ""}`}
+                          onClick={() => router.push(`/pricedata/${alarm.Symbol}`)}
+                        >
+                          <TableCell className="px-1.5 py-1.5 text-xs break-words whitespace-normal">{alarm.Symbol}</TableCell>
+                          <TableCell className="px-1.5 py-1.5 text-xs break-words whitespace-normal">{alarm.Alarm}</TableCell>
+                          <TableCell className="px-1.5 py-1.5 text-xs break-words whitespace-normal">{alarm.Time}</TableCell>
+                        </TableRow>
+                      );
+                    })
+                  ) : (
+                    <TableRow>
+                      <TableCell colSpan={3} className="text-center text-xs">
+                        No alarms to display.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
           </div>
 
           {/* Live Strategy Assistance section */}

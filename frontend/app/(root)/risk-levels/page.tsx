@@ -23,7 +23,7 @@ const Risklevels = () => {
         <div>
           <PendingOrdersTable></PendingOrdersTable>
           <PortfolioTable></PortfolioTable>
-          <FillsTable></FillsTable>
+          {/* <FillsTable></FillsTable> */}
 
           
         </div>

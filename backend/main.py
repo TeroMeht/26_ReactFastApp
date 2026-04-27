@@ -16,7 +16,7 @@ from db.exits import clear_exit_requests,create_exit_requests_table
 from services.fills import FillsTracker
 
 # Import routers
-from routers import tickers, script, alarms, livestream, portfolio, pending_orders, exits,scanner, auto_assist
+from routers import tickers, script, alarms, livestream, portfolio, pending_orders, exits,scanner#, auto_assist
 
 
 # Global IBKR object
@@ -112,7 +112,7 @@ app.include_router(portfolio.router)
 app.include_router(pending_orders.router)
 app.include_router(exits.router)
 app.include_router(scanner.router)
-app.include_router(auto_assist.router)
+#app.include_router(auto_assist.router)
 
 
 if __name__ == "__main__":
