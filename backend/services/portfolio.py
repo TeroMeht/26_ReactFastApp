@@ -922,8 +922,88 @@ class PortfolioService:
                 "message": str(e)
             }
         
-    async def is_entry_allowed(self, latest_trade: dict | None) -> tuple[bool, str]:
+    @staticmethod
+    def _count_entries_from_fills(fills: list[dict]) -> int:
+        """
+        Walk a chronologically-sorted list of IB fills for a single symbol and
+        count "entries". An entry is a fill that transitions the symbol's net
+        position from flat (zero) to non-zero. Adds, stop fills and manual
+        exits don't count.
+        """
+        entries = 0
+        net_position = 0
+
+        for fill in fills:
+            action = (fill.get("action") or "").upper()
+            qty = int(float(fill.get("quantity") or 0))
+
+            if action in ("BOT", "BUY"):
+                signed = qty
+            elif action in ("SLD", "SELL"):
+                signed = -qty
+            else:
+                continue
+
+            # Position transitioned from flat to non-flat -> new entry
+            if net_position == 0 and signed != 0:
+                entries += 1
+
+            net_position += signed
+
+        return entries
+
+    async def count_entry_attempts_today_all(self) -> dict[str, int]:
+        """
+        Return a {symbol: entry_count} dict for every symbol that had at least
+        one entry attempt today. An "entry attempt" is a fill that opens a
+        position from flat (see _count_entries_from_fills).
+
+        Source of truth: IB executions for today (derived live each call,
+        survives backend restarts).
+        """
+        try:
+            trades = await self.get_trades()
+            today = date.today()
+
+            today_trades = [
+                t for t in trades
+                if t.get("symbol")
+                and t.get("time")
+                and date.fromisoformat(t["time"][:10]) == today
+            ]
+
+            if not today_trades:
+                return {}
+
+            fills_by_symbol: dict[str, list[dict]] = defaultdict(list)
+            for fill in today_trades:
+                fills_by_symbol[fill["symbol"].upper()].append(fill)
+
+            result: dict[str, int] = {}
+            for symbol, fills in fills_by_symbol.items():
+                fills.sort(key=lambda x: x["time"])
+                entries = self._count_entries_from_fills(fills)
+                if entries > 0:
+                    result[symbol] = entries
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error counting entry attempts (all symbols): {e}")
+            return {}
+
+    async def count_entry_attempts_today(self, symbol: str) -> int:
+        """
+        Count entry attempts today for a single symbol. Convenience wrapper
+        around count_entry_attempts_today_all so both the validation hot path
+        and the UI stats endpoint share the same semantics.
+        """
+        counts = await self.count_entry_attempts_today_all()
+        return counts.get(symbol.upper(), 0)
+
+    async def is_entry_allowed(self, latest_trade: dict | None, symbol: str) -> tuple[bool, str]:
         threshold_minutes = settings.MAX_ENTRY_FREQUENCY_MINUTES
+        max_attempts = settings.MAX_ATTEMPTS_PER_SYMBOL_PER_DAY
 
         START_HOUR = settings.BLOCK_START_HOUR
         START_MINUTE = settings.BLOCK_START_MINUTE
@@ -934,6 +1014,16 @@ class PortfolioService:
         now = datetime.now(helsinki_tz)
 
         try:
+
+            # --- Check 0: Max entry attempts per symbol per day ---
+            attempts_today = await self.count_entry_attempts_today(symbol)
+            if attempts_today >= max_attempts:
+                message = (
+                    f"Max entry attempts reached for {symbol} today "
+                    f"({attempts_today}/{max_attempts}). No more entries allowed today."
+                )
+                logger.info(message)
+                return False, message
 
             # --- Check 3: Blocked time window (16:30–17:00 Helsinki time) ---
             block_start = now.replace(hour=START_HOUR, minute=START_MINUTE).time()
@@ -1013,7 +1103,7 @@ class PortfolioService:
             executed_trades = await self.get_trades_by_symbol(symbol)
 
             # --- Check if entry is allowed ---
-            allowed, message = await self.is_entry_allowed(executed_trades)
+            allowed, message = await self.is_entry_allowed(executed_trades, symbol)
 
             if not allowed:
                 return EntryRequestResponse(

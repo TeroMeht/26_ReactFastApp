@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     RISK: int
     MAX_ENTRY_FREQUENCY_MINUTES: int
 
+    # Max number of entry attempts allowed per symbol per day.
+    # An "entry attempt" is counted when a fill opens a position from a flat state
+    # for that symbol (adds, stop fills, and manual exits are not counted).
+    MAX_ATTEMPTS_PER_SYMBOL_PER_DAY: int
+
     # Block entry for time period
     BLOCK_START_HOUR:int
     BLOCK_START_MINUTE:int

@@ -392,6 +392,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/portfolio/entry-attempts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Entry Attempts
+         * @description Per-symbol entry-attempt stats for today. Only symbols with at least one
+         *     entry attempt today are returned (ordered alphabetically). Used by the
+         *     Risk Levels UI to surface how close each symbol is to the
+         *     MAX_ATTEMPTS_PER_SYMBOL_PER_DAY limit.
+         */
+        get: operations["get_entry_attempts_api_portfolio_entry_attempts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/portfolio/open-risk-table": {
         parameters: {
             query?: never;
@@ -647,6 +670,17 @@ export interface components {
             Rvol: string;
             /** Relatr */
             Relatr: string;
+        };
+        /** EntryAttemptsRow */
+        EntryAttemptsRow: {
+            /** Symbol */
+            symbol: string;
+            /** Attempts */
+            attempts: number;
+            /** Max Attempts */
+            max_attempts: number;
+            /** Remaining */
+            remaining: number;
         };
         /** EntryRequest */
         EntryRequest: {
@@ -1402,6 +1436,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_entry_attempts_api_portfolio_entry_attempts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntryAttemptsRow"][];
                 };
             };
         };

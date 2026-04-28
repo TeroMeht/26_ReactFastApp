@@ -18,7 +18,16 @@ import { Button } from "@/components/ui/button";
 type PendingOrder =
   paths["/api/pending_orders/orders"]["get"]["responses"]["200"]["content"]["application/json"][number];
 
-const PendingOrdersTable = () => {
+type Props = {
+  /**
+   * Optional callback fired whenever this component fetches fresh data
+   * (Refresh button click, post-Send cleanup). The page uses it to keep
+   * the EntryAttemptsTable in the page header in sync.
+   */
+  onRefreshed?: () => void;
+};
+
+const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
   const [positions, setPositions] = useState<PendingOrder[]>([]);
   const [apiMessage, setApiMessage] = useState<string | null>(null);
   const [apiMessageAllowed, setApiMessageAllowed] = useState<boolean | null>(null);
@@ -40,8 +49,10 @@ const PendingOrdersTable = () => {
       setPositions([]);
     } finally {
       setLoading(false);
+      // Notify parent so the EntryAttemptsTable in the page header refetches.
+      onRefreshed?.();
     }
-  }, []);
+  }, [onRefreshed]);
 
   useEffect(() => {
     fetchPositions();
@@ -121,6 +132,9 @@ const PendingOrdersTable = () => {
           next.delete(order.id);
           return next;
         });
+        // Tell parent the underlying state changed so the EntryAttemptsTable
+        // refetches once IB reports the fill.
+        onRefreshed?.();
         try {
           await removeOrderServerSide(order);
         } catch (cleanupErr: any) {
@@ -191,7 +205,7 @@ const PendingOrdersTable = () => {
         </div>
       )}
 
-      <Table>
+      <Table className="w-full table-auto">
         <TableHeader>
           <TableRow>
             <TableHead>Id</TableHead>
@@ -258,17 +272,19 @@ const PendingOrdersTable = () => {
                 <TableCell>{order.stop_price}</TableCell>
                 <TableCell>{order.position_size}</TableCell>
                 <TableCell>{order.size}</TableCell>
-                <TableCell className="text-center">
-                  <Button variant="ghost" onClick={() => handleDelete(order)}>
-                    Delete
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() => handleSend(order)}
-                    disabled={allowedOrders.has(order.id)}
-                  >
-                    Send
-                  </Button>
+                <TableCell className="text-center whitespace-nowrap">
+                  <div className="flex flex-row items-center justify-center gap-2">
+                    <Button variant="ghost" onClick={() => handleDelete(order)}>
+                      Delete
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => handleSend(order)}
+                      disabled={allowedOrders.has(order.id)}
+                    >
+                      Send
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))

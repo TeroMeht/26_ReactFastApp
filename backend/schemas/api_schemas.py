@@ -178,7 +178,7 @@ class EntryRequestResponse(BaseModel):
 class AddRequest(BaseModel):
     symbol: str
     contract_type:str
-    total_risk: int 
+    total_risk: int
 
 class AddRequestResponse(BaseModel):
     allowed: bool
@@ -187,6 +187,14 @@ class AddRequestResponse(BaseModel):
     new_order: Optional[Any] = None
     place_result: Optional[Any] = None
     modified_stp_qty: Optional[int] = None
+
+
+# Entry attempts stats row (per-symbol per-day count for the UI table)
+class EntryAttemptsRow(BaseModel):
+    symbol: str
+    attempts: int
+    max_attempts: int
+    remaining: int
 
 
 

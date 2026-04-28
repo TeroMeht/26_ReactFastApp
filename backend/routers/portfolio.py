@@ -1,15 +1,12 @@
-import asyncio
-import json
-
-from fastapi import APIRouter, Depends, HTTPException, Request
-from sse_starlette.sse import EventSourceResponse
+from fastapi import APIRouter, Depends, HTTPException
 
 from services.portfolio import PortfolioService
-from services.fills import FillsTracker
+from services.fills import fetch_fills_today
 from dependencies import get_ib,get_db_conn
+from core.config import settings
 from typing import Optional,List
 
-from schemas.api_schemas import AddRequest, EntryRequestResponse, EntryRequest, ExitRequest, ExitRequestResponseIB,ModifyOrderRequest, ModifyOrderByIdRequest, OpenPosition, AddRequestResponse
+from schemas.api_schemas import AddRequest, EntryRequestResponse, EntryRequest, ExitRequest, ExitRequestResponseIB,ModifyOrderRequest, ModifyOrderByIdRequest, OpenPosition, AddRequestResponse, EntryAttemptsRow
 
 router = APIRouter(
     prefix="/api/portfolio",
@@ -66,52 +63,18 @@ async def get_fills(ib=Depends(get_ib)):
     """
     Snapshot of today's IB orders/fills for the Risk Levels fills table.
 
-    Returns one row per order with current status (Submitted / PartiallyFilled /
-    Filled / Cancelled / ...), filled / remaining quantities and the
-    volume-weighted average fill price.  Calls reqAllOpenOrdersAsync +
-    reqExecutionsAsync first so the snapshot reflects IB-side reality even if
-    a cancel/fill happened outside this backend (TWS, mobile, etc.).  The SSE
-    stream at ``/fills/stream`` delivers live updates for the same rows.
+    Returns one row per order with current status (Submitted / PartiallyFilled
+    / Filled / Cancelled / ...), filled / remaining quantities and the
+    volume-weighted average fill price. The frontend polls this endpoint
+    every 30 seconds — there is no streaming or background subscription.
     """
     try:
-        tracker = FillsTracker.get(ib)
-        return await tracker.current_rows()
+        return await fetch_fills_today(ib)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch fills: {e}")
 
 
-@router.get("/fills/stream")
-async def stream_fills(request: Request, ib=Depends(get_ib)):
-    """
-    Server-Sent Events stream that pushes order-status / fill / commission
-    updates as they arrive from IB.  Subscribers first receive a ``snapshot``
-    event carrying today's rows, then incremental events keyed by ``permId``.
-    """
-    tracker = FillsTracker.get(ib)
-    # Refresh from IB before seeding this subscriber so the initial snapshot
-    # isn't stale (e.g. reflects cancellations made from TWS since last hit).
-    initial_rows = await tracker.current_rows()
-    queue = tracker.add_subscriber(initial_rows=initial_rows)
 
-    async def event_generator():
-        try:
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    msg = await asyncio.wait_for(queue.get(), timeout=10.0)
-                    yield {"event": "message", "data": json.dumps(msg, default=str)}
-                except asyncio.TimeoutError:
-                    # heartbeat so proxies don't drop the connection
-                    yield {"event": "ping", "data": "keep-alive"}
-        finally:
-            tracker.remove_subscriber(queue)
-
-    return EventSourceResponse(event_generator())
-
-
-
-    
 
 @router.get("/price/{symbol}")
 async def get_bid_ask_price(symbol: str, ib = Depends(get_ib),db_conn=Depends(get_db_conn)):
@@ -177,6 +140,37 @@ async def cancel_order(order_id: int, ib=Depends(get_ib),db_conn=Depends(get_db_
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to cancel order: {str(e)}")
+
+
+@router.get("/entry-attempts", response_model=List[EntryAttemptsRow])
+async def get_entry_attempts(ib=Depends(get_ib), db_conn=Depends(get_db_conn)):
+    """
+    Per-symbol entry-attempt stats for today. Only symbols with at least one
+    entry attempt today are returned (ordered alphabetically). Used by the
+    Risk Levels UI to surface how close each symbol is to the
+    MAX_ATTEMPTS_PER_SYMBOL_PER_DAY limit.
+    """
+    try:
+        service = PortfolioService(ib, db_conn)
+        counts = await service.count_entry_attempts_today_all()
+        max_attempts = settings.MAX_ATTEMPTS_PER_SYMBOL_PER_DAY
+
+        rows = [
+            EntryAttemptsRow(
+                symbol=symbol,
+                attempts=count,
+                max_attempts=max_attempts,
+                remaining=max(0, max_attempts - count),
+            )
+            for symbol, count in sorted(counts.items())
+        ]
+        return rows
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch entry attempts: {str(e)}"
+        )
 
 
 @router.get("/open-risk-table", response_model=List[OpenPosition])

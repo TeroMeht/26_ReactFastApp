@@ -1,12 +1,6 @@
 "use client";
 
-import React, {
-  useState,
-  useEffect,
-  useCallback,
-  useRef,
-  useMemo,
-} from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { API_PREFIX } from "@/lib/api_prefix";
 
 import {
@@ -21,10 +15,9 @@ import {
 import { Button } from "@/components/ui/button";
 
 /**
- * One row per IB order we've seen today.  Matches the shape produced by
- * backend/services/fills.py::_row_from_trade and is used for both the initial
- * snapshot (GET /api/portfolio/fills) and the incremental SSE updates coming
- * from GET /api/portfolio/fills/stream.
+ * One row per IB order seen today. Matches the shape produced by
+ * backend/services/fills.py::_row_from_trade. Fetched fresh every 30s
+ * from GET /api/portfolio/fills — no streaming.
  */
 type FillRow = {
   orderId?: number | null;
@@ -46,10 +39,6 @@ type FillRow = {
   createdTime?: string | null;
 };
 
-type SseMessage =
-  | { type: "snapshot"; rows: FillRow[] }
-  | { type: "order" | "fill" | "commission"; row: FillRow };
-
 const STATUS_CLASSES: Record<string, string> = {
   Filled: "bg-green-100 text-green-800",
   PartiallyFilled: "bg-amber-100 text-amber-800",
@@ -68,31 +57,31 @@ const statusClass = (status?: string | null) =>
 const rowKey = (row: FillRow) =>
   String(row.permId ?? row.orderId ?? `${row.symbol}-${row.createdTime ?? ""}`);
 
-const sortRows = (rows: FillRow[]): FillRow[] =>
-  [...rows].sort((a, b) => {
-    const aKey = a.lastFillTime || a.createdTime || "";
-    const bKey = b.lastFillTime || b.createdTime || "";
-    if (aKey === bKey) return 0;
-    return aKey < bKey ? 1 : -1;
-  });
+// Always render times in Helsinki / Finnish time and 24-hour format so the
+// fills column is consistent regardless of the user's browser locale or
+// machine timezone (e.g. avoids "08:23:59 AM" / "11:23:58 AM" mixed style).
+const HELSINKI_TIME_FORMAT: Intl.DateTimeFormatOptions = {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+  timeZone: "Europe/Helsinki",
+};
 
 const formatTime = (iso?: string | null) => {
   if (!iso) return "-";
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
-  return d.toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  return d.toLocaleTimeString("en-GB", HELSINKI_TIME_FORMAT);
 };
 
 const formatPrice = (v?: number | null) =>
   v === null || v === undefined ? "-" : Number(v).toFixed(4);
 
-// Known IB order statuses — used to populate the Status filter dropdown even
-// before any matching row has arrived.  Rows with a status outside this list
-// are appended dynamically from the current data set.
+// Poll the snapshot endpoint every 30s. Single source of truth.
+const POLL_INTERVAL_MS = 30_000;
+
+// Status options shown in the dropdown even before a matching row arrives.
 const KNOWN_STATUSES = [
   "PendingSubmit",
   "ApiPending",
@@ -107,72 +96,19 @@ const KNOWN_STATUSES = [
 
 type FilterKey = "status" | "action" | "type";
 
-// localStorage key for persisting the Status filter selection across page
-// reloads and navigation.  We only persist the status multi-select (per user
-// request); symbol / action / type reset on mount.
-const STATUS_FILTER_STORAGE_KEY = "fillsTable.statusFilter";
-
-const loadStatusFilter = (): Set<string> => {
-  if (typeof window === "undefined") return new Set();
-  try {
-    const raw = window.localStorage.getItem(STATUS_FILTER_STORAGE_KEY);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(parsed.filter((v): v is string => typeof v === "string"));
-  } catch {
-    return new Set();
-  }
-};
-
 const FillsTable = () => {
   const [rows, setRows] = useState<FillRow[]>([]);
   const [loading, setLoading] = useState(false);
-  const [streamStatus, setStreamStatus] =
-    useState<"connecting" | "live" | "offline">("connecting");
   const [error, setError] = useState<string | null>(null);
-  const esRef = useRef<EventSource | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   // ---- Filter state ---------------------------------------------------
-  // Status filter persists across reloads / navigation via localStorage.
-  // We must start with an empty Set on both server and client so Next.js SSR
-  // output matches the first client render (otherwise React throws a
-  // hydration mismatch — server renders "All statuses" while client would
-  // render "2 selected" on the very first paint).  We then hydrate from
-  // localStorage in a post-mount effect, which triggers one extra render.
   const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set());
   const [symbolFilter, setSymbolFilter] = useState<string>("");
-  const [actionFilter, setActionFilter] = useState<string>(""); // "" = all
-  const [typeFilter, setTypeFilter] = useState<string>(""); // "" = all
+  const [actionFilter, setActionFilter] = useState<string>("");
+  const [typeFilter, setTypeFilter] = useState<string>("");
   const [openFilter, setOpenFilter] = useState<FilterKey | null>(null);
   const filterBarRef = useRef<HTMLDivElement | null>(null);
-
-  // Track whether we've loaded the persisted selection yet.  Until this is
-  // true we must NOT write to localStorage, otherwise the initial empty Set
-  // would overwrite the stored value before we get a chance to read it.
-  const statusFilterHydrated = useRef(false);
-
-  // Hydrate from localStorage after mount (client only).
-  useEffect(() => {
-    const stored = loadStatusFilter();
-    if (stored.size > 0) setStatusFilter(stored);
-    statusFilterHydrated.current = true;
-  }, []);
-
-  // Persist changes after the initial hydration so the user's selection
-  // survives reloads / navigation.
-  useEffect(() => {
-    if (!statusFilterHydrated.current) return;
-    if (typeof window === "undefined") return;
-    try {
-      window.localStorage.setItem(
-        STATUS_FILTER_STORAGE_KEY,
-        JSON.stringify(Array.from(statusFilter)),
-      );
-    } catch {
-      /* quota or privacy mode — safe to ignore */
-    }
-  }, [statusFilter]);
 
   // Close any open filter popover when the user clicks outside the filter bar.
   useEffect(() => {
@@ -189,74 +125,30 @@ const FillsTable = () => {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [openFilter]);
 
-  // ---- Data lifecycle -------------------------------------------------
-  const upsertRow = useCallback((incoming: FillRow) => {
-    setRows((prev) => {
-      const key = rowKey(incoming);
-      const idx = prev.findIndex((r) => rowKey(r) === key);
-      if (idx === -1) return sortRows([incoming, ...prev]);
-      const merged = { ...prev[idx], ...incoming };
-      const next = [...prev];
-      next[idx] = merged;
-      return sortRows(next);
-    });
-  }, []);
-
-  // Manual refresh — also used as a fallback when the SSE stream is offline.
+  // ---- Data fetching --------------------------------------------------
   const fetchFills = useCallback(async () => {
     try {
       setLoading(true);
       const res = await fetch(`${API_PREFIX}/portfolio/fills`);
       if (!res.ok) throw new Error(`Request failed (${res.status})`);
       const json = (await res.json()) as FillRow[];
-      setRows(sortRows(json));
+      setRows(json);
       setError(null);
+      setLastUpdated(new Date());
     } catch (err: unknown) {
       console.error("Failed to fetch fills:", err);
       setError(err instanceof Error ? err.message : String(err));
-      setRows([]);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  // Subscribe to the SSE stream.  Snapshot message on connect seeds rows, and
-  // every subsequent event upserts a single row keyed by permId/orderId.
+  // Initial load + 30s polling.
   useEffect(() => {
-    const es = new EventSource(`${API_PREFIX}/portfolio/fills/stream`);
- 
-    esRef.current = es;
-    setStreamStatus("connecting");
-
-    es.onopen = () => setStreamStatus("live");
-
-    es.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data) as SseMessage;
-        console.log("Received SSE message:", msg);
-        if (msg.type === "snapshot") {
-          setRows(sortRows(msg.rows ?? []));
-          setError(null);
-        } else if (msg.row) {
-          upsertRow(msg.row);
-        }
-      } catch {
-        /* ignore malformed messages */
-      }
-    };
-
-    es.onerror = () => {
-      setStreamStatus("offline");
-      if (es.readyState === EventSource.CLOSED) {
-        setError("Live stream closed. Use Refresh to fetch the latest fills.");
-      }
-    };
-
-    return () => {
-      es.close();
-      esRef.current = null;
-    };
-  }, [upsertRow]);
+    fetchFills();
+    const id = setInterval(fetchFills, POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [fetchFills]);
 
   // ---- Derived: options + filtered rows -------------------------------
   const availableStatuses = useMemo(() => {
@@ -280,9 +172,7 @@ const FillsTable = () => {
   const filteredRows = useMemo(() => {
     const symbolQuery = symbolFilter.trim().toUpperCase();
     return rows.filter((r) => {
-      if (statusFilter.size > 0 && !statusFilter.has(r.status ?? "")) {
-        return false;
-      }
+      if (statusFilter.size > 0 && !statusFilter.has(r.status ?? "")) return false;
       if (actionFilter && r.action !== actionFilter) return false;
       if (typeFilter && r.orderType !== typeFilter) return false;
       if (symbolQuery && !(r.symbol ?? "").toUpperCase().includes(symbolQuery)) {
@@ -321,53 +211,28 @@ const FillsTable = () => {
     return `${statusFilter.size} selected`;
   })();
 
+  const lastUpdatedLabel = lastUpdated
+    ? `Updated ${lastUpdated.toLocaleTimeString("en-GB", HELSINKI_TIME_FORMAT)}`
+    : "Never updated";
+
   // ---- Render ---------------------------------------------------------
   return (
     <div className="py-4">
       <div className="flex items-center gap-3 mb-4">
         <h2 className="text-xl font-bold">Fills</h2>
-        <span
-          className={`text-xs px-2 py-0.5 rounded-md ${
-            streamStatus === "live"
-              ? "bg-green-100 text-green-800"
-              : streamStatus === "connecting"
-              ? "bg-blue-100 text-blue-800"
-              : "bg-red-100 text-red-800"
-          }`}
-        >
-          {streamStatus === "live"
-            ? "Live"
-            : streamStatus === "connecting"
-            ? "Connecting..."
-            : "Offline"}
+        <span className="text-xs px-2 py-0.5 rounded-md bg-gray-100 text-gray-700">
+          Auto-refresh every 30s
         </span>
+        <span className="text-xs text-gray-500">{lastUpdatedLabel}</span>
 
-        {/* Manual refresh — additional functionality alongside the live SSE
-            stream.  Useful when the stream is Offline or if the user just
-            wants to force a snapshot (GET /api/portfolio/fills).  Icon spins
-            while the request is in flight. */}
-        <button
-          type="button"
+        <Button
+          variant="outline"
           onClick={fetchFills}
           disabled={loading}
-          aria-label="Refresh fills"
-          title="Refresh fills from IB"
-          className="ml-1 flex items-center justify-center w-7 h-7 rounded-md border border-input bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          className="ml-1"
         >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={`w-4 h-4 ${loading ? "animate-spin" : ""}`}
-          >
-            <path d="M21 12a9 9 0 1 1-3.5-7.1" />
-            <polyline points="21 3 21 9 15 9" />
-          </svg>
-        </button>
+          {loading ? "Refreshing..." : "Refresh"}
+        </Button>
       </div>
 
       {/* Filter bar */}

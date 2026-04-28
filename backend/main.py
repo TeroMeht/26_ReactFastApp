@@ -13,7 +13,6 @@ from ib_async import IB
 import uvicorn
 import asyncpg
 from db.exits import clear_exit_requests,create_exit_requests_table
-from services.fills import FillsTracker
 
 # Import routers
 from routers import tickers, script, alarms, livestream, portfolio, pending_orders, exits,scanner#, auto_assist
@@ -51,19 +50,6 @@ async def lifespan(app: FastAPI):
         # Store shared services
         app.state.ib = ib
         app.state.db_pool = db_pool
-
-        # Hook the fills tracker into IB events at startup so orderStatus /
-        # execDetails / commissionReport updates are captured from the very
-        # first order onward (not lazily on the first HTTP hit, which would
-        # miss any cancels or fills that happened before the UI loaded).
-        # reqAutoOpenOrders(True) makes IB stream status updates for orders
-        # placed / cancelled from other clients (e.g. TWS) to this session.
-        try:
-            tracker = FillsTracker.get(ib)
-            tracker.enable_auto_open_orders()
-            logger.info("FillsTracker initialised at startup")
-        except Exception:
-            logger.exception("Failed to initialise FillsTracker at startup")
 
     except Exception:
         logger.exception("Startup failed")
