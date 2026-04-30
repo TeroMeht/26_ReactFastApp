@@ -3,7 +3,7 @@ setlocal
 set ROOT=%~dp0
 
 echo Starting FastAPI Backend...
-start "Backend" cmd /k "cd /d %ROOT%backend && python -m uvicorn main:app --host 0.0.0.0 --port 8000"
+start "Backend" cmd /k "cd /d %ROOT%backend && python -m uvicorn main:app"
 
 timeout /t 3 /nobreak >nul
 

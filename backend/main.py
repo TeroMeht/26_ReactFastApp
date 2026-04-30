@@ -72,8 +72,8 @@ async def lifespan(app: FastAPI):
 
 # --- App instance ---
 app = FastAPI(
-    title="Trade Review App",
-    description="API to manage trade data and show charts",
+    title="TradeApp",
+    description="API to manage trades",
     version="0.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -82,13 +82,7 @@ app = FastAPI(
 
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=settings.ALLOWED_ORIGINS, allow_credentials=True)
 
 app.include_router(tickers.router)
 app.include_router(script.router)
@@ -103,4 +97,4 @@ app.include_router(scanner.router)
 
 if __name__ == "__main__":
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app")
