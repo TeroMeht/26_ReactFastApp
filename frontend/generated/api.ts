@@ -538,7 +538,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/{symbol}": {
+    "/api/exits/{symbol}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Exits For Symbol */
+        get: operations["read_exits_for_symbol_api_exits__symbol__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/exits/{symbol}/{strategy}": {
         parameters: {
             query?: never;
             header?: never;
@@ -549,7 +566,7 @@ export interface paths {
         put?: never;
         post?: never;
         /** Delete Exit */
-        delete: operations["delete_exit_api__symbol__delete"];
+        delete: operations["delete_exit_api_exits__symbol___strategy__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -729,8 +746,8 @@ export interface components {
         ExitRequestResponse: {
             /** Symbol */
             symbol: string;
-            /** Exitrequested */
-            exitrequested: boolean;
+            /** Strategy */
+            strategy: string;
             /** Trim Percentage */
             trim_percentage: string;
             /**
@@ -770,8 +787,11 @@ export interface components {
         };
         /** OpenPosition */
         OpenPosition: {
-            /** Exit Request */
-            exit_request: boolean;
+            /**
+             * Exit Strategies
+             * @description Strategy names currently armed for this symbol.
+             */
+            exit_strategies: string[];
             /** Symbol */
             symbol: string;
             /** Contract Type */
@@ -851,14 +871,17 @@ export interface components {
              * @description Trading symbol (auto uppercased)
              */
             symbol: string;
-            /** Requested */
-            requested: boolean;
             /**
              * Trim Percentage
              * @description Fraction of the position to exit. Allowed: 0.25, 0.5, 0.75, 1 (1 = full exit).
              * @default 1
              */
             trim_percentage: number | string;
+            /**
+             * Strategy
+             * @description Which incoming exit trigger should fire this row. Must be one of settings.EXIT_TRIGGERS.
+             */
+            strategy: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -1659,12 +1682,44 @@ export interface operations {
             };
         };
     };
-    delete_exit_api__symbol__delete: {
+    read_exits_for_symbol_api_exits__symbol__get: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 symbol: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExitRequestResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_exit_api_exits__symbol___strategy__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                symbol: string;
+                strategy: string;
             };
             cookie?: never;
         };

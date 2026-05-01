@@ -68,8 +68,8 @@ const PortfolioTable = () => {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Exit Requested</TableHead>
-            <TableHead>Symbol</TableHead>           
+            <TableHead>Exit Strategies</TableHead>
+            <TableHead>Symbol</TableHead>
             <TableHead>Allocation</TableHead>
             <TableHead>Size</TableHead>
             <TableHead>Avg Cost</TableHead>
@@ -83,7 +83,7 @@ const PortfolioTable = () => {
         <TableBody>
           {positions.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={8} className="text-gray-500">
+              <TableCell colSpan={9} className="text-gray-500">
                 No open positions.
               </TableCell>
             </TableRow>
@@ -91,7 +91,9 @@ const PortfolioTable = () => {
             positions.map((pos, index) => (
               <TableRow key={`${pos.symbol}-${index}`}>
                 <TableCell>
-                  {pos.exit_request ? "Yes" : "No"}
+                  {pos.exit_strategies && pos.exit_strategies.length > 0
+                    ? pos.exit_strategies.join(", ")
+                    : "—"}
                 </TableCell>
                 <TableCell>{pos.symbol}</TableCell>
                 <TableCell>{pos.allocation}</TableCell>

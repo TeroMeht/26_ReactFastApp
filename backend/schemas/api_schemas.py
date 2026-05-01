@@ -2,8 +2,10 @@
 from pydantic import BaseModel, field_validator,Field
 from datetime import date, time
 from datetime import datetime
-from typing import Optional,Any
+from typing import Optional,Any,List
 from decimal import Decimal
+
+from core.config import settings
 
 
 class TickerFile(BaseModel):
@@ -26,7 +28,10 @@ class PendingOrder(BaseModel):
 
 # Open risk row model
 class OpenPosition(BaseModel):
-    exit_request:bool
+    # List of currently armed exit strategies for this symbol. Replaces the
+    # old exit_request:bool flag — multiple exit_requests rows can now exist
+    # per symbol, so we surface their strategy names directly.
+    exit_strategies: List[str] = []
     symbol: str
     contract_type:str
     allocation: float
@@ -100,10 +105,17 @@ class UpdateExitRequest(BaseModel):
         min_length=1,
         description="Trading symbol (auto uppercased)"
     )
-    requested: bool
     trim_percentage: Decimal = Field(
         default=Decimal("1"),
         description="Fraction of the position to exit. Allowed: 0.25, 0.5, 0.75, 1 (1 = full exit)."
+    )
+    strategy: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Which incoming exit trigger should fire this row. "
+            "Must be one of settings.EXIT_TRIGGERS."
+        ),
     )
 
     @field_validator("symbol")
@@ -127,7 +139,18 @@ class UpdateExitRequest(BaseModel):
                 f"trim_percentage must be one of 0.25, 0.5, 0.75, or 1 (got {v})"
             )
         return v
-    
+
+    @field_validator("strategy")
+    @classmethod
+    def validate_strategy(cls, v: str) -> str:
+        v = v.strip()
+        allowed = set(settings.EXIT_TRIGGERS)
+        if v not in allowed:
+            raise ValueError(
+                f"strategy must be one of {sorted(allowed)} (got '{v}')"
+            )
+        return v
+
 
 
 
@@ -137,8 +160,8 @@ class UpdateExitRequest(BaseModel):
 # Exits
 class ExitRequestResponse(BaseModel):
     symbol: str
-    exitrequested:bool
-    trim_percentage:Decimal
+    strategy: str
+    trim_percentage: Decimal
     updated: datetime
 
 
@@ -149,6 +172,25 @@ class ExitRequest(BaseModel):
     time: time
     alarm: str
     symbol: str
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, v: str) -> str:
+        v = v.strip().upper()
+        if not v:
+            raise ValueError("Symbol cannot be empty")
+        return v
+
+    @field_validator("alarm")
+    @classmethod
+    def validate_alarm(cls, v: str) -> str:
+        v = v.strip()
+        allowed = set(settings.EXIT_TRIGGERS)
+        if v not in allowed:
+            raise ValueError(
+                f"alarm must be one of {sorted(allowed)} (got '{v}')"
+            )
+        return v
      
 class ExitRequestResponseIB(BaseModel):
     symbol: str

@@ -4,7 +4,12 @@ from ib_async import IB,Stock,LimitOrder, StopOrder,MarketOrder,CFD
 import pytz
 import logging
 from services.orders import Order, build_order, calculate_position_size
-from db.exits import fetch_exit_by_symbol,delete_exit_request
+from db.exits import (
+    fetch_exits_by_symbol,
+    update_exit_request,
+    delete_exit_request,
+    delete_exit_requests_by_symbol,
+)
 import datetime
 from datetime import datetime, timedelta
 from core.config import settings
@@ -16,6 +21,21 @@ from datetime import date
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
+
+
+# Per-symbol asyncio locks. Two alarms hitting the same symbol concurrently
+# (e.g., vwap_exit and endofday_exit firing in the same tick) would otherwise
+# race the position read / market-order placement / STP modify and could
+# over-exit. The lock serializes them.
+#
+# Module-level dict is fine because asyncio is single-threaded; setdefault is
+# atomic relative to other coroutines that don't await between the lookup
+# and the assignment.
+_symbol_exit_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_symbol_lock(symbol: str) -> asyncio.Lock:
+    return _symbol_exit_locks.setdefault(symbol.upper(), asyncio.Lock())
 
 
 
@@ -582,16 +602,18 @@ class PortfolioService:
             return None
 
 # This is for closing position
-    async def place_market_order(self, order:Order):
+    async def place_market_order(self, order: Order):
         """
-        Place a market order asynchronously.
+        Place a market order asynchronously. Returns the ib_async Trade
+        object on success (so callers can wait on its order status), or None
+        on error.
         """
         try:
             if order.contract_type == 'CFD':
                 contract = CFD(symbol=order.symbol,
                             exchange="SMART",
                             currency="USD")
-                
+
             elif order.contract_type == 'stock' or 'STK':
                 contract = Stock(symbol=order.symbol,
                             exchange="SMART",
@@ -607,16 +629,58 @@ class PortfolioService:
                 transmit=True,
             )
 
-            self.ib.placeOrder(contract, market_order)
+            trade = self.ib.placeOrder(contract, market_order)
             logger.info(f"Market order submitted for {order.symbol}: "
                         f"orderId={market_order.orderId}, "
                         f"action={order.action}, quantity={order.position_size}")
 
-            return market_order
+            return trade
 
         except Exception as e:
             logger.error(f"Error in place_market_order for {order.symbol}: {e}")
             return None
+
+    async def _wait_for_order_done(self, trade, timeout: float = 15.0) -> str:
+        """
+        Poll an ib_async Trade until it reaches a terminal status.
+
+        Returns the final status string. Treat 'Filled' as success and any of
+        {'Cancelled', 'ApiCancelled', 'Inactive', 'Rejected', 'timeout'} as
+        failure. Caller decides what to do (e.g., re-insert the exit_request
+        row so the user can retry).
+        """
+        DONE_STATES = {"Filled", "Cancelled", "ApiCancelled", "Inactive", "Rejected"}
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        last_status = None
+
+        while True:
+            status = (
+                trade.orderStatus.status
+                if trade is not None and trade.orderStatus is not None
+                else None
+            )
+            if status != last_status:
+                logger.info(
+                    "Order status update | orderId=%s status=%s filled=%s remaining=%s",
+                    getattr(trade.order, "orderId", None) if trade and trade.order else None,
+                    status,
+                    getattr(trade.orderStatus, "filled", None) if trade and trade.orderStatus else None,
+                    getattr(trade.orderStatus, "remaining", None) if trade and trade.orderStatus else None,
+                )
+                last_status = status
+
+            if status in DONE_STATES:
+                return status
+
+            if loop.time() >= deadline:
+                logger.warning(
+                    "Order ack timed out after %.1fs | last_status=%s",
+                    timeout, status,
+                )
+                return "timeout"
+
+            await asyncio.sleep(0.1)
 
 
 
@@ -850,76 +914,47 @@ class PortfolioService:
  
 # helper function 
     def _calculate_entry_price(self,bid_ask, stop_price, offset=0.02):
-        """
-        Decide which entry price to use relative to position direction.
-        Goal is to avoid moving entry manually.
-        
-        Args:
-            bid_ask: Dictionary with 'ask' and 'bid' keys
-            stop_price: The stop price threshold
-            offset: Price adjustment amount (default 0.02)
-            
-        Returns:
-            The calculated entry price
-        """
+
         if bid_ask["ask"] > stop_price:
             return round(bid_ask["ask"] + offset, 2)
         elif bid_ask["bid"] < stop_price:
             return round(bid_ask["bid"] - offset, 2)
 
 
-# Checks if user is trying to add to losing position. Won't allow that. 
+    # Checks if user is trying to add to losing position. Won't allow that. 
     async def is_add_allowed(self, position: dict) -> dict:
-        """
-        Check if adding to a position is allowed.
-        Returns allowed=True if current ask > avg cost, otherwise allowed=False.
-        """
+        symbol = position.get("symbol")
         try:
-            symbol = position.get("symbol")
             avg_cost = position.get("avgcost")
-            position = position.get("position")
+            position_size = position.get("position")
+            price_data = await self.get_bid_ask_price(symbol)
+            ask = price_data["ask"]
+            bid = price_data["bid"]
 
-            # 2️⃣ Get current ask price
-            market_data = await self.get_bid_ask_price(symbol)
-
-            ask = market_data["ask"]
-
-            # 3️⃣ Validate: allow if ask > avg cost
-            if ask > avg_cost and position > 0:
-                return {
-                    "allowed": True,
-                    "symbol": symbol,
-                    "message": f"Current ask long({ask}) is above avg cost ({avg_cost})",
-                    "current_position": position,
-                    "avg_cost": avg_cost,
-                    "ask": ask
-                }
-            
-            elif ask < avg_cost and position < 0:
-                return {
-                    "allowed": True,
-                    "symbol": symbol,
-                    "message": f"Current ask short ({ask}) is below avg cost ({avg_cost})",
-                    "current_position": position,
-                    "avg_cost": avg_cost,
-                    "ask": ask
-                }
+            if position_size > 0:
+                allowed = ask > avg_cost
+                message = "OK to add to this long position" if allowed else "Cannot add to losing long position"
+            elif position_size < 0:
+                allowed = bid < avg_cost
+                message = "OK to add to this short position" if allowed else "Cannot add to losing short position"
             else:
-                return {
-                    "allowed": False,
-                    "symbol": symbol,
-                    "message": f"You are trying to add losing position",
-                    "current_position": position,
-                    "avg_cost": avg_cost,
-                    "ask": ask
-                }
+                allowed = False
+                message = "No existing position to add to"
+
+            return {
+                "allowed": allowed,
+                "symbol": symbol,
+                "message": message,
+                "price_data": price_data,
+            }
 
         except Exception as e:
             logging.error(f"Error validating add for {symbol}: {e}")
             return {
                 "allowed": False,
                 "symbol": symbol,
-                "message": str(e)
+                "message": str(e),
+                "price_data": None,
             }
         
     @staticmethod
@@ -1177,6 +1212,8 @@ class PortfolioService:
             # Get existing stp order
             existing_stp_order = await self.get_stp_order_by_symbol(symbol)
 
+
+
             # 1 Check if adding is allowed to that position
             validation = await self.is_add_allowed(position)
 
@@ -1190,25 +1227,23 @@ class PortfolioService:
 
         
 
-            logger.info(f"Existing STP order for {symbol}: {existing_stp_order}")
-
             # Get existing aux price
             stp_order_aux_price = existing_stp_order.get("auxprice")
             stp_order_id = existing_stp_order.get("orderid")
-            logger.info(f"Existing STP order aux price for {symbol}: {stp_order_aux_price}, orderId: {stp_order_id}")
 
             # Get existing position size
             existing_position = position.get("position")
+            logger.info(f"Existing STP order aux price for {symbol}: {stp_order_aux_price}, orderId: {stp_order_id}")
 
-            # Get current price
-            bid_ask = await self.get_bid_ask_price(symbol)
-            ask = bid_ask["ask"]
-            # add orderin pitää olla kokonais- olemassa oleva
-            # stop modify orderin pitää olla kokonais
+
+            bid_ask = validation.get("price_data")
+
+            add_price = self._calculate_entry_price(bid_ask, stp_order_aux_price)
+
 
                 # --- Step 3: Recalculate position size ---
             total_size = calculate_position_size(
-                    entry_price=ask,
+                    entry_price=add_price,
                     stop_price=stp_order_aux_price,
                     risk=total_risk  # Use the configured risk value from settings
                 )
@@ -1234,7 +1269,7 @@ class PortfolioService:
             # --- 2 Build the order dict ---
             order_data = {
                 "symbol": symbol,
-                "entry_price": ask,
+                "entry_price": add_price,
                 "stop_price": stp_order_aux_price,
                 "position_size": new_qty,
                 "contract_type":payload.contract_type
@@ -1264,189 +1299,280 @@ class PortfolioService:
             )
 
     async def process_exit_request(self, payload: ExitRequest) -> ExitRequestResponseIB:
-        logger.info("Received exit request | symbol = %s alarm = %s | time = %s", payload.symbol, payload.alarm, payload.time)
 
-        alarm = payload.alarm
+        symbol = payload.symbol  # already uppercased + validated by ExitRequest schema
+        alarm = payload.alarm    # already validated against EXIT_TRIGGERS by schema
+        logger.info(
+            "Received exit request | symbol=%s alarm=%s time=%s",
+            symbol, alarm, payload.time,
+        )
 
-        # Check exit requested
-        exit_request = await fetch_exit_by_symbol(self.db_conn, payload.symbol)
+        lock = _get_symbol_lock(symbol)
 
-        if not exit_request:
-            return ExitRequestResponseIB(
-                symbol=payload.symbol,
-                message=f"No exit requested for: {payload.symbol}."
+        async with lock:
+            # ---- 1. CLAIM THE ROW (delete-first idempotency) -------------
+            claimed = await delete_exit_request(self.db_conn, symbol, alarm)
+            if not claimed:
+                logger.info(
+                    "No armed exit_request row matched | symbol=%s alarm=%s "
+                    "(either never armed or duplicate alarm already consumed)",
+                    symbol, alarm,
+                )
+                return ExitRequestResponseIB(
+                    symbol=symbol,
+                    message=(
+                        f"No exit_request armed for {symbol} with "
+                        f"strategy '{alarm}'."
+                    ),
+                )
+
+            logger.info(
+                "Claimed exit_request row | symbol=%s strategy=%s "
+                "trim_percentage=%s updated=%s",
+                claimed["symbol"], claimed["strategy"],
+                claimed["trim_percentage"], claimed["updated"],
             )
 
-        elif alarm in settings.EXIT_TRIGGERS:
-            logger.info("Valid euforia_exit detected and exitrequested=True | symbol=%s", payload.symbol)
-
-            # Resolve trim_percentage (default full exit)
-            trim_percentage = exit_request.get("trim_percentage")
+            # Resolve trim_percentage from the claimed row.
+            raw_trim = claimed.get("trim_percentage")
             try:
-                trim_percentage = float(trim_percentage) if trim_percentage is not None else 1.0
+                trim_percentage = float(raw_trim) if raw_trim is not None else 1.0
             except (TypeError, ValueError):
                 trim_percentage = 1.0
-
             if trim_percentage <= 0 or trim_percentage > 1:
                 logger.warning(
-                    "Invalid trim_percentage=%s for %s, defaulting to 1.0",
-                    trim_percentage, payload.symbol
+                    "Invalid trim_percentage=%s on claimed row, defaulting to 1.0 | symbol=%s",
+                    raw_trim, symbol,
                 )
                 trim_percentage = 1.0
-
             is_partial = trim_percentage < 1.0
-            logger.info(
-                "Exit request | symbol=%s trim_percentage=%s partial=%s",
-                payload.symbol, trim_percentage, is_partial
-            )
 
-            # Check position
-            position = await self.get_position_by_symbol(payload.symbol)
-            logger.info("Fetched position | symbol=%s position=%s", payload.symbol, position)
-
-            if not position:
-                logger.warning("No open position found | symbol=%s", payload.symbol)
-                return ExitRequestResponseIB(
-                    symbol=payload.symbol,
-                    message=f"No open position found for {payload.symbol}."
-                )
-
-            shares = position["position"]
-            logger.info("Position shares=%s | symbol=%s", shares, payload.symbol)
-
-            # Decide direction
-            if shares > 0:
-                action = "SELL"
-            elif shares < 0:
-                action = "BUY"
-            else:
-
-                return ExitRequestResponseIB(
-                    symbol=payload.symbol,
-                    message=f"Position size is zero for {payload.symbol}."
-                )
-
-            # Compute exit qty based on trim_percentage
-            total_abs = abs(int(shares))
-            exit_qty = int(round(total_abs * trim_percentage))
-
-            # Floor to 1 when partial exit would round down to 0 but position exists
-            if is_partial and exit_qty <= 0:
-                exit_qty = 1
-
-            # Cap so we never try to exit more than we hold
-            if exit_qty > total_abs:
-                exit_qty = total_abs
-
-            remaining_qty = total_abs - exit_qty
-            logger.info(
-                "Exit qty calculated | symbol=%s total=%s exit_qty=%s remaining=%s",
-                payload.symbol, total_abs, exit_qty, remaining_qty
-            )
-
-            # Check for existing market order
-            existing_mkt_order = await self.get_mkt_order_by_symbol(payload.symbol)
-            if existing_mkt_order:
-                logger.info(
-                    "Market order already exists | symbol=%s order=%s",
-                    payload.symbol,
-                    existing_mkt_order
-                )
-
-                return ExitRequestResponseIB(
-                    symbol=payload.symbol,
-                    message=f"Market order already exists for {payload.symbol}."
-                    # If available:
-                    # order_id=existing_mkt_order.order.orderId
-                )
-
-            # Place market order for the (partial or full) exit qty
-            order = Order(
-                symbol=payload.symbol,
-                contract_type=position["sectype"],
-                action=action,
-                position_size=exit_qty,
-            )
-
-            existing_stp_order = await self.get_stp_order_by_symbol(payload.symbol)
-            logger.info(f"Existing STP order: {existing_stp_order}")
-
-            await self.place_market_order(order)
-            await asyncio.sleep(1)
-
-            if is_partial:
-                # Partial exit: resize the existing STP to match the remaining
-                # position size and move the stop price to avg cost (breakeven).
-                stop_moved_to = None
-                if existing_stp_order and 'orderid' in existing_stp_order and remaining_qty > 0:
-                    stp_order_id = existing_stp_order['orderid']
-                    logger.info(
-                        "Modifying STP order qty | symbol=%s order_id=%s new_qty=%s",
-                        payload.symbol, stp_order_id, remaining_qty
+            # Helper: re-insert the claimed row when we couldn't act on it.
+            async def _restore_claim(reason: str) -> None:
+                try:
+                    await update_exit_request(
+                        self.db_conn,
+                        symbol=symbol,
+                        strategy=alarm,
+                        trim_percentage=trim_percentage,
                     )
-                    await self.modify_stp_order_by_id(stp_order_id, remaining_qty)
+                    logger.info(
+                        "Re-inserted claimed exit_request row after %s | "
+                        "symbol=%s strategy=%s",
+                        reason, symbol, alarm,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to re-insert claimed exit_request row | "
+                        "symbol=%s strategy=%s reason=%s",
+                        symbol, alarm, reason,
+                    )
 
-                    # Move stop to avg cost after the qty has been updated.
-                    avgcost = position.get("avgcost")
-                    if avgcost is not None:
-                        new_stop = round(float(avgcost), 2)
-                        logger.info(
-                            "Moving STP to avg cost | symbol=%s order_id=%s new_stop=%s",
-                            payload.symbol, stp_order_id, new_stop,
-                        )
-                        await self.move_stp_auxprice_to_avgcost(
-                            order_id=stp_order_id,
-                            new_auxprice=new_stop,
-                        )
-                        stop_moved_to = new_stop
+            try:
+                # ---- 2. POSITION CHECK -----------------------------------
+                position = await self.get_position_by_symbol(symbol)
+                logger.info(
+                    "Fetched position | symbol=%s position=%s", symbol, position
+                )
+
+                if not position or float(position.get("position", 0) or 0) == 0:
+                    # Position is gone or flat. The claimed row is stale, and
+                    # so are any siblings for this symbol — wipe them so they
+                    # can't re-fire on a re-entry.
+                    deleted = await delete_exit_requests_by_symbol(
+                        self.db_conn, symbol
+                    )
+                    logger.warning(
+                        "No open position; cleared %d stale exit_request row(s) | symbol=%s",
+                        len(deleted), symbol,
+                    )
+                    return ExitRequestResponseIB(
+                        symbol=symbol,
+                        message=(
+                            f"No open position for {symbol}; cleared "
+                            f"{len(deleted) + 1} stale exit_request row(s)."
+                        ),
+                    )
+
+                shares = position["position"]
+                if shares > 0:
+                    action = "SELL"
+                elif shares < 0:
+                    action = "BUY"
+                else:
+                    # Defensive — already covered above, but keep the guard.
+                    deleted = await delete_exit_requests_by_symbol(
+                        self.db_conn, symbol
+                    )
+                    return ExitRequestResponseIB(
+                        symbol=symbol,
+                        message=(
+                            f"Position size is zero for {symbol}; cleared "
+                            f"{len(deleted) + 1} stale exit_request row(s)."
+                        ),
+                    )
+
+                total_abs = abs(int(round(float(shares))))
+                exit_qty = int(round(total_abs * trim_percentage))
+                if is_partial and exit_qty <= 0:
+                    exit_qty = 1
+                if exit_qty > total_abs:
+                    exit_qty = total_abs
+                remaining_qty = total_abs - exit_qty
+                logger.info(
+                    "Exit qty | symbol=%s total=%s exit_qty=%s remaining=%s",
+                    symbol, total_abs, exit_qty, remaining_qty,
+                )
+
+                # ---- 3. SHORT-CIRCUIT IF MKT ALREADY IN FLIGHT ------------
+                existing_mkt_order = await self.get_mkt_order_by_symbol(symbol)
+                if existing_mkt_order:
+                    logger.info(
+                        "Market order already in flight; restoring claim | "
+                        "symbol=%s order=%s",
+                        symbol, existing_mkt_order,
+                    )
+                    await _restore_claim("market order already in flight")
+                    return ExitRequestResponseIB(
+                        symbol=symbol,
+                        message=f"Market order already exists for {symbol}.",
+                    )
+
+                # ---- 4. PLACE MARKET ORDER & WAIT FOR ACK -----------------
+                order = Order(
+                    symbol=symbol,
+                    contract_type=position["sectype"],
+                    action=action,
+                    position_size=exit_qty,
+                )
+
+                trade = await self.place_market_order(order)
+                if trade is None:
+                    await _restore_claim("place_market_order returned None")
+                    return ExitRequestResponseIB(
+                        symbol=symbol,
+                        message=(
+                            f"IB error placing market order for {symbol}; "
+                            f"row restored so you can retry."
+                        ),
+                    )
+
+                final_status = await self._wait_for_order_done(trade, timeout=15.0)
+                if final_status != "Filled":
+                    # Order didn't fill (rejected, cancelled, timed out).
+                    # Don't touch the STP. Restore the claim so the user
+                    # can retry rather than re-arming manually.
+                    await _restore_claim(f"order final status={final_status}")
+                    return ExitRequestResponseIB(
+                        symbol=symbol,
+                        message=(
+                            f"Market order for {symbol} did not fill "
+                            f"(status={final_status}); row restored."
+                        ),
+                        order_id=getattr(trade.order, "orderId", None) if trade.order else None,
+                    )
+
+                filled_order_id = getattr(trade.order, "orderId", None) if trade.order else None
+                logger.info(
+                    "Market order filled | symbol=%s order_id=%s qty=%s",
+                    symbol, filled_order_id, exit_qty,
+                )
+
+                # Re-fetch the STP fresh AFTER the fill so we modify against
+                # current state, not a snapshot from before the fill.
+                existing_stp_order = await self.get_stp_order_by_symbol(symbol)
+                logger.info(
+                    "Post-fill STP snapshot | symbol=%s stp=%s",
+                    symbol, existing_stp_order,
+                )
+
+                # ---- 5. ADJUST STP --------------------------------------
+                if is_partial:
+                    stop_moved_to = None
+                    if (
+                        existing_stp_order
+                        and 'orderid' in existing_stp_order
+                        and remaining_qty > 0
+                    ):
+                        stp_order_id = existing_stp_order['orderid']
+                        await self.modify_stp_order_by_id(stp_order_id, remaining_qty)
+
+                        avgcost = position.get("avgcost")
+                        if avgcost is not None:
+                            new_stop = round(float(avgcost), 2)
+                            await self.move_stp_auxprice_to_avgcost(
+                                order_id=stp_order_id,
+                                new_auxprice=new_stop,
+                            )
+                            stop_moved_to = new_stop
+                        else:
+                            logger.warning(
+                                "avgcost missing; skipping stop move | symbol=%s",
+                                symbol,
+                            )
+                    elif (
+                        existing_stp_order
+                        and 'orderid' in existing_stp_order
+                        and remaining_qty == 0
+                    ):
+                        # Rounding edge case: partial flag set but math
+                        # produced a full exit. Cancel the STP.
+                        await self.cancel_order_by_id(existing_stp_order['orderid'])
                     else:
-                        logger.warning(
-                            "avgcost missing on position, skipping stop move | symbol=%s",
-                            payload.symbol,
+                        logger.info(
+                            "No STP found to modify on partial exit | symbol=%s",
+                            symbol,
                         )
-                elif existing_stp_order and 'orderid' in existing_stp_order and remaining_qty == 0:
-                    # Shouldn't really happen with is_partial but be safe
+
+                    msg = (
+                        f"Partial exit ({alarm}): {action} {exit_qty}/{total_abs} "
+                        f"shares of {symbol} at {trim_percentage*100:.0f}%. "
+                        f"Remaining: {remaining_qty}."
+                    )
+                    if stop_moved_to is not None:
+                        msg += f" STP resized and moved to avg cost {stop_moved_to}."
+                    else:
+                        msg += " STP resized."
+
+                    return ExitRequestResponseIB(
+                        symbol=symbol,
+                        message=msg,
+                        order_id=filled_order_id,
+                    )
+
+                # Full exit: cancel STP and wipe any sibling rows so they
+                # don't fire against a re-entered position later.
+                if existing_stp_order and 'orderid' in existing_stp_order:
                     await self.cancel_order_by_id(existing_stp_order['orderid'])
                 else:
-                    logger.info("No stop order found to modify for partial exit")
+                    logger.info("No STP found to cancel | symbol=%s", symbol)
 
-                # Keep the exit_request row around (do not delete) so user can trigger
-                # another trim later. Caller/UI can toggle it off if desired.
-                msg = (
-                    f"Partial exit: {action} {exit_qty} / {total_abs} shares of "
-                    f"{payload.symbol} at {trim_percentage*100:.0f}%. "
-                    f"Remaining position: {remaining_qty}."
+                siblings = await delete_exit_requests_by_symbol(
+                    self.db_conn, symbol
                 )
-                if stop_moved_to is not None:
-                    msg += f" STP resized and moved to avg cost {stop_moved_to}."
-                else:
-                    msg += " STP resized."
+                logger.info(
+                    "Full exit cleanup | symbol=%s sibling_rows_deleted=%s",
+                    symbol, len(siblings),
+                )
 
                 return ExitRequestResponseIB(
-                    symbol=payload.symbol,
-                    message=msg,
-                )
-            else:
-                # Full exit: cancel the STP as before and clear exit request
-                if existing_stp_order and 'orderid' in existing_stp_order:
-                    order_id = existing_stp_order['orderid']
-                    await self.cancel_order_by_id(order_id)
-                else:
-                    logger.info("No stop order found to cancel")
-
-                await delete_exit_request(self.db_conn, payload.symbol)
-
-                return ExitRequestResponseIB(
-                    symbol=payload.symbol,
-                    message=f"Market order placed to {action} {exit_qty} shares of {payload.symbol}."
+                    symbol=symbol,
+                    message=(
+                        f"Full exit ({alarm}): {action} {exit_qty} shares of "
+                        f"{symbol}. Cleared {len(siblings) + 1} exit_request row(s)."
+                    ),
+                    order_id=filled_order_id,
                 )
 
-
-        else:
-            return ExitRequestResponseIB(
-                symbol=payload.symbol,
-                message=f"Unhandled exit request state: {payload.alarm}"
-            )
+            except Exception:
+                # Anything unexpected mid-flight: log loudly and re-insert
+                # so we don't silently lose the user's arming.
+                logger.exception(
+                    "Unhandled exception during exit handling | symbol=%s alarm=%s",
+                    symbol, alarm,
+                )
+                await _restore_claim("unhandled exception")
+                raise
 
 
 
@@ -1483,9 +1609,10 @@ class PortfolioService:
                 # Find STOP order for this symbol
                 stop_order = await self.get_stp_order_by_symbol(symbol)
 
-                # Find exit status from db
-                exit_row = await fetch_exit_by_symbol(self.db_conn, symbol)
-                exit_requested = exit_row["exitrequested"] if exit_row else 0
+                # Collect the names of every strategy currently armed for
+                # this symbol. Empty list means nothing armed.
+                exit_rows = await fetch_exits_by_symbol(self.db_conn, symbol)
+                exit_strategies = [r["strategy"] for r in exit_rows]
 
                 if stop_order and stop_order.get("auxprice") is not None:
                     aux_price = float(stop_order.get("auxprice"))
@@ -1496,7 +1623,7 @@ class PortfolioService:
 
                 portfolio_positions.append(
                     OpenPosition(
-                        exit_request=exit_requested,
+                        exit_strategies=exit_strategies,
                         symbol=symbol,
                         contract_type=contract_type,
                         allocation=allocation,
