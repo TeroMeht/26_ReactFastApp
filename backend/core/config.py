@@ -1,26 +1,21 @@
 from typing import List
-from pydantic_settings import BaseSettings
-from pydantic import field_validator
-import os
 from pathlib import Path
-
-ENV_REPO = Path("C:/codebase/env-repo")
+from pydantic import field_validator
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     
     DATABASE_URL: str
 
-
-    API_PREFIX: str = "/api"
-    DEBUG: bool = False
-    ALLOWED_ORIGINS: str
-
-
-    # --- IBKR settings ---
+    # --- Interactive Brokers ---
     IB_HOST: str
     IB_PORT: int
     IB_CLIENT_ID: int
+
+    API_PREFIX: str
+    ALLOWED_ORIGINS: str
+
 
     # --- Folder Paths ---
     INPUT_TICKERS_PATH: Path
@@ -30,10 +25,6 @@ class Settings(BaseSettings):
     # --- Strategy parameters ---
     RISK: int
     MAX_ENTRY_FREQUENCY_MINUTES: int
-
-    # Max number of entry attempts allowed per symbol per day.
-    # An "entry attempt" is counted when a fill opens a position from a flat state
-    # for that symbol (adds, stop fills, and manual exits are not counted).
     MAX_ATTEMPTS_PER_SYMBOL_PER_DAY: int
 
     # Block entry for time period
@@ -56,16 +47,6 @@ class Settings(BaseSettings):
     ALPACA_BASE_URL: str
 
 
-    def __init__(self, **values):
-        super().__init__(**values)
-        if not self.DEBUG:
-            db_user = os.getenv("DB_USER")
-            db_password = os.getenv("DB_PASSWORD")
-            db_host = os.getenv("DB_HOST")
-            db_port = os.getenv("DB_PORT")
-            db_name = os.getenv("DB_NAME")
-            self.DATABASE_URL = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
-
     @field_validator("ALLOWED_ORIGINS")
     def parse_allowed_origins(cls, v: str) -> List[str]:
         return v.split(",") if v else []
@@ -82,6 +63,7 @@ class Settings(BaseSettings):
         return v
     
     class Config:
+        ENV_REPO = Path("C:/codebase/env-repo")
         env_file = ENV_REPO / "26_ReactFastApp.env" # centralized project configs
         env_file_encoding = "utf-8"
         case_sensitive = True

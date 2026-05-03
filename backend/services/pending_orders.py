@@ -3,7 +3,7 @@ import logging
 from typing import List, Optional, Dict
 from db.pending_orders import *
 from services.orders import calculate_position_size
-from services.portfolio import PortfolioService
+from services.portfolio.ib_client import IbClient
 from schemas.api_schemas import PendingOrder
 
 from core.config import settings
@@ -174,14 +174,14 @@ async def wrapup_pending_orders(db_conn) -> List[Dict]:
 # Calculate and generate PendingOrder for UI to show
 async def process_open_orders(db_conn,ib) -> List[PendingOrder]:
         
-        portfolio_service = PortfolioService(ib,db_conn)
+        client = IbClient(ib)
         combined_orders = await wrapup_pending_orders(db_conn)
 
         if not combined_orders:
             return []
 
         #  Fetch ALL bid/ask prices concurrently
-        tasks = [portfolio_service.get_bid_ask_price(order["symbol"])
+        tasks = [client.get_bid_ask_price(order["symbol"])
             for order in combined_orders
         ]
 

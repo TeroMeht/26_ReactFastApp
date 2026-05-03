@@ -248,36 +248,12 @@ export interface paths {
          * Get Fills
          * @description Snapshot of today's IB orders/fills for the Risk Levels fills table.
          *
-         *     Returns one row per order with current status (Submitted / PartiallyFilled /
-         *     Filled / Cancelled / ...), filled / remaining quantities and the
-         *     volume-weighted average fill price.  Calls reqAllOpenOrdersAsync +
-         *     reqExecutionsAsync first so the snapshot reflects IB-side reality even if
-         *     a cancel/fill happened outside this backend (TWS, mobile, etc.).  The SSE
-         *     stream at ``/fills/stream`` delivers live updates for the same rows.
+         *     Returns one row per order with current status (Submitted / PartiallyFilled
+         *     / Filled / Cancelled / ...), filled / remaining quantities and the
+         *     volume-weighted average fill price. The frontend polls this endpoint
+         *     every 30 seconds — there is no streaming or background subscription.
          */
         get: operations["get_fills_api_portfolio_fills_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/portfolio/fills/stream": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Stream Fills
-         * @description Server-Sent Events stream that pushes order-status / fill / commission
-         *     updates as they arrive from IB.  Subscribers first receive a ``snapshot``
-         *     event carrying today's rows, then incremental events keyed by ``permId``.
-         */
-        get: operations["stream_fills_api_portfolio_fills_stream_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -789,7 +765,7 @@ export interface components {
         OpenPosition: {
             /**
              * Exit Strategies
-             * @description Strategy names currently armed for this symbol.
+             * @default []
              */
             exit_strategies: string[];
             /** Symbol */
@@ -891,6 +867,10 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+            /** Input */
+            input?: unknown;
+            /** Context */
+            ctx?: Record<string, never>;
         };
     };
     responses: never;
@@ -1232,26 +1212,6 @@ export interface operations {
         };
     };
     get_fills_api_portfolio_fills_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    stream_fills_api_portfolio_fills_stream_get: {
         parameters: {
             query?: never;
             header?: never;

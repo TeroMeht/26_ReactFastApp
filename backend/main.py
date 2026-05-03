@@ -82,7 +82,13 @@ app = FastAPI(
 
 
 
-app.add_middleware(CORSMiddleware, allow_origins=settings.ALLOWED_ORIGINS, allow_credentials=True)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],   # GET, POST, PUT, DELETE, PATCH, OPTIONS, ...
+    allow_headers=["*"],   # Content-Type, Authorization, etc.
+)
 
 app.include_router(tickers.router)
 app.include_router(script.router)

@@ -16,6 +16,12 @@ class Order:
     
 
 
+def calculate_entry_price(bid_ask: dict, stop_price: float, offset: float = 0.02):
+    if bid_ask["ask"] > stop_price:
+        return round(bid_ask["ask"] + offset, 2)
+    elif bid_ask["bid"] < stop_price:
+        return round(bid_ask["bid"] - offset, 2)
+    
 
 def calculate_position_size(entry_price, stop_price, risk):
 

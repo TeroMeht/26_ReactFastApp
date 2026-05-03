@@ -1,138 +1,136 @@
 from fastapi import APIRouter, Depends, HTTPException
+from typing import List
 
-from services.portfolio import PortfolioService
+from services.portfolio.ib_client import IbClient
+from services.portfolio.flows.entry import process_entry_request,count_entry_attempts_today_all
+from services.portfolio.flows.add import process_add_request
+from services.portfolio.flows.exit import process_exit_request
+from services.portfolio.flows.open_risk import process_openrisktable
+
 from services.fills import fetch_fills_today
-from dependencies import get_ib,get_db_conn
+from dependencies import get_ib, get_db_conn
 from core.config import settings
-from typing import Optional,List
 
-from schemas.api_schemas import AddRequest, EntryRequestResponse, EntryRequest, ExitRequest, ExitRequestResponseIB,ModifyOrderRequest, ModifyOrderByIdRequest, OpenPosition, AddRequestResponse, EntryAttemptsRow
+from schemas.api_schemas import (
+    AddRequest,
+    EntryRequestResponse,
+    EntryRequest,
+    ExitRequest,
+    ExitRequestResponseIB,
+    OpenPosition,
+    AddRequestResponse,
+    EntryAttemptsRow,
+)
 
 router = APIRouter(
     prefix="/api/portfolio",
-    tags=["Portfolio"]
+    tags=["Portfolio"],
 )
 
+
+# ----------------------------------------------------------------------
+# Read endpoints — thin pass-throughs to IbClient
+# ----------------------------------------------------------------------
 @router.get("/positions")
-async def get_positions(ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
+async def get_positions(ib=Depends(get_ib)):
     try:
-        service = PortfolioService(ib,db_conn)
-        return await service.get_positions()
+        client = IbClient(ib)
+        return await client.get_positions()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/orders")
-async def get_orders(ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
+async def get_orders(ib=Depends(get_ib)):
     try:
-        service = PortfolioService(ib,db_conn)
-        return await service.get_orders()
+        client = IbClient(ib)
+        return await client.get_orders()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/account-summary")
-async def get_account_summary(ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
+async def get_account_summary(ib=Depends(get_ib)):
     try:
-        service = PortfolioService(ib,db_conn)
-        return await service.get_account_summary()
+        client = IbClient(ib)
+        return await client.get_account_summary()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/trades")
-async def get_trades(ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
+async def get_trades(ib=Depends(get_ib)):
     try:
-        service = PortfolioService(ib,db_conn)
-        return await service.get_trades()
+        client = IbClient(ib)
+        return await client.get_trades()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
+
 
 @router.get("/pnl")
-async def get_pnl(ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
+async def get_pnl(ib=Depends(get_ib)):
     try:
-        service = PortfolioService(ib,db_conn)
-        return await service.get_trades_with_pnl()
+        client = IbClient(ib)
+        return await client.get_trades_with_pnl()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/fills")
 async def get_fills(ib=Depends(get_ib)):
-    """
-    Snapshot of today's IB orders/fills for the Risk Levels fills table.
-
-    Returns one row per order with current status (Submitted / PartiallyFilled
-    / Filled / Cancelled / ...), filled / remaining quantities and the
-    volume-weighted average fill price. The frontend polls this endpoint
-    every 30 seconds — there is no streaming or background subscription.
-    """
     try:
         return await fetch_fills_today(ib)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch fills: {e}")
 
 
-
-
 @router.get("/price/{symbol}")
-async def get_bid_ask_price(symbol: str, ib = Depends(get_ib),db_conn=Depends(get_db_conn)):
-    """
-    Fetch latest bid/ask price snapshot for a symbol.
-    Example: /api/portfolio/price/AAPL
-    """
+async def get_bid_ask_price(symbol: str, ib=Depends(get_ib)):
     try:
-        service = PortfolioService(ib,db_conn)
-        data = await service.get_bid_ask_price(symbol)
-
-        return data
-
+        client = IbClient(ib)
+        return await client.get_bid_ask_price(symbol)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
-
+# ----------------------------------------------------------------------
+# Workflow endpoints — call the function-style handlers in services.portfolio
+# ----------------------------------------------------------------------
 @router.post("/entry-request", response_model=EntryRequestResponse)
-async def entry_request(payload: EntryRequest,ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
-    service = PortfolioService(ib,db_conn)
-    return await service.process_entry_request(payload)
+async def entry_request(payload: EntryRequest, ib=Depends(get_ib)):
+    client = IbClient(ib)
+    return await process_entry_request(client, payload)
 
 
 @router.post("/add-request", response_model=AddRequestResponse)
-async def add_request(payload: AddRequest,ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
-    service = PortfolioService(ib,db_conn)
-    return await service.process_add_request(payload)
+async def add_request(payload: AddRequest, ib=Depends(get_ib)):
+    client = IbClient(ib)
+    return await process_add_request(client, payload)
 
 
 @router.post("/exit-request", response_model=ExitRequestResponseIB)
-async def exit_request(payload: ExitRequest, ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
-    service = PortfolioService(ib,db_conn)
-    return await service.process_exit_request(payload)
+async def exit_request(payload: ExitRequest, ib=Depends(get_ib), db_conn=Depends(get_db_conn)):
+    client = IbClient(ib)
+    return await process_exit_request(client, db_conn, payload)
 
 
 @router.post("/move-stop-be")
-async def move_stop_by_symbol(symbol: str, ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
-    service = PortfolioService(ib,db_conn)
-    if not symbol:
-        raise HTTPException(status_code=400, detail="Symbol is required in the request body")
-    return await service.move_stp_order_by_symbol(symbol)
-
- 
-
-
-
+async def move_stop_by_symbol(symbol: str, ib=Depends(get_ib)):
+    client = IbClient(ib)
+    return await client.move_stp_order_by_symbol(symbol)
 
 
 @router.post("/cancel-order/{order_id}")
-async def cancel_order(order_id: int, ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
+async def cancel_order(order_id: int, ib=Depends(get_ib)):
     try:
-        service = PortfolioService(ib,db_conn)
-        cancelled = await service.cancel_order_by_id(order_id)
+        client = IbClient(ib)
+        cancelled = await client.cancel_order_by_id(order_id)
 
         if not cancelled:
-            raise HTTPException(status_code=404, detail=f"No open order found with orderId={order_id}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"No open order found with orderId={order_id}",
+            )
 
         return {"status": "cancelled", "order_id": order_id}
 
@@ -143,7 +141,7 @@ async def cancel_order(order_id: int, ib=Depends(get_ib),db_conn=Depends(get_db_
 
 
 @router.get("/entry-attempts", response_model=List[EntryAttemptsRow])
-async def get_entry_attempts(ib=Depends(get_ib), db_conn=Depends(get_db_conn)):
+async def get_entry_attempts(ib=Depends(get_ib)):
     """
     Per-symbol entry-attempt stats for today. Only symbols with at least one
     entry attempt today are returned (ordered alphabetically). Used by the
@@ -151,8 +149,8 @@ async def get_entry_attempts(ib=Depends(get_ib), db_conn=Depends(get_db_conn)):
     MAX_ATTEMPTS_PER_SYMBOL_PER_DAY limit.
     """
     try:
-        service = PortfolioService(ib, db_conn)
-        counts = await service.count_entry_attempts_today_all()
+        client = IbClient(ib)
+        counts = await count_entry_attempts_today_all(client)
         max_attempts = settings.MAX_ATTEMPTS_PER_SYMBOL_PER_DAY
 
         rows = [
@@ -169,46 +167,21 @@ async def get_entry_attempts(ib=Depends(get_ib), db_conn=Depends(get_db_conn)):
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to fetch entry attempts: {str(e)}"
+            detail=f"Failed to fetch entry attempts: {str(e)}",
         )
 
 
 @router.get("/open-risk-table", response_model=List[OpenPosition])
-async def get_open_risk_table(ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
+async def get_open_risk_table(ib=Depends(get_ib), db_conn=Depends(get_db_conn)):
     """
     Fetch the current open risk table for all portfolio positions.
     """
     try:
-        ib_service = PortfolioService(ib,db_conn)
-        return await ib_service.process_openrisktable()
+        client = IbClient(ib)
+        return await process_openrisktable(client, db_conn)
 
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to fetch open risk table: {str(e)}"
+            detail=f"Failed to fetch open risk table: {str(e)}",
         )
-
-
-
-# Temporary endpoint to fetch open STP order for a symbol (used for testing modify flow)
-
-# @router.get("/stp-order/{symbol}")
-# async def get_stp_order(symbol: str, ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
-#     """
-#     Fetch the first open STP (Stop) order for the given symbol.
-#     """
-#     ib_service = PortfolioService(ib,db_conn)
-
-#     return await ib_service.get_stp_order_by_symbol(symbol)
-
-
-# @router.post("/modify-order-by-id")
-# async def modify_order(request: ModifyOrderByIdRequest, ib=Depends(get_ib),db_conn=Depends(get_db_conn)):
-#     """
-#     Modify the quantity of an open IB order using its orderId.
-#     """
-#     ib_service = PortfolioService(ib,db_conn)
-#     return await ib_service.modify_stp_order_by_id(
-#         order_id=request.order_id,
-#         new_qty=request.new_quantity
-#     )
