@@ -58,49 +58,71 @@ const EntryAttemptsTable: React.FC<Props> = ({ refreshTrigger = 0 }) => {
     <div>
       <h2 className="text-xl font-bold mb-4">Entry Attempts</h2>
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Symbol</TableHead>
-            <TableHead className="text-right">Attempts</TableHead>
-            <TableHead className="text-right">Max</TableHead>
-            <TableHead className="text-right">Remaining</TableHead>
-          </TableRow>
-        </TableHeader>
+      {/*
+        Viewport: header + 3 data rows (~13.5rem). Vertical-only scrolling.
 
-        <TableBody>
-          {rows.length === 0 ? (
+        Two key tricks so the 4th row's scrollbar doesn't push "Remaining"
+        out of view:
+          1. scrollbar-gutter: stable always reserves space for the
+             scrollbar so the available width is the same whether or not
+             the bar is visible.
+          2. The <table> uses table-fixed with explicit column widths,
+             so columns can't reflow as more rows are added — they stay
+             at the percentages we set.
+        The inner div from shadcn's Table still needs overflow-x-hidden
+        so it doesn't render its own horizontal bar.
+      */}
+      <div
+        className="
+          max-h-[13.5rem] overflow-y-auto overflow-x-hidden
+          [scrollbar-gutter:stable]
+          [&>div]:overflow-x-hidden [&>div]:overflow-y-visible
+        "
+      >
+        <Table className="table-fixed w-full">
+          <TableHeader className="sticky top-0 bg-background z-10">
             <TableRow>
-              <TableCell colSpan={4} className="text-gray-500">
-                {loading ? "Loading..." : "No entries today."}
-              </TableCell>
+              <TableHead className="w-[34%] px-2">Symbol</TableHead>
+              <TableHead className="w-[22%] px-2 text-right">Attempts</TableHead>
+              <TableHead className="w-[22%] px-2 text-right">Max</TableHead>
+              <TableHead className="w-[22%] px-2 text-right">Remaining</TableHead>
             </TableRow>
-          ) : (
-            rows.map((row) => {
-              const atLimit = row.remaining === 0;
-              const oneLeft = row.remaining === 1;
-              return (
-                <TableRow key={row.symbol}>
-                  <TableCell className="font-medium">{row.symbol}</TableCell>
-                  <TableCell className="text-right">{row.attempts}</TableCell>
-                  <TableCell className="text-right">{row.max_attempts}</TableCell>
-                  <TableCell
-                    className={`text-right font-semibold ${
-                      atLimit
-                        ? "text-red-600"
-                        : oneLeft
-                        ? "text-amber-600"
-                        : "text-green-700"
-                    }`}
-                  >
-                    {row.remaining}
-                  </TableCell>
-                </TableRow>
-              );
-            })
-          )}
-        </TableBody>
-      </Table>
+          </TableHeader>
+
+          <TableBody>
+            {rows.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={4} className="text-gray-500 px-2">
+                  {loading ? "Loading..." : "No entries today."}
+                </TableCell>
+              </TableRow>
+            ) : (
+              rows.map((row) => {
+                const atLimit = row.remaining === 0;
+                const oneLeft = row.remaining === 1;
+                return (
+                  <TableRow key={row.symbol}>
+                    <TableCell className="font-medium px-2 truncate">{row.symbol}</TableCell>
+                    <TableCell className="px-2 text-right">{row.attempts}</TableCell>
+                    <TableCell className="px-2 text-right">{row.max_attempts}</TableCell>
+                    <TableCell
+                      className={`px-2 text-right font-semibold ${
+                        atLimit
+                          ? "text-red-600"
+                          : oneLeft
+                          ? "text-amber-600"
+                          : "text-green-700"
+                      }`}
+                    >
+                      {row.remaining}
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+      </div>
     </div>
   );
 };

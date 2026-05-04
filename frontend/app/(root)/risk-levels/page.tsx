@@ -6,7 +6,7 @@ import HeaderBox from "@/components/HeaderBox";
 import PortfolioTable from "@/components/risk-levels/Portfolio";
 import PendingOrdersTable from "@/components/risk-levels/PendingOrders";
 import EntryAttemptsTable from "@/components/risk-levels/EntryAttemptsTable";
-import FillsTable from "@/components/risk-levels/FillsTable";
+
 
 
 const Risklevels = () => {
@@ -39,7 +39,6 @@ const Risklevels = () => {
         <div>
           <PendingOrdersTable onRefreshed={bumpRefresh} />
           <PortfolioTable />
-          {/* <FillsTable /> */}
         </div>
       </div>
     </section>

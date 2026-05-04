@@ -7,7 +7,7 @@ from services.portfolio.flows.add import process_add_request
 from services.portfolio.flows.exit import process_exit_request
 from services.portfolio.flows.open_risk import process_openrisktable
 
-from services.fills import fetch_fills_today
+
 from dependencies import get_ib, get_db_conn
 from core.config import settings
 
@@ -76,12 +76,6 @@ async def get_pnl(ib=Depends(get_ib)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/fills")
-async def get_fills(ib=Depends(get_ib)):
-    try:
-        return await fetch_fills_today(ib)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch fills: {e}")
 
 
 @router.get("/price/{symbol}")
