@@ -41,9 +41,7 @@ async def fetch_exits(db_conn: asyncpg.Connection) -> List[Dict]:
     return [dict(row) for row in rows]
 
 
-async def fetch_exits_by_symbol(
-    db_conn: asyncpg.Connection, symbol: str
-) -> List[Dict]:
+async def fetch_exits_by_symbol(db_conn: asyncpg.Connection, symbol: str) -> List[Dict]:
     """
     Return ALL exit_request rows for a given symbol. May be empty.
     """
