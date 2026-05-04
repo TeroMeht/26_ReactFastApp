@@ -1,26 +1,21 @@
-import asyncio
 import logging
 from typing import List, Dict
 from services.orders import Order
 from services.portfolio.ib_client import IbClient
 from db.exits import (
     fetch_exits_by_symbol,
-    update_exit_request,
     delete_exit_request,
     delete_exit_requests_by_symbol,
 )
-from core.config import settings
 from schemas.api_schemas import (
-
     ExitRequest,
     ExitRequestResponseIB,
-
 )
 
 logger = logging.getLogger(__name__)
 
 
-
+# helper functions
 def _decide_exit_mtk_order_action(position) -> str:
 
     if position["position"] > 0:
@@ -35,10 +30,10 @@ def _decide_exit_mtk_order_action(position) -> str:
 
 def _calculate_exit_mkt_order_size(position, trim_percentage) -> int:
 
-        current_position_size = abs(position["position"])
-        exit_qty = int(round(float(current_position_size) * float(trim_percentage))) # paljonko pitää myydä/ostaa
+    current_position_size = abs(position["position"])
+    exit_qty = int(round(float(current_position_size) * float(trim_percentage)))  # paljonko pitää myydä/ostaa
 
-        return exit_qty
+    return exit_qty
 
 def _find_matching_exit(exits_for_this_symbol: List[Dict], alarm: str) -> Dict:
 
@@ -65,13 +60,12 @@ def _find_matching_exit(exits_for_this_symbol: List[Dict], alarm: str) -> Dict:
         return None
 
 
-
-
-async def handle_partial_exit(client, position,matched_exit) -> ExitRequestResponseIB:
+# handlers to deal with ib client and db together, called by the router
+async def _handle_partial_exit(client, position, matched_exit) -> ExitRequestResponseIB:
     exit_qty            = _calculate_exit_mkt_order_size(position, matched_exit["trim_percentage"])
     action              = _decide_exit_mtk_order_action(position)
-    remaining_qty       = position["position"]- exit_qty
-            
+    remaining_qty       = abs(position["position"]) - exit_qty
+
 
     # ---- 4. Create order
     order = Order(
@@ -96,9 +90,9 @@ async def handle_partial_exit(client, position,matched_exit) -> ExitRequestRespo
         )
     return ExitRequestResponseIB(
         symbol=position["symbol"],
-        message=(f"Partial exit and stop adjustments done"))
+        message="Partial exit and stop adjustments done")
 
-async def handle_full_exit(client, position)-> ExitRequestResponseIB:
+async def _handle_full_exit(client, position) -> ExitRequestResponseIB:
 
     action              = _decide_exit_mtk_order_action(position)
 
@@ -106,7 +100,7 @@ async def handle_full_exit(client, position)-> ExitRequestResponseIB:
     order = Order(
         symbol=position["symbol"],
         action=action,
-        position_size=position["position"],
+        position_size=abs(position["position"]),
         contract_type=position["sectype"],
     )
 
@@ -121,66 +115,71 @@ async def handle_full_exit(client, position)-> ExitRequestResponseIB:
 
     return ExitRequestResponseIB(
         symbol=position["symbol"],
-        message=(f"Full exit done and stp order cancelled"))
+        message="Full exit done and stp order cancelled")
 
 
+# wrapper
+async def _dispatch_exit(client, db_conn, position, matched_exit) -> ExitRequestResponseIB:
+    """
+    Pick partial vs full exit based on trim_percentage, execute it, and
+    clean up the corresponding exit_request row(s) so the strategy disarms.
+
+    - trim < 1.0  -> partial exit, delete only this (symbol, strategy) row
+    - trim == 1.0 -> full exit, delete every exit_request row for the symbol
+                     so leftover strategies don't fire on a re-entered position
+    """
+    trim = matched_exit["trim_percentage"]
+    symbol = position["symbol"]
+
+    if trim < 1.0:
+        response = await _handle_partial_exit(client, position, matched_exit)
+        await delete_exit_request(db_conn, symbol, matched_exit["strategy"])
+    elif trim == 1.0:
+        response = await _handle_full_exit(client, position)
+        await delete_exit_requests_by_symbol(db_conn, symbol)
+    else:
+        raise ValueError(f"Unexpected trim_percentage: {trim}")
+
+    return response
 
 
-async def process_exit_request(client: IbClient, db_conn,payload: ExitRequest) -> ExitRequestResponseIB:
+# main flow
+async def process_exit_request(client: IbClient, db_conn, payload: ExitRequest) -> ExitRequestResponseIB:
 
 
     symbol = payload.symbol  # already uppercased + validated by ExitRequest schema
     alarm = payload.alarm    # already validated against EXIT_TRIGGERS by schema
 
-    logger.info("Received exit request | symbol=%s alarm=%s time=%s",symbol, alarm, payload.time)
+    logger.info("Received exit request | symbol = %s alarm = %s time = %s", symbol, alarm, payload.time)
 
     try:
-        position = await client.get_position_by_symbol(symbol)
-        existing_mkt_order = await client.get_mkt_order_by_symbol(symbol) # jos mkt order tälle symbolille on jo niin ei tarvi mennä pidemmälle
-
+        existing_mkt_order = await client.get_mkt_order_by_symbol(symbol)  # jos mkt order tälle symbolille on jo niin ei tarvi mennä pidemmälle
         if existing_mkt_order:
-            logger.info(f"Market order for this exit exists already")
-            return ExitRequestResponseIB(symbol=symbol, message=(f"Market order for this exit exists already"))
+            logger.info("Market order for this exit exists already")
+            return ExitRequestResponseIB(symbol=symbol, message="Market order for this exit exists already")
 
-
-        if position: # Jos on positio
-            exits_for_this_symbol = await fetch_exits_by_symbol(db_conn,symbol) # katso exit requestit onko sille
-            
-            if exits_for_this_symbol: # jos positiolla on exit request
-
-                matching_exit_row = _find_matching_exit(exits_for_this_symbol, alarm)
-
-                if matching_exit_row:
-
-                    matched_exit = matching_exit_row["matched_exit"]
-                   
-                    if matched_exit["trim_percentage"] < 1.0: # Jos ei olla tekemässä exittiä koko positiosta
-                        ib_exit_response = await handle_partial_exit(client,position, matched_exit)
-                        return(ib_exit_response)
-
-                    elif matched_exit["trim_percentage"] == 1.0:
-                        ib_exit_response = await handle_full_exit(client,position)
-                        return(ib_exit_response)
-
-                    # You can now use matched_exit, trim_percentage, and is_partial for further processing
-                else:
-                    logger.warning("No exit strategy found for alarm: %s", alarm)
-                    return ExitRequestResponseIB(symbol=symbol, message=(f"There is no matchin exit request"))
-
-                
-        else: # Jos ei ole positiota
+        position = await client.get_position_by_symbol(symbol)
+        if not position:  # Jos ei ole positiota
             logger.info("No position found for symbol: %s", symbol)
-            return ExitRequestResponseIB(symbol=symbol, message=(f"No position found"))
-        
-        #TODO: Delete exit request puuttuu
-        
+            return ExitRequestResponseIB(symbol=symbol, message="No position found")
+
+        exits_for_this_symbol = await fetch_exits_by_symbol(db_conn, symbol)  # katso exit requestit onko sille
+        if not exits_for_this_symbol:  # ei exit requestiä positiolle
+            logger.info("No active exit request for symbol: %s", symbol)
+            return ExitRequestResponseIB(symbol=symbol, message="No active exit request for this symbol")
+
+        matching_exit_row = _find_matching_exit(exits_for_this_symbol, alarm)
+        if not matching_exit_row:
+            logger.warning("No exit strategy found for alarm: %s", alarm)
+            return ExitRequestResponseIB(symbol=symbol, message="There is no matching exit request")
+
+        return await _dispatch_exit(client, db_conn, position, matching_exit_row["matched_exit"])
+
     except Exception:
-        # Anything unexpected mid-flight: log loudly and re-insert
-        # so we don't silently lose the user's arming.
+        # Anything unexpected mid-flight: log loudly and return an error response
+        # so the caller doesn't get None back.
         logger.exception(
             "Unhandled exception during exit handling | symbol=%s alarm=%s",
             symbol, alarm,
         )
-
-
-
+        return ExitRequestResponseIB(symbol=symbol, message="Unhandled error during exit handling")
