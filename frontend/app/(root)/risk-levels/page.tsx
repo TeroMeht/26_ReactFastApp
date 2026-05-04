@@ -39,7 +39,7 @@ const Risklevels = () => {
         <div>
           <PendingOrdersTable onRefreshed={bumpRefresh} />
           <PortfolioTable />
-          <FillsTable />
+          {/* <FillsTable /> */}
         </div>
       </div>
     </section>

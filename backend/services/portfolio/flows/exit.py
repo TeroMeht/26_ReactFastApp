@@ -83,9 +83,11 @@ async def _handle_partial_exit(client, position, matched_exit) -> ExitRequestRes
         logger.info("No STP found to modify on partial exit")
     else:
         # Resize the STP, then move it to breakeven if we know avgcost.
-        await client.modify_stp_order_by_id(existing_stp_order, remaining_qty)
+        # IbClient methods expect an integer permId, not the full order dict.
+        stp_order_id = existing_stp_order["orderid"]
+        await client.modify_stp_order_by_id(stp_order_id, remaining_qty)
         await client.move_stp_auxprice_to_avgcost(
-            order_id=existing_stp_order,
+            order_id=stp_order_id,
             new_auxprice=round(position.get("avgcost"), 2),
         )
     return ExitRequestResponseIB(
@@ -111,7 +113,8 @@ async def _handle_full_exit(client, position) -> ExitRequestResponseIB:
     if existing_stp_order is None:
         logger.info("No STP found to cancel it full exit")
     else:
-        await client.cancel_order_by_id(existing_stp_order)
+        # cancel_order_by_id expects an integer permId, not the full order dict.
+        await client.cancel_order_by_id(existing_stp_order["orderid"])
 
     return ExitRequestResponseIB(
         symbol=position["symbol"],

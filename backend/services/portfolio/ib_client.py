@@ -52,7 +52,7 @@ class IbClient:
                 if p.position != 0
             ]
 
-            logging.info(f"Fetched positions: {result}")
+            logging.debug(f"Fetched positions: {result}")
             return result
 
         except Exception as e:
@@ -83,7 +83,7 @@ class IbClient:
                 for t in trades
             ]
 
-            logging.info(f"Fetched orders: {orders}")
+            logging.debug(f"Fetched orders: {orders}")
             return orders
 
         except Exception as e:
@@ -207,7 +207,7 @@ class IbClient:
                     if o["symbol"]
                     and o["symbol"].upper() == symbol.upper()
                     and o["ordertype"]
-                    and o["ordertype"].upper() == "STP" or o["ordertype"].upper() == "STP LMT"
+                    and o["ordertype"].upper() in ("STP", "STP LMT")
                 ),
                 None
             )
@@ -215,7 +215,7 @@ class IbClient:
         except Exception as e:
             logging.error(f"Error fetching STP order for {symbol}: {e}")
             return None
-        
+
     async def get_mkt_order_by_symbol(self, symbol: str) -> dict | None:
         """
         Return the first open MKT (Market) order for the given symbol.

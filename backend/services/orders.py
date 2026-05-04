@@ -16,26 +16,54 @@ class Order:
     
 
 
-def calculate_entry_price(bid_ask: dict, stop_price: float, offset: float = 0.02):
-    if bid_ask["ask"] > stop_price:
-        return round(bid_ask["ask"] + offset, 2)
-    elif bid_ask["bid"] < stop_price:
-        return round(bid_ask["bid"] - offset, 2)
-    
+def calculate_entry_price(bid_ask: dict, stop_price: float, offset: float = 0.02) -> float:
+    """
+    Decide an entry limit price relative to the configured stop:
+      - long  (ask > stop)  -> ask + offset
+      - short (bid < stop)  -> bid - offset
+    Raises ValueError if the quote is missing/invalid or the stop sits
+    inside the spread (ask <= stop <= bid), which would leave direction
+    ambiguous and previously returned None silently.
+    """
+    if not bid_ask:
+        raise ValueError("calculate_entry_price: missing bid/ask quote")
 
-def calculate_position_size(entry_price, stop_price, risk):
+    bid = bid_ask.get("bid")
+    ask = bid_ask.get("ask")
 
-    try:
-        risk_per_unit = entry_price - stop_price
-        if risk_per_unit == 0:
-            raise ValueError("Entry price and stop price cannot be the same.")
-        
-        position_size = abs(int(risk / risk_per_unit))  # force integer
-        return position_size
-    
-    except Exception as e:
-        logger.error("Error calculating position size:", e)
-        return None
+    if not bid or not ask or bid <= 0 or ask <= 0:
+        raise ValueError(
+            f"calculate_entry_price: invalid quote (bid={bid}, ask={ask})"
+        )
+
+    if ask > stop_price:
+        return round(ask + offset, 2)
+    if bid < stop_price:
+        return round(bid - offset, 2)
+
+    raise ValueError(
+        f"calculate_entry_price: stop_price {stop_price} sits inside "
+        f"the spread (bid={bid}, ask={ask}); cannot pick a direction"
+    )
+
+
+def calculate_position_size(entry_price, stop_price, risk) -> int:
+    """
+    Risk-based sizing: |risk / (entry - stop)|, forced to int.
+    Raises ValueError on bad inputs instead of silently returning None
+    so callers see the failure rather than crashing on the next line.
+    """
+    if entry_price is None or stop_price is None or risk is None:
+        raise ValueError(
+            f"calculate_position_size: missing input "
+            f"(entry={entry_price}, stop={stop_price}, risk={risk})"
+        )
+
+    risk_per_unit = entry_price - stop_price
+    if risk_per_unit == 0:
+        raise ValueError("Entry price and stop price cannot be the same.")
+
+    return abs(int(risk / risk_per_unit))
 
 
 

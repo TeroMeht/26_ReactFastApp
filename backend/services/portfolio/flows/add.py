@@ -1,135 +1,166 @@
+"""
+Add flow.
+
+Pyramid into an existing winning position. Fetches position + open STP +
+quote once, runs pure guards over that context, then sizes a limit order
+to bring total exposure to the requested risk and resizes the STP. Public
+surface preserved:
+    process_add_request - the orchestrator
+"""
+
 import logging
+from dataclasses import dataclass
 
-from services.orders import Order, build_order, calculate_position_size,calculate_entry_price
-from services.portfolio.ib_client import IbClient
-
-from core.config import settings
-from schemas.api_schemas import (
-    AddRequest,
-    AddRequestResponse
+from services.orders import (
+    build_order,
+    calculate_position_size,
+    calculate_entry_price,
 )
+from services.portfolio.ib_client import IbClient
+from schemas.api_schemas import AddRequest, AddRequestResponse
 
 logger = logging.getLogger(__name__)
 
 
-
-async def _is_add_allowed(client: IbClient, position: dict) -> dict:
-    """Won't allow adding to a losing position."""
-    symbol = position.get("symbol")
-    try:
-        avg_cost = position.get("avgcost")
-        position_size = position.get("position")
-        price_data = await client.get_bid_ask_price(symbol)
-        ask = price_data["ask"]
-        bid = price_data["bid"]
-
-        if position_size > 0:
-            allowed = ask > avg_cost
-            message = "OK to add to this long position" if allowed else "Cannot add to losing long position"
-        elif position_size < 0:
-            allowed = bid < avg_cost
-            message = "OK to add to this short position" if allowed else "Cannot add to losing short position"
-        else:
-            allowed = False
-            message = "No existing position to add to"
-
-        return {
-            "allowed": allowed,
-            "symbol": symbol,
-            "message": message,
-            "price_data": price_data,
-        }
-
-    except Exception as e:
-        logger.error(f"Error validating add for {symbol}: {e}")
-        return {
-            "allowed": False,
-            "symbol": symbol,
-            "message": str(e),
-            "price_data": None,
-        }
+# ----------------------------------------------------------------------
+# Context
+# ----------------------------------------------------------------------
+@dataclass(frozen=True)
+class AddContext:
+    """Everything the add flow needs from IB, fetched once."""
+    position: dict | None
+    stp_order: dict | None
+    bid_ask: dict | None
 
 
+async def _build_add_context(client: IbClient, symbol: str) -> AddContext:
+    position = await client.get_position_by_symbol(symbol)
+    stp_order = await client.get_stp_order_by_symbol(symbol)
+    bid_ask = await client.get_bid_ask_price(symbol)
+    return AddContext(position=position, stp_order=stp_order, bid_ask=bid_ask)
 
+
+# ----------------------------------------------------------------------
+# Guards — pure functions over an AddContext
+# ----------------------------------------------------------------------
+def check_has_position(ctx: AddContext, symbol: str) -> tuple[bool, str]:
+    if not ctx.position or not ctx.position.get("position"):
+        msg = f"No existing position for {symbol} to add to."
+        logger.info(msg)
+        return False, msg
+    return True, ""
+
+
+def check_has_stp_order(ctx: AddContext, symbol: str) -> tuple[bool, str]:
+    if not ctx.stp_order:
+        msg = f"No open STP order for {symbol}; cannot determine stop price."
+        logger.info(msg)
+        return False, msg
+    return True, ""
+
+
+def check_has_quote(ctx: AddContext, symbol: str) -> tuple[bool, str]:
+    if not ctx.bid_ask:
+        msg = f"No bid/ask quote available for {symbol}."
+        logger.info(msg)
+        return False, msg
+    return True, ""
+
+
+def check_not_losing(ctx: AddContext) -> tuple[bool, str]:
+    """Refuse to add to a losing position."""
+    pos_size = ctx.position.get("position")
+    avg_cost = ctx.position.get("avgcost")
+    bid = ctx.bid_ask.get("bid")
+    ask = ctx.bid_ask.get("ask")
+
+    if pos_size > 0:
+        if ask > avg_cost:
+            return True, ""
+        return False, "Cannot add to losing long position."
+    if pos_size < 0:
+        if bid < avg_cost:
+            return True, ""
+        return False, "Cannot add to losing short position."
+    return False, "No existing position to add to."
+
+
+def check_not_at_target_size(
+    ctx: AddContext, total_size: int
+) -> tuple[bool, str]:
+    """Refuse to place a 0- or negative-quantity add for both longs and shorts."""
+    current = abs(ctx.position.get("position", 0))
+    if current >= total_size:
+        msg = "Wanted position size is already in portfolio"
+        logger.info(msg)
+        return False, msg
+    return True, ""
+
+
+# ----------------------------------------------------------------------
+# Orchestration
+# ----------------------------------------------------------------------
 async def process_add_request(client: IbClient, payload: AddRequest) -> AddRequestResponse:
     """
-    Process an add request:
-    - Check if adding to the current position is allowed
-    - If allowed, create a new order
-    - Modify existing STP order for the symbol
+    Validate guards (one fetch each for position/STP/quote), size the
+    add, place a limit order, and resize the STP to the new total.
+    Public contract unchanged.
     """
     symbol = payload.symbol
     total_risk = payload.total_risk
 
     try:
-        # Get existing position quantity
-        position = await client.get_position_by_symbol(symbol)
-        # Get existing stp order
-        existing_stp_order = await client.get_stp_order_by_symbol(symbol)
+        ctx = await _build_add_context(client, symbol)
 
-        # Check if adding is allowed to that position
-        validation = await _is_add_allowed(client, position)
+        for ok, message in (
+            check_has_position(ctx, symbol),
+            check_has_stp_order(ctx, symbol),
+            check_has_quote(ctx, symbol),
+            check_not_losing(ctx),
+        ):
+            if not ok:
+                logger.info(f"Add not allowed for {symbol}: {message}")
+                return AddRequestResponse(
+                    allowed=False, message=message, symbol=symbol
+                )
 
-        if not validation.get("allowed"):
-            logger.info(f"Add not allowed for {symbol}: {validation.get('message')}")
-            return AddRequestResponse(
-                allowed=False,
-                message=validation.get("message"),
-                symbol=symbol,
-            )
+        stp_aux_price = ctx.stp_order["auxprice"]
+        stp_order_id = ctx.stp_order["orderid"]
+        existing_position = ctx.position["position"]
 
-        # Get existing aux price
-        stp_order_aux_price = existing_stp_order.get("auxprice")
-        stp_order_id = existing_stp_order.get("orderid")
-
-        # Get existing position size
-        existing_position = position.get("position")
-        logger.info(
-            f"Existing STP order aux price for {symbol}: {stp_order_aux_price}, "
-            f"orderId: {stp_order_id}"
-        )
-
-        bid_ask = validation.get("price_data")
-        add_price = calculate_entry_price(bid_ask, stp_order_aux_price)
-
-        # --- Step 3: Recalculate position size ---
+        # Price → total target size at requested risk → quantity to add
+        add_price = calculate_entry_price(ctx.bid_ask, stp_aux_price)
         total_size = calculate_position_size(
             entry_price=add_price,
-            stop_price=stp_order_aux_price,
+            stop_price=stp_aux_price,
             risk=total_risk,
         )
-        if existing_position < 0:
-            new_qty = total_size + existing_position
-        elif existing_position > 0:
-            new_qty = total_size - existing_position  # Tämän verran pitää lisätä
 
-        if existing_position > total_size:
+        ok, message = check_not_at_target_size(ctx, total_size)
+        if not ok:
             return AddRequestResponse(
-                allowed=False,
-                message="Wanted position size is already in portfolio",
-                symbol=symbol,
+                allowed=False, message=message, symbol=symbol
             )
 
-        modified_stp_qty = total_size  # Tähän uusi kokonaismäärä
+        # target − current works for both long and short because total_size
+        # is always positive and we compare against |existing_position|.
+        new_qty = total_size - abs(existing_position)
 
         logger.info(
-            f"Calculated new total position size: {total_size}, "
-            f"existing position: {existing_position}, new quantity to add: {new_qty}"
+            f"Add {symbol}: target={total_size}, existing={existing_position}, "
+            f"adding {new_qty} at {add_price} (stop {stp_aux_price})"
         )
 
-        # --- 2 Build the order dict ---
-        order_data = {
+        new_order = build_order({
             "symbol":        symbol,
             "entry_price":   add_price,
-            "stop_price":    stp_order_aux_price,
+            "stop_price":    stp_aux_price,
             "position_size": new_qty,
             "contract_type": payload.contract_type,
-        }
+        })
 
-        # --- 3 Create new Order dataclass ---
-        new_order = build_order(order_data)
         place_result = await client.place_limit_order(new_order)
-        modify_result = await client.modify_stp_order_by_id(stp_order_id, modified_stp_qty)
+        modify_result = await client.modify_stp_order_by_id(stp_order_id, total_size)
 
         return AddRequestResponse(
             allowed=True,
@@ -147,4 +178,3 @@ async def process_add_request(client: IbClient, payload: AddRequest) -> AddReque
             message=str(e),
             symbol=symbol,
         )
-
