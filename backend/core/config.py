@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     RISK: int
     MAX_ENTRY_FREQUENCY_MINUTES: int
     MAX_ATTEMPTS_PER_SYMBOL_PER_DAY: int
+    # Hard cap on total entries across all tickers in one day.
+    MAX_TOTAL_ENTRIES_PER_DAY: int
 
     # Block entry for time period
     BLOCK_START_HOUR:int

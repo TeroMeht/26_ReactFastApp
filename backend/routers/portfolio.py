@@ -20,6 +20,7 @@ from schemas.api_schemas import (
     OpenPosition,
     AddRequestResponse,
     EntryAttemptsRow,
+    EntryAttemptsResponse,
 )
 
 router = APIRouter(
@@ -134,18 +135,20 @@ async def cancel_order(order_id: int, ib=Depends(get_ib)):
         raise HTTPException(status_code=500, detail=f"Failed to cancel order: {str(e)}")
 
 
-@router.get("/entry-attempts", response_model=List[EntryAttemptsRow])
+@router.get("/entry-attempts", response_model=EntryAttemptsResponse)
 async def get_entry_attempts(ib=Depends(get_ib)):
     """
-    Per-symbol entry-attempt stats for today. Only symbols with at least one
-    entry attempt today are returned (ordered alphabetically). Used by the
-    Risk Levels UI to surface how close each symbol is to the
-    MAX_ATTEMPTS_PER_SYMBOL_PER_DAY limit.
+    Per-symbol entry-attempt stats for today plus the daily total. Only
+    symbols with at least one entry attempt today are returned (ordered
+    alphabetically). Used by the Risk Levels UI to surface how close each
+    symbol is to MAX_ATTEMPTS_PER_SYMBOL_PER_DAY and how close the day is
+    to MAX_TOTAL_ENTRIES_PER_DAY.
     """
     try:
         client = IbClient(ib)
         counts = await count_entry_attempts_today_all(client)
         max_attempts = settings.MAX_ATTEMPTS_PER_SYMBOL_PER_DAY
+        max_total = settings.MAX_TOTAL_ENTRIES_PER_DAY
 
         rows = [
             EntryAttemptsRow(
@@ -156,7 +159,15 @@ async def get_entry_attempts(ib=Depends(get_ib)):
             )
             for symbol, count in sorted(counts.items())
         ]
-        return rows
+
+        total_attempts = sum(counts.values())
+
+        return EntryAttemptsResponse(
+            rows=rows,
+            total_attempts=total_attempts,
+            max_total=max_total,
+            total_remaining=max(0, max_total - total_attempts),
+        )
 
     except Exception as e:
         raise HTTPException(

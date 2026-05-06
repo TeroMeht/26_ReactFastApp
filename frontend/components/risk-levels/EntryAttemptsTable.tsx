@@ -10,16 +10,24 @@ import {
   TableRow,
   TableHead,
   TableCell,
+  TableFooter,
 } from "@/components/ui/table";
 
-// Local type — kept in sync with backend `EntryAttemptsRow` in
-// schemas/api_schemas.py. Declared inline so this component works
-// before the openapi-typescript client is regenerated.
+// Local types — kept in sync with backend `EntryAttemptsRow` /
+// `EntryAttemptsResponse` in schemas/api_schemas.py. Declared inline so
+// this component works before the openapi-typescript client is regenerated.
 type EntryAttemptsRow = {
   symbol: string;
   attempts: number;
   max_attempts: number;
   remaining: number;
+};
+
+type EntryAttemptsResponse = {
+  rows: EntryAttemptsRow[];
+  total_attempts: number;
+  max_total: number;
+  total_remaining: number;
 };
 
 type Props = {
@@ -33,6 +41,9 @@ type Props = {
 
 const EntryAttemptsTable: React.FC<Props> = ({ refreshTrigger = 0 }) => {
   const [rows, setRows] = useState<EntryAttemptsRow[]>([]);
+  const [totalAttempts, setTotalAttempts] = useState(0);
+  const [maxTotal, setMaxTotal] = useState(0);
+  const [totalRemaining, setTotalRemaining] = useState(0);
   const [loading, setLoading] = useState(false);
 
   const fetchAttempts = useCallback(async () => {
@@ -40,11 +51,17 @@ const EntryAttemptsTable: React.FC<Props> = ({ refreshTrigger = 0 }) => {
       setLoading(true);
       const res = await fetch(`${API_PREFIX}/portfolio/entry-attempts`);
       if (!res.ok) throw new Error(`Status ${res.status}`);
-      const json = await res.json();
-      setRows(json as EntryAttemptsRow[]);
+      const json = (await res.json()) as EntryAttemptsResponse;
+      setRows(json.rows ?? []);
+      setTotalAttempts(json.total_attempts ?? 0);
+      setMaxTotal(json.max_total ?? 0);
+      setTotalRemaining(json.total_remaining ?? 0);
     } catch (err) {
       console.error("Fetch entry-attempts error:", err);
       setRows([]);
+      setTotalAttempts(0);
+      setMaxTotal(0);
+      setTotalRemaining(0);
     } finally {
       setLoading(false);
     }
@@ -121,6 +138,34 @@ const EntryAttemptsTable: React.FC<Props> = ({ refreshTrigger = 0 }) => {
               })
             )}
           </TableBody>
+
+          {/*
+            Daily total across all tickers. Mirrors the per-symbol coloring
+            so the user sees at a glance how close they are to the
+            MAX_TOTAL_ENTRIES_PER_DAY hard cap defined in backend config.
+          */}
+          <TableFooter className="sticky bottom-0 bg-background">
+            <TableRow>
+              <TableCell className="font-semibold px-2">Total</TableCell>
+              <TableCell className="px-2 text-right font-semibold">
+                {totalAttempts}
+              </TableCell>
+              <TableCell className="px-2 text-right font-semibold">
+                {maxTotal}
+              </TableCell>
+              <TableCell
+                className={`px-2 text-right font-semibold ${
+                  totalRemaining === 0
+                    ? "text-red-600"
+                    : totalRemaining === 1
+                    ? "text-amber-600"
+                    : "text-green-700"
+                }`}
+              >
+                {totalRemaining}
+              </TableCell>
+            </TableRow>
+          </TableFooter>
         </Table>
       </div>
     </div>

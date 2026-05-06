@@ -99,6 +99,24 @@ def check_attempts(snapshot: TradesSnapshot, symbol: str) -> tuple[bool, str]:
     return True, ""
 
 
+def check_total_attempts(snapshot: TradesSnapshot) -> tuple[bool, str]:
+    """
+    Daily cap across all tickers. Independent of per-symbol limits — once
+    the total number of entries today reaches MAX_TOTAL_ENTRIES_PER_DAY no
+    further entries are allowed regardless of which symbol is requested.
+    """
+    total = snapshot.total_attempts()
+    max_total = settings.MAX_TOTAL_ENTRIES_PER_DAY
+    if total >= max_total:
+        msg = (
+            f"Max total entries reached for today ({total}/{max_total}). "
+            f"No more entries allowed today."
+        )
+        logger.info(msg)
+        return False, msg
+    return True, ""
+
+
 def check_loss_cooldown(snapshot: TradesSnapshot, now: datetime) -> tuple[bool, str]:
     last_loss = snapshot.last_loss()
     if not last_loss:
@@ -170,6 +188,7 @@ async def process_entry_request(client: IbClient, payload: EntryRequest) -> Entr
         # Cheap, pure guards in cheapest-to-most-relevant order.
         for ok, message in (
             check_block_window(now),
+            check_total_attempts(snapshot),
             check_attempts(snapshot, symbol),
             check_frequency(snapshot, symbol, now),
             check_loss_cooldown(snapshot, now),

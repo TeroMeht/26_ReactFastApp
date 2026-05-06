@@ -239,6 +239,15 @@ class EntryAttemptsRow(BaseModel):
     remaining: int
 
 
+# Wrapper around per-symbol rows that also carries the daily-total cap.
+# Lets the UI render a "Total" footer next to the per-ticker rows.
+class EntryAttemptsResponse(BaseModel):
+    rows: List[EntryAttemptsRow]
+    total_attempts: int
+    max_total: int
+    total_remaining: int
+
+
 
 
 

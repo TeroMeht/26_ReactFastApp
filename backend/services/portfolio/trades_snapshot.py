@@ -184,6 +184,10 @@ class TradesSnapshot:
     def attempts_for(self, symbol: str) -> int:
         return self.entry_counts.get(symbol.upper(), 0)
 
+    def total_attempts(self) -> int:
+        """Total entries today across all symbols."""
+        return sum(self.entry_counts.values())
+
 
 async def build_today_snapshot(client: IbClient) -> TradesSnapshot:
     """
