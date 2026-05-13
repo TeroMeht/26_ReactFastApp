@@ -109,6 +109,8 @@ async def process_add_request(client: IbClient, payload: AddRequest) -> AddReque
     symbol = payload.symbol
     total_risk = payload.total_risk
 
+    logger.info(f"=== ADD REQUEST START === Symbol: {symbol}, Requested Risk: {total_risk}")
+
     try:
         ctx = await _build_add_context(client, symbol)
 
@@ -127,14 +129,38 @@ async def process_add_request(client: IbClient, payload: AddRequest) -> AddReque
         stp_aux_price = ctx.stp_order["auxprice"]
         stp_order_id = ctx.stp_order["orderid"]
         existing_position = ctx.position["position"]
+        exisiting_position_avgcost = ctx.position["avgcost"]
 
-        # Price → total target size at requested risk → quantity to add
+        logger.info(
+            f"Extracted trade parameters - STP Price: {stp_aux_price}, "
+            f"STP Order ID: {stp_order_id}, Existing Position: {existing_position}"
+        )
+ 
+        # Calculate entry price and target size
+        logger.info(f"Calculating entry price using bid/ask: {ctx.bid_ask} and STP price: {stp_aux_price}")
         add_price = calculate_entry_price(ctx.bid_ask, stp_aux_price)
-        total_size = calculate_position_size(
+        logger.info(f"Entry price calculated: {add_price}")
+ 
+        logger.info(
+            f"Calculating position size - Entry: {add_price}, Stop: {stp_aux_price}, Risk: {total_risk}"
+        )
+
+        current_open_risk = round(abs(ctx.position["position"] * (stp_aux_price - exisiting_position_avgcost)), 2)
+        risk_to_be_added = total_risk- current_open_risk
+
+        logger.info(f"Current open risk in this position: {current_open_risk}")
+
+        # tässä ei voida laskea total riskiä näin vaan täytyy ottaa huomioon open risk ja siihen päälle lisätä haluttu¨
+
+        size_to_be_added = calculate_position_size(
             entry_price=add_price,
             stop_price=stp_aux_price,
-            risk=total_risk,
+            risk=risk_to_be_added,
         )
+
+        total_size = abs(ctx.position["position"])+ size_to_be_added
+
+        logger.info(f"Target position size calculated: {total_size}")
 
         ok, message = check_not_at_target_size(ctx, total_size)
         if not ok:
