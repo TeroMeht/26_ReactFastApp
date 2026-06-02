@@ -4,10 +4,12 @@ import math
 import datetime
 from datetime import datetime,date
 from collections import defaultdict
+from typing import Optional
 import pytz
 from ib_async import IB, Stock, CFD, LimitOrder, StopOrder, MarketOrder
 
 from services.orders import Order
+from services.portfolio.order_tracker import OrderTracker, TERMINAL_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +26,18 @@ def _build_contract(symbol: str, contract_type: str):
 
 class IbClient:
 
-    def __init__(self, ib: IB):
+    def __init__(self, ib: IB, tracker: Optional[OrderTracker] = None):
         self.ib = ib
+        # Optional — when provided, every placed/cancelled order is mirrored
+        # into the live tracker so the UI sees real-time status updates.
+        self.tracker = tracker
+
+    def _register(self, trade) -> None:
+        if self.tracker is not None and trade is not None:
+            try:
+                self.tracker.register_trade(trade)
+            except Exception:
+                logger.exception("Failed to register trade with tracker")
 
     # ------------------------------------------------------------------
     # Reads
@@ -508,18 +520,20 @@ class IbClient:
             )
 
             # 1️⃣ Place parent
-            self.ib.placeOrder(contract, parent)
+            parent_trade = self.ib.placeOrder(contract, parent)
+            self._register(parent_trade)
 
             await asyncio.sleep(0.5)  # small delay to ensure parent is processed
 
             # 2️⃣ Place stop (transmit=True sends both)
-            self.ib.placeOrder(contract, stoploss)
+            stop_trade = self.ib.placeOrder(contract, stoploss)
+            self._register(stop_trade)
 
             logger.info(f"Bracket orders submitted for {order.symbol}: "
                 f"parent={parent.orderId}, stoploss={stoploss.orderId}, "
                 f"action={order.action}, quantity={order.position_size}, "
                 f"entry={order.entry_price}, stop={order.stop_price}")
-            
+
 
             return parent, stoploss
 
@@ -546,7 +560,8 @@ class IbClient:
                 outsideRth=True,
             )
 
-            self.ib.placeOrder(contract, limit_order)
+            trade = self.ib.placeOrder(contract, limit_order)
+            self._register(trade)
             logger.info(f"Limit order submitted for {order.symbol}: "
                         f"orderId={limit_order.orderId}, "
                         f"action={order.action}, quantity={order.position_size}, "
@@ -573,6 +588,7 @@ class IbClient:
             )
 
             trade = self.ib.placeOrder(contract, market_order)
+            self._register(trade)
             logger.info(f"Market order submitted for {order.symbol}: "
                         f"orderId={market_order.orderId}, "
                         f"action={order.action}, quantity={order.position_size}")
@@ -750,23 +766,138 @@ class IbClient:
                 "message": str(e)
             }
         
-    async def cancel_order_by_id(self, order_id: int) -> bool:
+    async def cancel_order_by_id(self, order_id: int, timeout: float = 5.0) -> dict:
         """
-        Cancel an open order by order ID.
+        Cancel an open order by its permId and *await* the terminal state so
+        the caller knows whether the cancel actually landed or whether the
+        order filled before the cancel could take effect.
+
+        Returns a dict shaped:
+          {
+              "status": "Cancelled" | "ApiCancelled" | "Filled" | "Inactive" |
+                        "not_found" | "timeout" | "error",
+              "order_id": <permId>,
+              "symbol": str | None,
+              "filled": float,
+              "remaining": float,
+              "message": str (only on error/timeout),
+          }
         """
         try:
-            open_trades = await self.ib.reqOpenOrdersAsync()
-            print(open_trades)
-            target = next((t for t in open_trades if t.order.permId == order_id), None)
+            # Fetch the live Trade. reqAllOpenOrdersAsync returns Trade
+            # objects with a live orderStatus we can poll.
+            open_trades = await self.ib.reqAllOpenOrdersAsync()
+            target = next(
+                (t for t in open_trades if t.order and t.order.permId == order_id),
+                None,
+            )
 
             if not target:
-                logger.warning(f"No open order found with orderId={order_id}")
-                return False
+                # Maybe already terminal — check tracker before giving up.
+                if self.tracker is not None:
+                    state = self.tracker.state(order_id)
+                    if state and (state.get("status") in TERMINAL_STATUSES):
+                        logger.info(
+                            f"Order {order_id} already terminal ({state.get('status')})"
+                        )
+                        return {
+                            "status": state.get("status"),
+                            "order_id": order_id,
+                            "symbol": state.get("symbol"),
+                            "filled": state.get("filled", 0),
+                            "remaining": state.get("remaining", 0),
+                        }
+                logger.warning(f"No open order found with permId={order_id}")
+                return {
+                    "status": "not_found",
+                    "order_id": order_id,
+                    "symbol": None,
+                    "filled": 0,
+                    "remaining": 0,
+                }
 
+            symbol = target.contract.symbol if target.contract else None
+
+            # If already filled in the brief window between fetch and here.
+            current = target.orderStatus.status if target.orderStatus else None
+            if current in TERMINAL_STATUSES:
+                logger.info(
+                    f"Order {order_id} ({symbol}) already terminal: {current}"
+                )
+                return {
+                    "status": current,
+                    "order_id": order_id,
+                    "symbol": symbol,
+                    "filled": float(target.orderStatus.filled or 0),
+                    "remaining": float(target.orderStatus.remaining or 0),
+                }
+
+            # Fire the cancel and wait for IB to acknowledge a terminal status.
             self.ib.cancelOrder(target.order)
-            logger.info(f"Cancel request sent for orderId={order_id}")
-            return True
+            logger.info(f"Cancel request sent for permId={order_id} ({symbol})")
+
+            deadline = asyncio.get_event_loop().time() + timeout
+            poll_interval = 0.1
+            while asyncio.get_event_loop().time() < deadline:
+                status = target.orderStatus.status if target.orderStatus else None
+                if status in TERMINAL_STATUSES:
+                    return {
+                        "status": status,
+                        "order_id": order_id,
+                        "symbol": symbol,
+                        "filled": float(target.orderStatus.filled or 0),
+                        "remaining": float(target.orderStatus.remaining or 0),
+                    }
+                await asyncio.sleep(poll_interval)
+
+            logger.warning(
+                f"Cancel timeout for permId={order_id} after {timeout}s; "
+                f"last status={target.orderStatus.status if target.orderStatus else 'unknown'}"
+            )
+            return {
+                "status": "timeout",
+                "order_id": order_id,
+                "symbol": symbol,
+                "filled": float(target.orderStatus.filled or 0) if target.orderStatus else 0,
+                "remaining": float(target.orderStatus.remaining or 0) if target.orderStatus else 0,
+                "message": f"Cancel did not complete within {timeout}s",
+            }
 
         except Exception as e:
             logger.error(f"Error cancelling order {order_id}: {e}")
-            return False
+            return {
+                "status": "error",
+                "order_id": order_id,
+                "symbol": None,
+                "filled": 0,
+                "remaining": 0,
+                "message": str(e),
+            }
+
+    async def cancel_all_unfilled(self, timeout_each: float = 5.0) -> list[dict]:
+        """
+        Cancel every open order that is still unfilled (filled == 0 and
+        status is non-terminal). Returns one result dict per order in the
+        same shape as cancel_order_by_id.
+        """
+        results: list[dict] = []
+        try:
+            open_trades = await self.ib.reqAllOpenOrdersAsync()
+            for t in open_trades or []:
+                if not t.order or not t.orderStatus:
+                    continue
+                status = t.orderStatus.status
+                filled = float(t.orderStatus.filled or 0)
+                if status in TERMINAL_STATUSES or filled > 0:
+                    continue
+                res = await self.cancel_order_by_id(
+                    t.order.permId, timeout=timeout_each
+                )
+                results.append(res)
+            logger.info(
+                f"cancel_all_unfilled processed {len(results)} unfilled orders"
+            )
+            return results
+        except Exception as e:
+            logger.exception(f"cancel_all_unfilled failed: {e}")
+            return results

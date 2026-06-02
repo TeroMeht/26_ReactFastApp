@@ -13,6 +13,55 @@ class TickerFile(BaseModel):
     content: str
 
 
+# Live order tracker — single row in the SSE feed / snapshot
+class LiveOrder(BaseModel):
+    perm_id: int
+    order_id: int
+    symbol: Optional[str] = None
+    sec_type: Optional[str] = None
+    action: Optional[str] = None
+    order_type: Optional[str] = None
+    total_qty: float = 0.0
+    lmt_price: Optional[float] = None
+    aux_price: Optional[float] = None
+    parent_id: int = 0
+    status: Optional[str] = None
+    filled: float = 0.0
+    remaining: float = 0.0
+    avg_fill_price: float = 0.0
+    last_error: Optional[str] = None
+    last_error_code: Optional[int] = None
+    submitted_at: float = 0.0
+
+
+class CancelOrderResult(BaseModel):
+    status: str
+    order_id: int
+    symbol: Optional[str] = None
+    filled: float = 0.0
+    remaining: float = 0.0
+    message: Optional[str] = None
+
+
+# One entry in the chronological order activity log
+class OrderLogEntry(BaseModel):
+    ts: float
+    perm_id: int = 0
+    order_id: int = 0
+    symbol: Optional[str] = None
+    action: Optional[str] = None
+    order_type: Optional[str] = None
+    total_qty: float = 0.0
+    lmt_price: Optional[float] = None
+    aux_price: Optional[float] = None
+    status: Optional[str] = None
+    filled: float = 0.0
+    remaining: float = 0.0
+    avg_fill_price: float = 0.0
+    last_error: Optional[str] = None
+    last_error_code: Optional[int] = None
+
+
 # Pending orders router
 class PendingOrder(BaseModel):
     id: str

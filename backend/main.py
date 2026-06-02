@@ -18,10 +18,14 @@ from routers import (
     pending_orders, exits, scanner, live_scanner,
 )
 from services.live_scanner import LiveScannerManager
+from services.portfolio.order_tracker import OrderTracker
 
 
 # Global IBKR object
 ib = IB()
+
+# Global order tracker — bound to ib_async events in lifespan
+order_tracker = OrderTracker()
 
 
 @asynccontextmanager
@@ -54,6 +58,12 @@ async def lifespan(app: FastAPI):
         # Store shared services
         app.state.ib = ib
         app.state.db_pool = db_pool
+        app.state.order_tracker = order_tracker
+
+        # Bind order tracker to ib_async events and seed from existing open
+        # orders. Done after the IB connection is up so events flow cleanly.
+        order_tracker.bind_events(ib)
+        await order_tracker.seed(ib)
 
         # Spin up the live streaming scanner manager (gap up/down via IB
         # ScannerSubscription). Failures here are non-fatal -- the rest of

@@ -6,6 +6,7 @@ import HeaderBox from "@/components/HeaderBox";
 import PortfolioTable from "@/components/risk-levels/Portfolio";
 import PendingOrdersTable from "@/components/risk-levels/PendingOrders";
 import EntryAttemptsTable from "@/components/risk-levels/EntryAttemptsTable";
+import LiveOrders from "@/components/risk-levels/LiveOrders";
 
 
 
@@ -35,9 +36,10 @@ const Risklevels = () => {
           </div>
         </header>
 
-        {/*  Pending orders (manual), IB fills and open portfolio */}
+        {/*  Pending manual orders on top, live IB order status below, portfolio last */}
         <div>
           <PendingOrdersTable onRefreshed={bumpRefresh} />
+          <LiveOrders />
           <PortfolioTable />
         </div>
       </div>

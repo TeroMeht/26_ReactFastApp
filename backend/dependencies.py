@@ -3,11 +3,19 @@ from fastapi import Request
 from ib_async import IB
 import asyncpg
 
+from services.portfolio.order_tracker import OrderTracker
+
 
 # --- IBKR dependency ---
 def get_ib(request: Request) -> IB:
     ib: IB = request.app.state.ib
     return ib
+
+
+# --- Order tracker dependency ---
+def get_order_tracker(request: Request) -> OrderTracker:
+    tracker: OrderTracker = request.app.state.order_tracker
+    return tracker
 
 
 # --- Database dependency ---
