@@ -20,6 +20,11 @@ export const sidebarLinks = [
     route: "/scanner",
     label: "Scanner",
   },
+    {
+    imgURL: "/icons/money-send.svg",
+    route: "/live-scanner",
+    label: "Live Scanner",
+  },
   //     {
   //   imgURL: "/icons/money-send.svg",
   //   route: "/chart",

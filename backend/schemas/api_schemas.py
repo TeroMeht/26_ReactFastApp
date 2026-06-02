@@ -335,6 +335,30 @@ class EntryAttemptsResponse(BaseModel):
 
 # Scanner response
 
+# ---------------- Live Scanner (streaming) ----------------
+# A single qualifying ticker row in the live scanner. Phase-1 ("light")
+# columns only — heavy enrichment (Bid/Ask, IV, MarketCap, RVOL, RelATR)
+# is deferred to a later phase.
+class LiveScannerRow(BaseModel):
+    symbol: str
+    rank: int                          # rank inside the IB scan result
+    price: Optional[float] = None      # last trade price
+    change: Optional[float] = None     # absolute $ change vs previous close
+    change_percent: Optional[float] = None  # percent gap (signed)
+    volume: Optional[int] = None       # cumulative session volume
+    time_added: str                    # ISO-8601 timestamp when first seen
+
+
+# Wire message pushed over SSE. side tells the frontend which table
+# this update belongs to. rows is the *full current snapshot* for that
+# side so the client can simply replace its state on receive.
+class LiveScannerUpdate(BaseModel):
+    side: str                          # "up" or "down"
+    rows: List[LiveScannerRow]
+    connected: bool                    # IB connection status at time of push
+    ts: float                          # epoch seconds
+
+
 class ScannerResponse(BaseModel):
     symbol: str           # The stock symbol (e.g., "AAOI")
     date: date            # Date (e.g., "2026-03-04")
@@ -375,7 +399,7 @@ class AutoAssistStartRequest(BaseModel):
 
 
 class AutoAssistBar(BaseModel):
-    time: float                # UTC epoch seconds at bar-open
+    time: float
     open: float
     high: float
     low: float
@@ -386,7 +410,7 @@ class AutoAssistBar(BaseModel):
 
 
 class AutoAssistTick(BaseModel):
-    time: float                # UTC epoch seconds of the tick
+    time: float
     price: float
     bar_time: float
     bar_open: float
@@ -399,12 +423,12 @@ class AutoAssistTick(BaseModel):
 
 class AutoAssistSignal(BaseModel):
     symbol: str
-    price: float               # price that broke the level (entry trigger)
-    last2_high: float          # max high of previous 2 completed bars
-    stop_level: float          # min low of last 5 completed bars minus 0.06
-    position_size: int         # computed from configured per-trade risk
+    price: float
+    last2_high: float
+    stop_level: float
+    position_size: int
     contract_type: str = "stock"
-    bar_time: float            # bar-open time (UTC sec) that contained the trigger
+    bar_time: float
     ts: float
 
 
