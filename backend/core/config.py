@@ -18,7 +18,9 @@ class Settings(BaseSettings):
 
 
     # --- Folder Paths ---
-    INPUT_TICKERS_PATH: Path
+    # INPUT_TICKERS_PATH removed: the watchlist now lives in the `watchlist` /
+    # `watchlist_strategies` tables (livestreaming DB), written by the new
+    # /api/watchlist endpoints. The legacy ticker .txt flow is gone.
     SCRIPT_DIR: Path
     TARGET_SCRIPT: str
 
@@ -52,18 +54,7 @@ class Settings(BaseSettings):
     @field_validator("ALLOWED_ORIGINS")
     def parse_allowed_origins(cls, v: str) -> List[str]:
         return v.split(",") if v else []
-    
-    # Creates the input tickers folder if it doesn't exist and resolves the path
-    @field_validator("INPUT_TICKERS_PATH")
-    def validate_path(cls, v: Path) -> Path:
-        # Expand things like ~/data
-        v = v.expanduser().resolve()
 
-        # Create directory if it doesn't exist
-        v.mkdir(parents=True, exist_ok=True)
-
-        return v
-    
     class Config:
         ENV_REPO = Path("C:/codebase/env-repo")
         env_file = ENV_REPO / "26_ReactFastApp.env" # centralized project configs

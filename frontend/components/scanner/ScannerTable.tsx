@@ -45,7 +45,10 @@ type ScannerTableProps = {
   onAddToWatchlist?: (symbol: string) => void;
 };
 
-const WATCHLIST_FILENAME = "watchlist.txt";
+// Watchlist is now persisted in Postgres (table `watchlist`), not the old
+// tickers/watchlist.txt file. The /add-tickers-watchlist endpoint is gone;
+// adding from the scanner now POSTs to /api/watchlist with empty strategies,
+// and the user picks strategies later in the WatchlistManager panel.
 
 const ScannerTable: React.FC<ScannerTableProps> = ({
   title = "IB Scanner Results",
@@ -135,12 +138,17 @@ const ScannerTable: React.FC<ScannerTableProps> = ({
   const handleAddToWatchlist = async (symbol: string) => {
     setContextMenu(null);
     try {
-      const res = await fetch(`${API_PREFIX}/add-tickers-watchlist`, {
+      // POST /api/watchlist returns 409 if the symbol is already in the
+      // watchlist — that's fine, we just want to mark it locally and move on
+      // without clobbering any strategies the user has already chosen.
+      const res = await fetch(`${API_PREFIX}/watchlist`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: WATCHLIST_FILENAME, content: symbol }),
+        body: JSON.stringify({ symbol, strategies: [] }),
       });
-      if (!res.ok) throw new Error("Failed to save watchlist");
+      if (!res.ok && res.status !== 409) {
+        throw new Error(`Failed to add to watchlist (${res.status})`);
+      }
       setWatchlist((prev) => new Set(prev).add(symbol));
       onAddToWatchlist?.(symbol);
     } catch (err) {

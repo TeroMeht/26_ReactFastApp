@@ -11,8 +11,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import RunScript from "@/components/live-strategy-assistance/RunScript";
-import TickBoxAll from "@/components/live-strategy-assistance/TickBoxAll";
+import WatchlistManager from "@/components/live-strategy-assistance/WatchlistManager";
 import LastRowsTable from "@/components/live-strategy-assistance/RelatrTable";
 
 
@@ -33,11 +32,60 @@ interface RightSidebarProps {
   alarms?: AlarmData[];
 }
 
+// Streamer-status states drive the colored dot next to "Live Strategy
+// Assistance". GET /api/streamer-status returns {status: "running" | "offline"
+// | "error"}; any HTTP/network failure on the frontend side also collapses to
+// "error" (red dot) so the user sees something amiss instead of a stale green.
+type StreamerState = "running" | "offline" | "error";
+
+const STATUS_COLOR: Record<StreamerState, string> = {
+  running: "bg-green-500",
+  offline: "bg-gray-400",
+  error: "bg-red-500",
+};
+
+const STATUS_LABEL: Record<StreamerState, string> = {
+  running: "Streamer running",
+  offline: "Streamer offline",
+  error: "Streamer status unavailable",
+};
+
 const RightSidebar: React.FC<RightSidebarProps> = ({ pageSpecific, alarms }) => {
   const [showTodayOnly, setShowTodayOnly] = useState(true);
   const [loadingSymbol, setLoadingSymbol] = useState<string | null>(null);
+  const [streamerState, setStreamerState] = useState<StreamerState>("offline");
   // inside RightSidebar
   const router = useRouter();
+
+  // Poll streamer status every 5s while the sidebar is mounted. Cheap probe —
+  // just queries psutil on the backend. Stops on unmount.
+  React.useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await fetch(`${API_PREFIX}/streamer-status`);
+        if (!res.ok) {
+          if (!cancelled) setStreamerState("error");
+          return;
+        }
+        const data: { status?: StreamerState } = await res.json();
+        if (cancelled) return;
+        if (data.status === "running" || data.status === "offline" || data.status === "error") {
+          setStreamerState(data.status);
+        } else {
+          setStreamerState("error");
+        }
+      } catch {
+        if (!cancelled) setStreamerState("error");
+      }
+    };
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
   const isToday = (dateStr: string) => {
     const today = new Date();
@@ -154,17 +202,20 @@ const RightSidebar: React.FC<RightSidebarProps> = ({ pageSpecific, alarms }) => 
 
           {/* Live Strategy Assistance section */}
           <div className="sidebar-content border-t-2 border-gray-200 mt-4 pt-4 px-4">
-            <h3 className="font-semibold text-lg">Live Strategy Assistance</h3>
+            <h3 className="font-semibold text-lg flex items-center gap-2">
+              Live Strategy Assistance
+              <span
+                className={`inline-block w-3 h-3 rounded-full ${STATUS_COLOR[streamerState]}`}
+                title={STATUS_LABEL[streamerState]}
+                aria-label={STATUS_LABEL[streamerState]}
+              />
+            </h3>
 
             <div className="space-y-4 mt-2">
-              {/* Streamer control */}
+              {/* Watchlist manager: ticker + strategy picker + Start button,
+                  backed by the `watchlist` / `watchlist_strategies` DB tables. */}
               <div className="w-full">
-                <RunScript />
-              </div>
-
-              {/* Editable ticker lists */}
-              <div className="w-full">
-                <TickBoxAll />
+                <WatchlistManager />
               </div>
 
               {/* Live Relatr / Rvol table */}

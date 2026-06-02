@@ -237,31 +237,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/portfolio/fills": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Fills
-         * @description Snapshot of today's IB orders/fills for the Risk Levels fills table.
-         *
-         *     Returns one row per order with current status (Submitted / PartiallyFilled
-         *     / Filled / Cancelled / ...), filled / remaining quantities and the
-         *     volume-weighted average fill price. The frontend polls this endpoint
-         *     every 30 seconds — there is no streaming or background subscription.
-         */
-        get: operations["get_fills_api_portfolio_fills_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/portfolio/price/{symbol}": {
         parameters: {
             query?: never;
@@ -269,11 +244,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Bid Ask Price
-         * @description Fetch latest bid/ask price snapshot for a symbol.
-         *     Example: /api/portfolio/price/AAPL
-         */
+        /** Get Bid Ask Price */
         get: operations["get_bid_ask_price_api_portfolio_price__symbol__get"];
         put?: never;
         post?: never;
@@ -377,10 +348,11 @@ export interface paths {
         };
         /**
          * Get Entry Attempts
-         * @description Per-symbol entry-attempt stats for today. Only symbols with at least one
-         *     entry attempt today are returned (ordered alphabetically). Used by the
-         *     Risk Levels UI to surface how close each symbol is to the
-         *     MAX_ATTEMPTS_PER_SYMBOL_PER_DAY limit.
+         * @description Per-symbol entry-attempt stats for today plus the daily total. Only
+         *     symbols with at least one entry attempt today are returned (ordered
+         *     alphabetically). Used by the Risk Levels UI to surface how close each
+         *     symbol is to MAX_ATTEMPTS_PER_SYMBOL_PER_DAY and how close the day is
+         *     to MAX_TOTAL_ENTRIES_PER_DAY.
          */
         get: operations["get_entry_attempts_api_portfolio_entry_attempts_get"];
         put?: never;
@@ -664,6 +636,17 @@ export interface components {
             /** Relatr */
             Relatr: string;
         };
+        /** EntryAttemptsResponse */
+        EntryAttemptsResponse: {
+            /** Rows */
+            rows: components["schemas"]["EntryAttemptsRow"][];
+            /** Total Attempts */
+            total_attempts: number;
+            /** Max Total */
+            max_total: number;
+            /** Total Remaining */
+            total_remaining: number;
+        };
         /** EntryAttemptsRow */
         EntryAttemptsRow: {
             /** Symbol */
@@ -700,6 +683,10 @@ export interface components {
             parentOrderId?: number | null;
             /** Stoporderid */
             stopOrderId?: number | null;
+            /** Reason */
+            reason?: string | null;
+            /** Cooldown Until */
+            cooldown_until?: string | null;
         };
         /** ExitRequest */
         ExitRequest: {
@@ -1211,26 +1198,6 @@ export interface operations {
             };
         };
     };
-    get_fills_api_portfolio_fills_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
     get_bid_ask_price_api_portfolio_price__symbol__get: {
         parameters: {
             query?: never;
@@ -1438,7 +1405,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EntryAttemptsRow"][];
+                    "application/json": components["schemas"]["EntryAttemptsResponse"];
                 };
             };
         };

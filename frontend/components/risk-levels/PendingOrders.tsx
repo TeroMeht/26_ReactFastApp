@@ -35,6 +35,38 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
   const [message, setMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Cooldown state — separate from `apiMessage` because the cooldown banner
+  // must remain visible (with a countdown) until entries are allowed again,
+  // whereas other messages auto-dismiss after a few seconds.
+  const [cooldown, setCooldown] = useState<{
+    until: number; // epoch ms when cooldown expires
+    symbol: string;
+    detail: string;
+  } | null>(null);
+  const [now, setNow] = useState<number>(() => Date.now());
+
+  // Tick once per second while a cooldown is active so the countdown
+  // re-renders. When the cooldown expires we clear the banner.
+  useEffect(() => {
+    if (!cooldown) return;
+    const id = setInterval(() => {
+      const t = Date.now();
+      setNow(t);
+      if (t >= cooldown.until) {
+        setCooldown(null);
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [cooldown]);
+
+  const formatRemaining = (ms: number): string => {
+    if (ms <= 0) return "0s";
+    const total = Math.ceil(ms / 1000);
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return m > 0 ? `${m}m ${s.toString().padStart(2, "0")}s` : `${s}s`;
+  };
+
   const [contractTypes, setContractTypes] = useState<Record<string, "CFD" | "stock">>({});
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
@@ -115,7 +147,32 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
         symbol: string;
         parentOrderId: number;
         stopOrderId: number;
+        reason?: string | null;
+        cooldown_until?: string | null;
       } = await res.json();
+
+      // Loss cooldown — show a persistent banner with a countdown instead
+      // of the short-lived apiMessage. The banner clears itself once the
+      // cooldown_until timestamp passes (handled by the interval above).
+      if (
+        !data.allowed &&
+        data.reason === "loss_cooldown" &&
+        data.cooldown_until
+      ) {
+        const untilMs = new Date(data.cooldown_until).getTime();
+        if (!Number.isNaN(untilMs) && untilMs > Date.now()) {
+          setCooldown({
+            until: untilMs,
+            symbol: data.symbol,
+            detail: data.message,
+          });
+          // Do not also set the transient apiMessage — the cooldown banner
+          // is the canonical surface for this state.
+          setApiMessage(null);
+          setApiMessageAllowed(null);
+          return;
+        }
+      }
 
       setApiMessage(
         `Symbol: ${data.symbol}, Allowed: ${data.allowed}, Message: ${data.message}`
@@ -190,6 +247,29 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
       {message && (
         <div className="mb-4 p-2 bg-blue-100 text-blue-800 rounded-md text-sm">
           {message}
+        </div>
+      )}
+
+      {cooldown && (
+        <div
+          role="alert"
+          aria-live="polite"
+          className="mb-4 p-3 rounded-md text-sm border border-amber-300 bg-amber-50 text-amber-900 break-words"
+        >
+          <div className="font-semibold">
+            Loss cooldown active — entries blocked for {cooldown.symbol}
+          </div>
+          <div>{cooldown.detail}</div>
+          <div className="mt-1">
+            Entry allowed again in{" "}
+            <span className="font-mono font-semibold">
+              {formatRemaining(cooldown.until - now)}
+            </span>
+            {" "}
+            <span className="text-amber-700">
+              (at {new Date(cooldown.until).toLocaleTimeString()})
+            </span>
+          </div>
         </div>
       )}
 
