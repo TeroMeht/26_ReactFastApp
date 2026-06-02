@@ -111,6 +111,54 @@ class ScriptService:
 
         return stopped
 
+    def is_running(self) -> dict:
+        """
+        Probe whether the target streamer script is currently alive.
+
+        Returns a dict shaped like:
+            {"status": "running", "pid": <int>}     -- process found
+            {"status": "offline"}                    -- no matching process
+            {"status": "error", "detail": "..."}    -- psutil unavailable or
+                                                       an unexpected exception
+
+        Detection mirrors ``_stop_existing``: we walk all python processes and
+        match the absolute script path against their command line, which keeps
+        unrelated python instances (this FastAPI server included) from being
+        mistaken for the streamer.
+        """
+        if psutil is None:
+            return {
+                "status": "error",
+                "detail": "psutil is not installed on the backend",
+            }
+
+        script_path = self.script_dir / self.target_script
+        if not script_path.exists():
+            return {
+                "status": "error",
+                "detail": f"Target script not found: {script_path}",
+            }
+
+        target = str(script_path).lower()
+        try:
+            for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+                try:
+                    name = (proc.info.get("name") or "").lower()
+                    if "python" not in name:
+                        continue
+                    cmdline = proc.info.get("cmdline") or []
+                    if target in " ".join(cmdline).lower():
+                        return {"status": "running", "pid": proc.info.get("pid")}
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    # Process disappeared mid-iteration or we lack permission —
+                    # ignore and keep scanning.
+                    continue
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("Error probing streamer status")
+            return {"status": "error", "detail": str(exc)}
+
+        return {"status": "offline"}
+
     def run_script(self) -> str:
         if not self.script_dir.exists():
             raise FileNotFoundError(f"Script directory not found: {self.script_dir}")

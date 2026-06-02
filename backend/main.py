@@ -10,11 +10,12 @@ from core.config import settings
 from ib_async import IB
 import uvicorn
 import asyncpg
-from db.exits import clear_exit_requests, create_exit_requests_table
+from db.exits import clear_exit_requests,create_exit_requests_table
+from db.watchlist import create_watchlist_tables
 
 # Import routers
 from routers import (
-    tickers, script, alarms, livestream, portfolio,
+    watchlist, script, alarms, livestream, portfolio,
     pending_orders, exits, scanner, live_scanner,
 )
 from services.live_scanner import LiveScannerManager
@@ -55,6 +56,12 @@ async def lifespan(app: FastAPI):
             await clear_exit_requests(conn)
             logger.info("exit_requests table cleared on startup")
 
+            # Watchlist tables: idempotent CREATE IF NOT EXISTS, no truncation.
+            # The watchlist is the user's persistent list of monitored tickers,
+            # so it must survive restarts (unlike exit_requests).
+            await create_watchlist_tables(conn)
+            logger.info("watchlist + watchlist_strategies tables ensured")
+            
         # Store shared services
         app.state.ib = ib
         app.state.db_pool = db_pool
@@ -124,7 +131,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(tickers.router)
+app.include_router(watchlist.router)
 app.include_router(script.router)
 app.include_router(alarms.router)
 app.include_router(livestream.router)

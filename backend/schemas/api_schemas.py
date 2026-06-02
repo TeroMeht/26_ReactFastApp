@@ -8,9 +8,83 @@ from decimal import Decimal
 from core.config import settings
 
 
-class TickerFile(BaseModel):
-    filename: str
-    content: str
+# --- Watchlist ---------------------------------------------------------------
+# These replace the old TickerFile / file-based ticker flow. The watchlist lives
+# in two DB tables (watchlist + watchlist_strategies); the streamer reads it at
+# startup and only fires the strategies a user has bound to a given ticker.
+
+# Hardcoded list of entry strategy names exposed by GET /api/strategies.
+# Must stay in sync with the entry strategies registered in
+# 22_WatchlistStreamer/src/strategies.py. Exit strategies are intentionally
+# NOT exposed here — they remain globally controlled via strategies.toml.
+#
+# upside_extension and downside_extension are deliberately omitted from the
+# UI picker — they're still registered on the streamer side (and can be
+# toggled via strategies.toml) but users shouldn't bind them per-ticker.
+ENTRY_STRATEGY_NAMES: List[str] = [
+    "reversal_long",
+    "reversal_short",
+    "vwap_continuation",
+]
+
+
+class WatchlistCreateRequest(BaseModel):
+    """Body for POST /api/watchlist and PUT /api/watchlist/{symbol}."""
+    symbol: str = Field(..., min_length=1, description="Ticker (auto-uppercased)")
+    strategies: List[str] = Field(
+        default_factory=list,
+        description="Entry strategy names to bind to this ticker.",
+    )
+
+    @field_validator("symbol")
+    @classmethod
+    def _uppercase_symbol(cls, v: str) -> str:
+        v = v.strip().upper()
+        if not v:
+            raise ValueError("symbol cannot be empty")
+        return v
+
+    @field_validator("strategies")
+    @classmethod
+    def _validate_strategies(cls, v: List[str]) -> List[str]:
+        allowed = set(ENTRY_STRATEGY_NAMES)
+        cleaned: List[str] = []
+        seen: set[str] = set()
+        for s in v or []:
+            s = (s or "").strip()
+            if not s:
+                continue
+            if s not in allowed:
+                raise ValueError(
+                    f"Unknown strategy '{s}'. Allowed: {sorted(allowed)}"
+                )
+            if s not in seen:
+                seen.add(s)
+                cleaned.append(s)
+        return cleaned
+
+
+class WatchlistStrategiesRequest(BaseModel):
+    """Body for PUT /api/watchlist/{symbol}/strategies (replaces strategy set)."""
+    strategies: List[str] = Field(default_factory=list)
+
+    @field_validator("strategies")
+    @classmethod
+    def _validate_strategies(cls, v: List[str]) -> List[str]:
+        return WatchlistCreateRequest._validate_strategies(v)
+
+
+class WatchlistRow(BaseModel):
+    """One row returned by GET /api/watchlist."""
+    id: int
+    symbol: str
+    strategies: List[str]
+    created_at: datetime
+
+
+class StrategiesResponse(BaseModel):
+    """Body returned by GET /api/strategies — drives the UI's multi-select."""
+    strategies: List[str]
 
 
 # Live order tracker — single row in the SSE feed / snapshot
@@ -263,6 +337,11 @@ class EntryRequestResponse(BaseModel):
     symbol: str
     parentOrderId: Optional[int] = None
     stopOrderId: Optional[int] = None
+    # When the entry is blocked by the loss cooldown, this is the ISO-8601
+    # timestamp at which entries will be allowed again. The UI keeps a
+    # cooldown banner up (with a countdown) until this moment.
+    reason: Optional[str] = None  # e.g. "loss_cooldown"
+    cooldown_until: Optional[str] = None
 
 
 # Add

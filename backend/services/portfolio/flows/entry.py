@@ -117,17 +117,27 @@ def check_total_attempts(snapshot: TradesSnapshot) -> tuple[bool, str]:
     return True, ""
 
 
-def check_loss_cooldown(snapshot: TradesSnapshot, now: datetime) -> tuple[bool, str]:
+def check_loss_cooldown(
+    snapshot: TradesSnapshot, now: datetime
+) -> tuple[bool, str, datetime | None]:
+    """
+    Returns (ok, message, cooldown_until).
+
+    `cooldown_until` is set only when the cooldown is active so the UI can
+    display a persistent banner with a countdown until entries become
+    allowed again.
+    """
     last_loss = snapshot.last_loss()
     if not last_loss:
-        return True, ""
+        return True, "", None
 
     exit_time = _parse_helsinki(last_loss.get("exit_time"))
     if exit_time is None:
-        return True, ""
+        return True, "", None
 
-    elapsed = now - exit_time
     threshold = timedelta(minutes=settings.MAX_ENTRY_FREQUENCY_MINUTES)
+    cooldown_until = exit_time + threshold
+    elapsed = now - exit_time
     if elapsed <= threshold:
         elapsed_str = str(elapsed).split(".")[0]
         msg = (
@@ -135,8 +145,8 @@ def check_loss_cooldown(snapshot: TradesSnapshot, now: datetime) -> tuple[bool, 
             f"(PnL: {last_loss.get('net_pnl')})."
         )
         logger.info(msg)
-        return False, msg
-    return True, ""
+        return False, msg, cooldown_until
+    return True, "", None
 
 
 def check_frequency(
@@ -191,10 +201,22 @@ async def process_entry_request(client: IbClient, payload: EntryRequest) -> Entr
             check_total_attempts(snapshot),
             check_attempts(snapshot, symbol),
             check_frequency(snapshot, symbol, now),
-            check_loss_cooldown(snapshot, now),
         ):
             if not ok:
                 return EntryRequestResponse(allowed=False, message=message, symbol=symbol)
+
+        # Loss cooldown is handled separately so we can surface the exact
+        # expiry time to the UI (it shows a persistent banner with a
+        # countdown until entries become allowed again).
+        cd_ok, cd_msg, cd_until = check_loss_cooldown(snapshot, now)
+        if not cd_ok:
+            return EntryRequestResponse(
+                allowed=False,
+                message=cd_msg,
+                symbol=symbol,
+                reason="loss_cooldown",
+                cooldown_until=cd_until.isoformat() if cd_until else None,
+            )
 
         logger.info(f"Entry allowed for {symbol}")
 
