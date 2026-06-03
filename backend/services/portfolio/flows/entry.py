@@ -22,6 +22,7 @@ from services.portfolio.trades_snapshot import (
     TradesSnapshot,
     build_today_snapshot,
 )
+from db.exits import update_exit_request
 
 from core.config import settings
 from schemas.api_schemas import EntryRequest, EntryRequestResponse
@@ -48,7 +49,7 @@ async def count_entry_attempts_today_all(client: IbClient) -> dict[str, int]:
 
 
 # ----------------------------------------------------------------------
-# Guards — pure functions over a snapshot + clock + settings
+# Guards - pure functions over a snapshot + clock + settings
 # ----------------------------------------------------------------------
 def _parse_helsinki(value) -> datetime | None:
     if value is None:
@@ -69,7 +70,7 @@ def _in_block_window(now_t: time, start: time, end: time) -> bool:
     """Window is inclusive on both ends. Supports overnight windows."""
     if start <= end:
         return start <= now_t <= end
-    # crosses midnight, e.g. 22:00–06:00
+    # crosses midnight, e.g. 22:00-06:00
     return now_t >= start or now_t <= end
 
 
@@ -78,7 +79,7 @@ def check_block_window(now: datetime) -> tuple[bool, str]:
     end = time(settings.BLOCK_END_HOUR, settings.BLOCK_END_MINUTE)
     if _in_block_window(now.time(), start, end):
         msg = (
-            f"Entry blocked during {start.strftime('%H:%M')}–{end.strftime('%H:%M')} "
+            f"Entry blocked during {start.strftime('%H:%M')}-{end.strftime('%H:%M')} "
             f"window (current time: {now.strftime('%H:%M')})."
         )
         logger.info(msg)
@@ -101,7 +102,7 @@ def check_attempts(snapshot: TradesSnapshot, symbol: str) -> tuple[bool, str]:
 
 def check_total_attempts(snapshot: TradesSnapshot) -> tuple[bool, str]:
     """
-    Daily cap across all tickers. Independent of per-symbol limits — once
+    Daily cap across all tickers. Independent of per-symbol limits - once
     the total number of entries today reaches MAX_TOTAL_ENTRIES_PER_DAY no
     further entries are allowed regardless of which symbol is requested.
     """
@@ -176,14 +177,24 @@ def check_frequency(
 # ----------------------------------------------------------------------
 # Orchestration
 # ----------------------------------------------------------------------
-async def process_entry_request(client: IbClient, payload: EntryRequest) -> EntryRequestResponse:
+async def process_entry_request(
+    client: IbClient,
+    payload: EntryRequest,
+    db_conn=None,
+) -> EntryRequestResponse:
     """
     Validate guards (one IB executions fetch), fetch the quote, size the
-    position, build the order, and place a bracket. Public contract
-    unchanged.
+    position, build the order, and place a bracket.
+
+    The caller MUST supply an exit_plan on the payload (the schema
+    enforces this -- one or more (strategy, trim_percentage) legs whose
+    trims sum to 1.0). On a successful bracket placement we arm one
+    exit_request row per leg so the position carries its full exit plan
+    from the moment it goes live -- no positions without an exit plan.
     """
     symbol = payload.symbol
     stop_price = payload.stop_price
+    exit_plan = payload.exit_plan
 
     try:
         snapshot = await build_today_snapshot(client)
@@ -220,7 +231,7 @@ async def process_entry_request(client: IbClient, payload: EntryRequest) -> Entr
 
         logger.info(f"Entry allowed for {symbol}")
 
-        # Quote → size → order → bracket
+        # Quote -> size -> order -> bracket
         bid_ask = await client.get_bid_ask_price(symbol)
         entry_price = calculate_entry_price(bid_ask, stop_price)
         position_size = calculate_position_size(
@@ -243,7 +254,7 @@ async def process_entry_request(client: IbClient, payload: EntryRequest) -> Entr
         parent, stop = await client.place_bracket_order(order)
 
         # place_bracket_order returns (None, None) on failure. Don't claim
-        # success in that case — surface a clear rejection to the caller.
+        # success in that case - surface a clear rejection to the caller.
         if not parent or not stop:
             msg = f"Bracket order placement failed for {symbol}"
             logger.error(msg)
@@ -253,9 +264,46 @@ async def process_entry_request(client: IbClient, payload: EntryRequest) -> Entr
                 symbol=symbol,
             )
 
+        # Arm every leg of the chosen exit plan. We do this AFTER the
+        # bracket has been accepted by IB so we never leave dangling
+        # exit_request rows for a symbol that didn't actually go live.
+        # Each leg becomes its own (symbol, strategy) row with its trim
+        # percentage. The schema has already validated that the trims
+        # sum to 1.0 and that strategies are unique, so we don't need
+        # to re-check here. A failure mid-loop is logged but does not
+        # invalidate the entry -- the position is already open.
+        plan_summary = ", ".join(
+            f"{leg.strategy}@{leg.trim_percentage}" for leg in exit_plan
+        )
+        if db_conn is not None:
+            for leg in exit_plan:
+                try:
+                    await update_exit_request(
+                        db_conn,
+                        symbol=symbol,
+                        strategy=leg.strategy,
+                        trim_percentage=float(leg.trim_percentage),
+                    )
+                    logger.info(
+                        "Armed exit leg | symbol=%s strategy=%s trim=%s",
+                        symbol, leg.strategy, leg.trim_percentage,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to arm exit leg after entry | "
+                        "symbol=%s strategy=%s trim=%s",
+                        symbol, leg.strategy, leg.trim_percentage,
+                    )
+        else:
+            logger.warning(
+                "No db_conn passed to process_entry_request - exit plan "
+                "for %s (%s) was NOT armed.",
+                symbol, plan_summary,
+            )
+
         return EntryRequestResponse(
             allowed=True,
-            message="Entry ok",
+            message=f"Entry ok (exit plan: {plan_summary})",
             symbol=symbol,
             parentOrderId=parent.orderId,
             stopOrderId=stop.orderId,

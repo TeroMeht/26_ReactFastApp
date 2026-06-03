@@ -42,7 +42,7 @@ router = APIRouter(
 
 
 # ----------------------------------------------------------------------
-# Read endpoints — thin pass-throughs to IbClient
+# Read endpoints - thin pass-throughs to IbClient
 # ----------------------------------------------------------------------
 @router.get("/positions")
 async def get_positions(ib=Depends(get_ib)):
@@ -101,16 +101,19 @@ async def get_bid_ask_price(symbol: str, ib=Depends(get_ib)):
 
 
 # ----------------------------------------------------------------------
-# Workflow endpoints — call the function-style handlers in services.portfolio
+# Workflow endpoints - call the function-style handlers in services.portfolio
 # ----------------------------------------------------------------------
 @router.post("/entry-request", response_model=EntryRequestResponse)
 async def entry_request(
     payload: EntryRequest,
     ib=Depends(get_ib),
+    db_conn=Depends(get_db_conn),
     tracker: OrderTracker = Depends(get_order_tracker),
 ):
+    # db_conn is forwarded so process_entry_request can arm the chosen
+    # exit_request row atomically with a successful bracket placement.
     client = IbClient(ib, tracker=tracker)
-    return await process_entry_request(client, payload)
+    return await process_entry_request(client, payload, db_conn=db_conn)
 
 
 @router.post("/add-request", response_model=AddRequestResponse)
@@ -174,7 +177,7 @@ async def cancel_order(
 
 
 # ----------------------------------------------------------------------
-# Live order status — snapshot, SSE stream, bulk cancel
+# Live order status - snapshot, SSE stream, bulk cancel
 # ----------------------------------------------------------------------
 @router.get("/order-status", response_model=List[LiveOrder])
 async def get_order_status(tracker: OrderTracker = Depends(get_order_tracker)):

@@ -16,15 +16,34 @@ from core.config import settings
 # Hardcoded list of entry strategy names exposed by GET /api/strategies.
 # Must stay in sync with the entry strategies registered in
 # 22_WatchlistStreamer/src/strategies.py. Exit strategies are intentionally
-# NOT exposed here — they remain globally controlled via strategies.toml.
+# NOT exposed here -- they remain globally controlled via strategies.toml.
 #
 # upside_extension and downside_extension are deliberately omitted from the
-# UI picker — they're still registered on the streamer side (and can be
+# UI picker -- they're still registered on the streamer side (and can be
 # toggled via strategies.toml) but users shouldn't bind them per-ticker.
 ENTRY_STRATEGY_NAMES: List[str] = [
     "reversal_long",
     "reversal_short",
     "vwap_continuation",
+]
+
+
+# Exit strategies the user MUST choose between when sending an entry. Every
+# new position is required to carry at least one of these from the moment it
+# is opened -- there are no positions without an exit plan. The goal is to
+# force the decision up front and eliminate mid-trade discretion.
+#
+#   - momentum_exit : auto-trigger on EMA9 cross (up or down)
+#   - swing_exit    : marker only, user trims manually over a few days
+#   - vwap_exit     : auto-trigger when price closes near VWAP
+#
+# This list is intentionally narrower than settings.EXIT_TRIGGERS -- the
+# broader EXIT_TRIGGERS still gates which alarm names the streamer is
+# allowed to fire, but only these three may be chosen at entry time.
+ENTRY_EXIT_STRATEGY_NAMES: List[str] = [
+    "momentum_exit",
+    "swing_exit",
+    "vwap_exit",
 ]
 
 
@@ -83,11 +102,11 @@ class WatchlistRow(BaseModel):
 
 
 class StrategiesResponse(BaseModel):
-    """Body returned by GET /api/strategies — drives the UI's multi-select."""
+    """Body returned by GET /api/strategies -- drives the UI's multi-select."""
     strategies: List[str]
 
 
-# Live order tracker — single row in the SSE feed / snapshot
+# Live order tracker -- single row in the SSE feed / snapshot
 class LiveOrder(BaseModel):
     perm_id: int
     order_id: int
@@ -146,13 +165,13 @@ class PendingOrder(BaseModel):
     size: float
     status: str
     source: str
-    
+
 
 
 # Open risk row model
 class OpenPosition(BaseModel):
     # List of currently armed exit strategies for this symbol. Replaces the
-    # old exit_request:bool flag — multiple exit_requests rows can now exist
+    # old exit_request:bool flag -- multiple exit_requests rows can now exist
     # per symbol, so we surface their strategy names directly.
     exit_strategies: List[str] = []
     symbol: str
@@ -163,7 +182,6 @@ class OpenPosition(BaseModel):
     auxprice: float
     position: float
     openrisk: float
-
 
 
 
@@ -184,8 +202,6 @@ class CreateAlarmRequest(BaseModel):
 
 
 
-
-
 class CandleRow(BaseModel):
     Symbol: str
     Date:date
@@ -197,7 +213,7 @@ class CandleRow(BaseModel):
     Volume: Decimal
     VWAP: Decimal
     EMA9: Decimal
-    Avg_volume: Optional[Decimal] 
+    Avg_volume: Optional[Decimal]
     Rvol: Decimal
     Relatr: Decimal
 
@@ -206,17 +222,10 @@ class ModifyOrderRequest(BaseModel):
     symbol: str
     new_quantity: float
 
-    
+
 class ModifyOrderByIdRequest(BaseModel):
     order_id: int
     new_quantity: float
-
-
-
-
-
-
-
 
 
 ALLOWED_TRIM_PERCENTAGES = {Decimal("0.25"), Decimal("0.5"), Decimal("0.75"), Decimal("1")}
@@ -245,16 +254,13 @@ class UpdateExitRequest(BaseModel):
     @classmethod
     def validate_and_uppercase_symbol(cls, v: str) -> str:
         v = v.strip().upper()
-
         if not v:
             raise ValueError("Symbol cannot be empty")
-
         return v
 
     @field_validator("trim_percentage")
     @classmethod
     def validate_trim_percentage(cls, v: Decimal) -> Decimal:
-        # Normalize values like 1.0 → 1, 0.50 → 0.5 for comparison
         normalized = v.normalize() if v != 0 else v
         allowed_normalized = {p.normalize() for p in ALLOWED_TRIM_PERCENTAGES}
         if normalized not in allowed_normalized:
@@ -275,11 +281,6 @@ class UpdateExitRequest(BaseModel):
         return v
 
 
-
-
-
-
-
 # Exits
 class ExitRequestResponse(BaseModel):
     symbol: str
@@ -288,8 +289,8 @@ class ExitRequestResponse(BaseModel):
     updated: datetime
 
 
-
-# Watchlist streamer lähettää tällaisen sanoman POST endpointtiin, jossa tarkastetaan ensin että onko sille symbolille tilattu exit
+# Watchlist streamer sends this body to the POST endpoint which first checks
+# whether the symbol has an armed exit request.
 class ExitRequest(BaseModel):
     date: date
     time: time
@@ -314,23 +315,104 @@ class ExitRequest(BaseModel):
                 f"alarm must be one of {sorted(allowed)} (got '{v}')"
             )
         return v
-     
+
+
 class ExitRequestResponseIB(BaseModel):
     symbol: str
     message: str
     order_id :Optional[int] = None
 
 
+# A single slice of the exit plan: which trigger fires this slice, and
+# what fraction of the position it should peel off when it does.
+class EntryExitLeg(BaseModel):
+    strategy: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Exit trigger name. Must be one of "
+            "ENTRY_EXIT_STRATEGY_NAMES (momentum_exit, swing_exit, vwap_exit)."
+        ),
+    )
+    trim_percentage: Decimal = Field(
+        ...,
+        description=(
+            "Fraction of the position this leg trims when it fires. "
+            "Must be one of 0.25, 0.5, 0.75, 1. The sum of all legs in "
+            "exit_plan must equal 1.0."
+        ),
+    )
+
+    @field_validator("strategy")
+    @classmethod
+    def _validate_strategy(cls, v: str) -> str:
+        v = v.strip()
+        allowed = set(ENTRY_EXIT_STRATEGY_NAMES)
+        if v not in allowed:
+            raise ValueError(
+                f"strategy must be one of {sorted(allowed)} (got '{v}')"
+            )
+        return v
+
+    @field_validator("trim_percentage")
+    @classmethod
+    def _validate_trim_percentage(cls, v: Decimal) -> Decimal:
+        normalized = v.normalize() if v != 0 else v
+        allowed_normalized = {p.normalize() for p in ALLOWED_TRIM_PERCENTAGES}
+        if normalized not in allowed_normalized:
+            raise ValueError(
+                f"trim_percentage must be one of 0.25, 0.5, 0.75, or 1 (got {v})"
+            )
+        return v
 
 
 # Entry
 class EntryRequest(BaseModel):
     symbol: str
-    contract_type:str
+    contract_type: str
     entry_price: float
     stop_price: float
     position_size: int
-    
+    # Exit plan chosen at entry time. Required -- there are no positions
+    # without an exit plan. The plan is a list of (strategy, trim_percentage)
+    # legs. Multiple legs are allowed so the user can split the position
+    # (e.g., 50% momentum_exit + 50% swing_exit). The trim percentages
+    # across all legs must sum to exactly 1.0.
+    exit_plan: List[EntryExitLeg] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Composite exit plan. List of (strategy, trim_percentage) legs. "
+            "Each strategy must be unique. Trim percentages must sum to 1.0."
+        ),
+    )
+
+    @field_validator("exit_plan")
+    @classmethod
+    def _validate_exit_plan(cls, legs: List[EntryExitLeg]) -> List[EntryExitLeg]:
+        if not legs:
+            raise ValueError("exit_plan must contain at least one leg")
+
+        # No duplicate strategies -- each strategy can only be armed once
+        # per symbol (matches the (symbol, strategy) PK on exit_requests).
+        seen: set[str] = set()
+        for leg in legs:
+            if leg.strategy in seen:
+                raise ValueError(
+                    f"exit_plan contains duplicate strategy '{leg.strategy}'"
+                )
+            seen.add(leg.strategy)
+
+        # Trims must sum to exactly 1.0. We compare with Decimal so we
+        # don't get float drift from 0.25 + 0.25 + 0.5 etc.
+        total = sum((leg.trim_percentage for leg in legs), Decimal("0"))
+        if total != Decimal("1"):
+            raise ValueError(
+                f"exit_plan trim percentages must sum to 1.0 (got {total})"
+            )
+        return legs
+
+
 class EntryRequestResponse(BaseModel):
     allowed: bool
     message: str
@@ -376,17 +458,11 @@ class EntryAttemptsResponse(BaseModel):
     total_remaining: int
 
 
-
-
-
-
-
-
 # Scanner response
 
 # ---------------- Live Scanner (streaming) ----------------
 # A single qualifying ticker row in the live scanner. Phase-1 ("light")
-# columns only — heavy enrichment (Bid/Ask, IV, MarketCap, RVOL, RelATR)
+# columns only -- heavy enrichment (Bid/Ask, IV, MarketCap, RVOL, RelATR)
 # is deferred to a later phase.
 class LiveScannerRow(BaseModel):
     symbol: str
@@ -429,8 +505,6 @@ class NewsItem(BaseModel):
     source: str
     published_at: str
     thumbnail: str
-
-
 
 
 # ---------------- Auto Assist ----------------

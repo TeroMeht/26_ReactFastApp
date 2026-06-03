@@ -57,11 +57,14 @@ const RightSidebar: React.FC<RightSidebarProps> = ({ pageSpecific, alarms }) => 
   // inside RightSidebar
   const router = useRouter();
 
-  // Poll streamer status every 5s while the sidebar is mounted. Cheap probe —
-  // just queries psutil on the backend. Stops on unmount.
+  // Streamer status is now push-based. We seed once from /streamer-status
+  // so the dot paints immediately, then open an SSE stream that emits a
+  // message on every state transition (the backend's heartbeat watchdog
+  // flips to "offline" when the streamer goes silent past the threshold).
   React.useEffect(() => {
     let cancelled = false;
-    const tick = async () => {
+
+    (async () => {
       try {
         const res = await fetch(`${API_PREFIX}/streamer-status`);
         if (!res.ok) {
@@ -70,7 +73,11 @@ const RightSidebar: React.FC<RightSidebarProps> = ({ pageSpecific, alarms }) => 
         }
         const data: { status?: StreamerState } = await res.json();
         if (cancelled) return;
-        if (data.status === "running" || data.status === "offline" || data.status === "error") {
+        if (
+          data.status === "running" ||
+          data.status === "offline" ||
+          data.status === "error"
+        ) {
           setStreamerState(data.status);
         } else {
           setStreamerState("error");
@@ -78,12 +85,32 @@ const RightSidebar: React.FC<RightSidebarProps> = ({ pageSpecific, alarms }) => 
       } catch {
         if (!cancelled) setStreamerState("error");
       }
+    })();
+
+    const es = new EventSource(`${API_PREFIX}/streamer-status/stream`);
+    es.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data) as { status?: StreamerState };
+        if (
+          data.status === "running" ||
+          data.status === "offline" ||
+          data.status === "error"
+        ) {
+          setStreamerState(data.status);
+        }
+      } catch {
+        // Ignore malformed payloads
+      }
     };
-    tick();
-    const id = setInterval(tick, 5000);
+    es.onerror = () => {
+      // EventSource auto-reconnects. While disconnected we don't know
+      // the streamer's state — surface that with the red dot.
+      if (!cancelled) setStreamerState("error");
+    };
+
     return () => {
       cancelled = true;
-      clearInterval(id);
+      es.close();
     };
   }, []);
 

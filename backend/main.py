@@ -3,6 +3,7 @@ from my_logging.logger import setup_logging
 logger = setup_logging(__name__)
 logger.info("Application backend starting")
 
+import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -12,6 +13,7 @@ import uvicorn
 import asyncpg
 from db.exits import clear_exit_requests,create_exit_requests_table
 from db.watchlist import create_watchlist_tables
+from helpers.events import StreamerStatusStore
 
 # Import routers
 from routers import (
@@ -25,7 +27,7 @@ from services.portfolio.order_tracker import OrderTracker
 # Global IBKR object
 ib = IB()
 
-# Global order tracker — bound to ib_async events in lifespan
+# Global order tracker - bound to ib_async events in lifespan
 order_tracker = OrderTracker()
 
 
@@ -61,7 +63,7 @@ async def lifespan(app: FastAPI):
             # so it must survive restarts (unlike exit_requests).
             await create_watchlist_tables(conn)
             logger.info("watchlist + watchlist_strategies tables ensured")
-            
+
         # Store shared services
         app.state.ib = ib
         app.state.db_pool = db_pool
@@ -84,6 +86,21 @@ async def lifespan(app: FastAPI):
             logger.exception("LiveScannerManager failed to start (non-fatal)")
             app.state.live_scanner_manager = None
 
+        # Streamer-status watchdog. The streamer posts a heartbeat at a
+        # fixed cadence; this background task ticks once per second and
+        # demotes the status to "offline" when no heartbeat lands inside
+        # the threshold. Transitions are pushed onto the SSE queue.
+        async def _status_watchdog():
+            try:
+                while True:
+                    StreamerStatusStore.tick()
+                    await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                pass
+
+        app.state.status_watchdog = asyncio.create_task(_status_watchdog())
+        logger.info("StreamerStatus watchdog started")
+
     except Exception:
         logger.exception("Startup failed")
         raise
@@ -93,6 +110,15 @@ async def lifespan(app: FastAPI):
 
     # --- SHUTDOWN ---
     try:
+        watchdog = getattr(app.state, "status_watchdog", None)
+        if watchdog is not None:
+            watchdog.cancel()
+            try:
+                await watchdog
+            except (asyncio.CancelledError, Exception):
+                pass
+            logger.info("StreamerStatus watchdog stopped")
+
         live_mgr = getattr(app.state, "live_scanner_manager", None)
         if live_mgr is not None:
             try:

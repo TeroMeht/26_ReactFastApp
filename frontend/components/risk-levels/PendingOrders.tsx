@@ -70,6 +70,50 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
   const [contractTypes, setContractTypes] = useState<Record<string, "CFD" | "stock">>({});
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
+  // Exit plan chosen per pending order. Each pending order keeps a record
+  // mapping strategy -> trim percentage (0, 0.25, 0.5, 0.75, 1). The Send
+  // button only enables when the trims across all three strategies sum
+  // to exactly 1.0 — every entry must carry a fully-allocated exit plan.
+  type ExitStrategy = "momentum_exit" | "swing_exit" | "vwap_exit";
+  type TrimValue = 0 | 0.25 | 0.5 | 0.75 | 1;
+  const EXIT_STRATEGIES: { value: ExitStrategy; label: string }[] = [
+    { value: "momentum_exit", label: "momentum (EMA9 cross)" },
+    { value: "swing_exit", label: "swing (manual trim)" },
+    { value: "vwap_exit", label: "vwap (price near VWAP)" },
+  ];
+  const TRIM_VALUES: { value: TrimValue; label: string }[] = [
+    { value: 0, label: "Off" },
+    { value: 0.25, label: "25%" },
+    { value: 0.5, label: "50%" },
+    { value: 0.75, label: "75%" },
+    { value: 1, label: "100%" },
+  ];
+  // exitPlans[orderId] = { momentum_exit: 0.5, swing_exit: 0.5, vwap_exit: 0 }
+  const [exitPlans, setExitPlans] = useState<
+    Record<string, Record<ExitStrategy, TrimValue>>
+  >({});
+
+  const getPlan = (orderId: string): Record<ExitStrategy, TrimValue> =>
+    exitPlans[orderId] ?? {
+      momentum_exit: 0,
+      swing_exit: 0,
+      vwap_exit: 0,
+    };
+  const planTotal = (orderId: string): number => {
+    const p = getPlan(orderId);
+    return p.momentum_exit + p.swing_exit + p.vwap_exit;
+  };
+  const planIsValid = (orderId: string): boolean =>
+    Math.abs(planTotal(orderId) - 1) < 1e-9;
+  const planLegs = (
+    orderId: string,
+  ): { strategy: ExitStrategy; trim_percentage: TrimValue }[] => {
+    const p = getPlan(orderId);
+    return (Object.keys(p) as ExitStrategy[])
+      .filter((s) => p[s] > 0)
+      .map((s) => ({ strategy: s, trim_percentage: p[s] }));
+  };
+
   const fetchPositions = useCallback(async () => {
     try {
       setLoading(true);
@@ -122,12 +166,29 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
   const handleSend = async (order: PendingOrder) => {
     try {
       const contractType = contractTypes[order.id] ?? "stock";
+      // Hard gate: the exit plan's trims must add up to exactly 100%
+      // before we even talk to the backend. The schema rejects bad
+      // sums too, but failing fast in the UI saves a round-trip and
+      // gives the user a clearer message.
+      if (!planIsValid(order.id)) {
+        const pct = Math.round(planTotal(order.id) * 100);
+        setApiMessage(
+          `Exit plan for ${order.symbol} must total 100% (currently ${pct}%).`,
+        );
+        setApiMessageAllowed(false);
+        setTimeout(() => {
+          setApiMessage(null);
+          setApiMessageAllowed(null);
+        }, 5000);
+        return;
+      }
       const payload = {
         symbol: order.symbol,
         entry_price: order.latest_price,
         stop_price: order.stop_price,
         position_size: order.position_size,
         contract_type: contractType,
+        exit_plan: planLegs(order.id),
       };
 
       const res = await fetch(`${API_PREFIX}/portfolio/entry-request`, {
@@ -295,6 +356,7 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
             <TableHead>Stop Price</TableHead>
             <TableHead>Quantity</TableHead>
             <TableHead>Size</TableHead>
+            <TableHead>Exit Plan</TableHead>
             <TableHead className="text-center">Actions</TableHead>
           </TableRow>
         </TableHeader>
@@ -302,7 +364,7 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
         <TableBody>
           {positions.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={5} className="text-gray-500">
+              <TableCell colSpan={9} className="text-gray-500">
                 No orders found.
               </TableCell>
             </TableRow>
@@ -352,6 +414,58 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
                 <TableCell>{order.stop_price}</TableCell>
                 <TableCell>{order.position_size}</TableCell>
                 <TableCell>{order.size}</TableCell>
+                <TableCell>
+                  {/* Multi-leg exit-plan picker. One trim selector per
+                      strategy — pick "Off" to disable a leg. The total
+                      must equal 100% or Send stays disabled. */}
+                  <div className="flex flex-col gap-1 text-xs">
+                    {EXIT_STRATEGIES.map((s) => (
+                      <div
+                        key={s.value}
+                        className="flex items-center gap-2 whitespace-nowrap"
+                      >
+                        <span className="w-32 truncate" title={s.label}>
+                          {s.label}
+                        </span>
+                        <select
+                          value={getPlan(order.id)[s.value]}
+                          onChange={(e) =>
+                            setExitPlans((prev) => {
+                              const cur = prev[order.id] ?? {
+                                momentum_exit: 0 as TrimValue,
+                                swing_exit: 0 as TrimValue,
+                                vwap_exit: 0 as TrimValue,
+                              };
+                              return {
+                                ...prev,
+                                [order.id]: {
+                                  ...cur,
+                                  [s.value]: Number(e.target.value) as TrimValue,
+                                },
+                              };
+                            })
+                          }
+                          className="border border-input rounded px-1 py-0.5 bg-white"
+                        >
+                          {TRIM_VALUES.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                    <div
+                      className={`mt-1 font-mono ${
+                        planIsValid(order.id)
+                          ? "text-green-700"
+                          : "text-red-700"
+                      }`}
+                    >
+                      Total: {Math.round(planTotal(order.id) * 100)}%
+                    </div>
+                  </div>
+                </TableCell>
                 <TableCell className="text-center whitespace-nowrap">
                   <div className="flex flex-row items-center justify-center gap-2">
                     <Button variant="ghost" onClick={() => handleDelete(order)}>
@@ -360,7 +474,15 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
                     <Button
                       variant="outline"
                       onClick={() => handleSend(order)}
-                      disabled={allowedOrders.has(order.id)}
+                      disabled={
+                        allowedOrders.has(order.id) ||
+                        !planIsValid(order.id)
+                      }
+                      title={
+                        !planIsValid(order.id)
+                          ? "Exit plan trims must total exactly 100%"
+                          : undefined
+                      }
                     >
                       Send
                     </Button>
