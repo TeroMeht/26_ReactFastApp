@@ -7,6 +7,9 @@ from helpers.events import LivestreamSSEEvent
 from sse_starlette.sse import EventSourceResponse
 import asyncio
 import asyncpg
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/livestream",
@@ -35,6 +38,10 @@ async def new_livestream_event(event: CandleRow):
     is fanned out to every connected SSE client via /stream. Mirrors the
     /api/alarms/emit pattern.
     """
+    logger.info(
+        "Livestream emit received | symbol = %s date = %s time = %s ",
+        event.Symbol, event.Date, event.Time,
+    )
     LivestreamSSEEvent.add_event(event)
     return {"message": "Event added", "count": LivestreamSSEEvent.count()}
 
@@ -48,26 +55,35 @@ async def stream_livestream(request: Request):
     the table it seeded from /latest.
     """
 
+    client_host = request.client.host if request.client else "?"
+    logger.info("Livestream SSE client connected from %s", client_host)
+
     async def event_generator():
-        while True:
-            if await request.is_disconnected():
-                break
+        try:
+            while True:
+                if await request.is_disconnected():
+                    logger.info("Livestream SSE client disconnected (%s)", client_host)
+                    break
 
-            row = LivestreamSSEEvent.get_event()
+                row = LivestreamSSEEvent.get_event()
 
-            if row is not None:
-                yield {
-                    "event": "message",
-                    "data": row.model_dump_json(),
-                }
-            else:
-                # Heartbeat so reverse proxies don't drop the connection.
-                yield {
-                    "event": "ping",
-                    "data": "keep-alive",
-                }
+                if row is not None:
+                    payload = row.model_dump_json()
+                    yield {
+                        "event": "message",
+                        "data": payload,
+                    }
+                else:
+                    # Heartbeat so reverse proxies don't drop the connection.
+                    yield {
+                        "event": "ping",
+                        "data": "keep-alive",
+                    }
 
-            await asyncio.sleep(1)
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            logger.info("Livestream SSE stream cancelled (%s)", client_host)
+            raise
 
     return EventSourceResponse(event_generator())
 
@@ -80,15 +96,13 @@ async def read_pricedata(symbol: str, db_conn=Depends(get_db_conn)):
 
         if not result:
             print(f"No candle data found for symbol: {symbol}")
-        return result  # empty list if no data
+        return result
 
     except asyncpg.exceptions.UndefinedTableError:
-        # Table does not exist - treat as "no data"
         print(f"Table for symbol {symbol} does not exist")
         return []
 
     except Exception as e:
-        # Other unexpected errors
         raise HTTPException(
             status_code=500,
             detail=f"Failed to fetch price data for {symbol}: {str(e)}"

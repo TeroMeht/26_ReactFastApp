@@ -71,80 +71,79 @@ class LivestreamSSEEvent:
 
 class StreamerStatusStore:
     """
-    Holds the streamer's most recent heartbeat timestamp and last published
-    status, plus a queue of status-change events for the SSE generator.
+    Lifecycle-driven streamer status with local PID liveness detection.
 
-    The status is derived from heartbeat freshness:
-        last heartbeat within HEARTBEAT_THRESHOLD_SEC -> "running"
-        otherwise                                     -> "offline"
+    On start the streamer POSTs its OS PID; the backend stores it and
+    marks "running". A lightweight watchdog in main.py lifespan polls
+    psutil.pid_exists() every few seconds — if the PID is gone, the
+    backend marks "offline" without any cooperation from the streamer
+    (so closing the cmd window is detected). The streamer also fires
+    /stop on a clean exit as a fast-path notification.
 
-    Producers:
-      - POST /api/streamer-status/heartbeat       -> record_heartbeat()
-      - background watchdog task in main lifespan -> tick()
-
-    Consumer:
-      - GET /api/streamer-status/stream           -> get_event() in a loop
+    Status transitions are pushed onto a queue consumed by the SSE
+    generator at GET /api/streamer-status/stream.
     """
 
-    # If we haven't seen a heartbeat for this many seconds, declare the
-    # streamer offline. The streamer is expected to ping every 2s, so 6s
-    # tolerates two missed pings without flapping.
-    HEARTBEAT_THRESHOLD_SEC: float = 6.0
-
-    _last_heartbeat_ts: float = 0.0
     _status: str = "offline"  # "running" | "offline" | "error"
-    _events: Deque[dict] = deque()
+    _last_transition_ts: float = 0.0
+    _pid: Optional[int] = None
+    # One queue per connected SSE client. Transitions are broadcast to every
+    # subscriber so multiple tabs / components stay in sync.
+    _subscribers: list = []
 
     @staticmethod
-    def record_heartbeat() -> dict:
-        """
-        Called by POST /api/streamer-status/heartbeat. Updates the
-        heartbeat timestamp and, if the status was not already "running",
-        flips it and emits a transition event.
-        """
-        StreamerStatusStore._last_heartbeat_ts = time.time()
+    def mark_running(pid: Optional[int] = None) -> dict:
+        """Streamer started. Stores PID for liveness checks. Idempotent."""
+        if pid is not None:
+            StreamerStatusStore._pid = pid
         if StreamerStatusStore._status != "running":
             StreamerStatusStore._set_status("running")
-        return {"status": StreamerStatusStore._status}
+        return StreamerStatusStore.current()
 
     @staticmethod
-    def tick() -> None:
-        """
-        Called by the backend watchdog every second. If the heartbeat is
-        stale, demote the status to "offline" and emit a transition event.
-        Never promotes - promotion happens only on receipt of a heartbeat.
-        """
-        if StreamerStatusStore._status == "offline":
-            return  # nothing to do, already offline
-        elapsed = time.time() - StreamerStatusStore._last_heartbeat_ts
-        if elapsed > StreamerStatusStore.HEARTBEAT_THRESHOLD_SEC:
+    def mark_offline() -> dict:
+        """Streamer is down. Idempotent."""
+        if StreamerStatusStore._status != "offline":
             StreamerStatusStore._set_status("offline")
+        StreamerStatusStore._pid = None
+        return StreamerStatusStore.current()
+
+    @staticmethod
+    def pid() -> Optional[int]:
+        return StreamerStatusStore._pid
 
     @staticmethod
     def current() -> dict:
-        """Best-effort snapshot used by GET /api/streamer-status."""
+        """Snapshot used by GET /api/streamer-status."""
         return {
             "status": StreamerStatusStore._status,
-            "last_heartbeat_ts": StreamerStatusStore._last_heartbeat_ts,
+            "pid": StreamerStatusStore._pid,
+            "last_transition_ts": StreamerStatusStore._last_transition_ts,
         }
 
     @staticmethod
-    def get_event() -> Optional[dict]:
-        if len(StreamerStatusStore._events) > 0:
-            return StreamerStatusStore._events.popleft()
-        return None
+    def subscribe() -> Deque[dict]:
+        """Create a new per-client queue. Caller must unsubscribe on close."""
+        q: Deque[dict] = deque()
+        StreamerStatusStore._subscribers.append(q)
+        return q
 
     @staticmethod
-    def count() -> int:
-        return len(StreamerStatusStore._events)
+    def unsubscribe(q: Deque[dict]) -> None:
+        try:
+            StreamerStatusStore._subscribers.remove(q)
+        except ValueError:
+            pass
 
     # -- internal helpers --------------------------------------------------
     @staticmethod
     def _set_status(new_status: str) -> None:
         StreamerStatusStore._status = new_status
-        StreamerStatusStore._events.append(
-            {
-                "status": new_status,
-                "last_heartbeat_ts": StreamerStatusStore._last_heartbeat_ts,
-            }
-        )
+        StreamerStatusStore._last_transition_ts = time.time()
+        evt = {
+            "status": new_status,
+            "pid": StreamerStatusStore._pid,
+            "last_transition_ts": StreamerStatusStore._last_transition_ts,
+        }
+        for q in StreamerStatusStore._subscribers:
+            q.append(evt)

@@ -4,6 +4,7 @@ logger = setup_logging(__name__)
 logger.info("Application backend starting")
 
 import asyncio
+import psutil
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -86,15 +87,25 @@ async def lifespan(app: FastAPI):
             logger.exception("LiveScannerManager failed to start (non-fatal)")
             app.state.live_scanner_manager = None
 
-        # Streamer-status watchdog. The streamer posts a heartbeat at a
-        # fixed cadence; this background task ticks once per second and
-        # demotes the status to "offline" when no heartbeat lands inside
-        # the threshold. Transitions are pushed onto the SSE queue.
+        # Streamer-status watchdog. No network heartbeat — the streamer
+        # POSTs its PID once on /start, and this task asks the OS whether
+        # that PID is still alive every 5s. Cheap local syscall; detects
+        # hard kills (e.g. user closing the cmd window) without any
+        # cooperation from the streamer.
         async def _status_watchdog():
             try:
                 while True:
-                    StreamerStatusStore.tick()
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(5)
+                    snap = StreamerStatusStore.current()
+                    if snap["status"] != "running":
+                        continue
+                    pid = snap.get("pid")
+                    if pid is None or not psutil.pid_exists(pid):
+                        logger.info(
+                            "Streamer PID %s no longer alive — marking offline",
+                            pid,
+                        )
+                        StreamerStatusStore.mark_offline()
             except asyncio.CancelledError:
                 pass
 
