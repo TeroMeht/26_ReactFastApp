@@ -857,6 +857,13 @@ export interface components {
             /** Remaining */
             remaining: number;
         };
+        /** EntryExitLeg */
+        EntryExitLeg: {
+            /** Strategy */
+            strategy: string;
+            /** Trim Percentage */
+            trim_percentage: number | string;
+        };
         /** EntryRequest */
         EntryRequest: {
             /** Symbol */
@@ -869,6 +876,12 @@ export interface components {
             stop_price: number;
             /** Position Size */
             position_size: number;
+            /**
+             * Exit Plan
+             * @description Composite exit plan. List of (strategy, trim_percentage)
+             *   legs. Each strategy must be unique. Trim percentages must sum to 1.0.
+             */
+            exit_plan: components["schemas"]["EntryExitLeg"][];
         };
         /** EntryRequestResponse */
         EntryRequestResponse: {

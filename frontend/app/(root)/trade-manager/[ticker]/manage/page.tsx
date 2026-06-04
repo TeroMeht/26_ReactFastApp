@@ -180,8 +180,9 @@ const ManagePage = () => {
         {exitsLoading ? (
           <p className="text-sm text-gray-500">Loading...</p>
         ) : exitRows.length === 0 ? (
-          <p className="text-sm text-gray-500">
-            No exit requests armed for {position.symbol}.
+          <p className="text-sm text-red-600">
+            No exit plan armed for {position.symbol}. This position is
+            running without a documented exit — investigate immediately.
           </p>
         ) : (
           <table className="w-full text-sm border-collapse">
