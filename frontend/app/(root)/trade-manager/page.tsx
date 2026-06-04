@@ -3,14 +3,14 @@
 import { useState, useCallback } from "react";
 
 import HeaderBox from "@/components/HeaderBox";
-import PortfolioTable from "@/components/risk-levels/Portfolio";
-import PendingOrdersTable from "@/components/risk-levels/PendingOrders";
-import EntryAttemptsTable from "@/components/risk-levels/EntryAttemptsTable";
-import LiveOrders from "@/components/risk-levels/LiveOrders";
+import PortfolioTable from "@/components/trade-manager/Portfolio";
+import PendingOrdersTable from "@/components/trade-manager/PendingOrders";
+import EntryAttemptsTable from "@/components/trade-manager/EntryAttemptsTable";
+import LiveOrders from "@/components/trade-manager/LiveOrders";
 
 
 
-const Risklevels = () => {
+const TradeManager = () => {
   // Shared refresh signal between PendingOrders' Refresh button and the
   // EntryAttemptsTable that lives next to the page header.
   const [refreshTrigger, setRefreshTrigger] = useState(0);
@@ -25,8 +25,8 @@ const Risklevels = () => {
             <div className="flex-1 min-w-0">
               <HeaderBox
                 type="greeting"
-                title="Risk levels"
-                subtext="Create transparency to the risk you are taking"
+                title="Trade Manager"
+                subtext="Manage trading activities"
               />
             </div>
 
@@ -47,4 +47,4 @@ const Risklevels = () => {
   );
 };
 
-export default Risklevels;
+export default TradeManager;

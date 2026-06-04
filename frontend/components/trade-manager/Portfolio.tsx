@@ -47,7 +47,7 @@ const PortfolioTable = () => {
     const encoded = encodeURIComponent(btoa(JSON.stringify(position)));
 
     // Navigate to dynamic page with encoded object in query
-    router.push(`/risk-levels/${position.symbol}/manage?data=${encoded}`);
+    router.push(`/trade-manager/${position.symbol}/manage?data=${encoded}`);
   };
 
 

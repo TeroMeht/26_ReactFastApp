@@ -5,22 +5,9 @@ import { useSearchParams } from "next/navigation";
 import { OpenPosition } from "@/lib/types";
 import { API_PREFIX } from "@/lib/api_prefix";
 
-const TRIM_OPTIONS = [
-  { value: 0.25, label: "25% (trim)" },
-  { value: 0.5, label: "50% (trim)" },
-  { value: 0.75, label: "75% (trim)" },
-  { value: 1, label: "100% (full exit)" },
-];
-
-// Mirrors backend settings.EXIT_TRIGGERS. Keep this list in sync with the
-// backend env (EXIT_TRIGGERS) so the dropdown only offers alarms the
-// process_exit_request endpoint will actually accept.
-const STRATEGY_OPTIONS = [
-  { value: "relatr_up_exit", label: "relatr_up_exit" },
-  { value: "relatr_down_exit", label: "relatr_down_exit" },
-  { value: "endofday_exit", label: "endofday_exit" },
-  { value: "vwap_exit", label: "vwap_exit" },
-];
+// Exits are defined at entry time in the Pending Orders table and frozen
+// once the position opens, so this page only DISPLAYS the armed exits — no
+// add/remove controls.
 
 type ExitRow = {
   symbol: string;
@@ -29,10 +16,7 @@ type ExitRow = {
   updated: string;
 };
 
-const formatTrimLabel = (value: number) => {
-  const opt = TRIM_OPTIONS.find((o) => o.value === value);
-  return opt ? opt.label : `${(value * 100).toFixed(0)}%`;
-};
+const formatTrimLabel = (value: number) => `${(value * 100).toFixed(0)}%`;
 
 const ManagePage = () => {
   const params = useSearchParams();
@@ -44,17 +28,9 @@ const ManagePage = () => {
   const [error, setError] = useState<string | null>(null);
 
   // List of currently-armed exit_requests rows for this symbol, hydrated
-  // from GET /api/exits/{symbol}.
+  // from GET /api/exits/{symbol}. Read-only — exits are set at entry time.
   const [exitRows, setExitRows] = useState<ExitRow[]>([]);
   const [exitsLoading, setExitsLoading] = useState(false);
-
-  // Add-new-row form state. Strategy starts empty so the user must pick.
-  const [newStrategy, setNewStrategy] = useState<string>("");
-  const [newTrim, setNewTrim] = useState<number>(1);
-  const [addingRow, setAddingRow] = useState(false);
-
-  // Per-row deleting flag, keyed by strategy.
-  const [deleting, setDeleting] = useState<Record<string, boolean>>({});
 
   // Move-stop-to-breakeven state — kept separate from the Add flow so the two
   // operations' results don't collide when the user runs both on one visit.
@@ -107,85 +83,6 @@ const ManagePage = () => {
   useEffect(() => {
     fetchExitRows();
   }, [fetchExitRows]);
-
-  // Strategies already used for this symbol — memoized so identity is stable
-  // across renders. The add form hides these to prevent duplicate
-  // (symbol, strategy) submissions.
-  const usedStrategies = useMemo(
-    () => new Set(exitRows.map((r) => r.strategy)),
-    [exitRows],
-  );
-  const availableStrategyOptions = useMemo(
-    () => STRATEGY_OPTIONS.filter((opt) => !usedStrategies.has(opt.value)),
-    [usedStrategies],
-  );
-
-  // Reset newStrategy if it became unavailable (e.g., user just added it).
-  useEffect(() => {
-    if (newStrategy && usedStrategies.has(newStrategy)) {
-      setNewStrategy("");
-    }
-  }, [newStrategy, usedStrategies]);
-
-  const addExitRow = async () => {
-    if (!position) return;
-    if (!newStrategy) {
-      setError("Pick a strategy before adding the row.");
-      return;
-    }
-
-    try {
-      setAddingRow(true);
-      setError(null);
-
-      const res = await fetch(`${API_PREFIX}/exits`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          symbol: position.symbol,
-          strategy: newStrategy,
-          trim_percentage: newTrim,
-        }),
-      });
-
-      if (!res.ok) throw new Error(await res.text());
-
-      // Reset the form and refresh the list.
-      setNewStrategy("");
-      setNewTrim(1);
-      await fetchExitRows();
-    } catch (err: any) {
-      setError(`Add failed: ${err.message || err}`);
-    } finally {
-      setAddingRow(false);
-    }
-  };
-
-  const deleteExitRow = async (strategy: string) => {
-    if (!position) return;
-    try {
-      setDeleting((d) => ({ ...d, [strategy]: true }));
-      setError(null);
-
-      const res = await fetch(
-        `${API_PREFIX}/exits/${encodeURIComponent(
-          position.symbol,
-        )}/${encodeURIComponent(strategy)}`,
-        { method: "DELETE" },
-      );
-
-      if (!res.ok) throw new Error(await res.text());
-      await fetchExitRows();
-    } catch (err: any) {
-      setError(`Delete failed: ${err.message || err}`);
-    } finally {
-      setDeleting((d) => {
-        const next = { ...d };
-        delete next[strategy];
-        return next;
-      });
-    }
-  };
 
   // Move the open STP order for this symbol to breakeven (avg cost).  Backend:
   // POST /api/portfolio/move-stop-be?symbol=<symbol>.  The router declares
@@ -272,9 +169,13 @@ const ManagePage = () => {
         <p><strong>Size:</strong> {position.size}</p>
       </div>
 
-      {/* Existing exit requests for this symbol */}
+      {/* Armed exit requests for this symbol (read-only — exits are chosen
+          at entry time in the Pending Orders table and frozen on entry). */}
       <div className="mt-6">
-        <h3 className="font-semibold mb-2">Exit Requests</h3>
+        <h3 className="font-semibold mb-2">Armed Exits</h3>
+        <p className="text-xs text-gray-500 mb-2">
+          Exits are defined at entry time and cannot be changed here.
+        </p>
 
         {exitsLoading ? (
           <p className="text-sm text-gray-500">Loading...</p>
@@ -289,7 +190,6 @@ const ManagePage = () => {
                 <th className="text-left py-1 pr-2">Strategy</th>
                 <th className="text-left py-1 pr-2">Trim %</th>
                 <th className="text-left py-1 pr-2">Updated</th>
-                <th className="text-right py-1">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -306,78 +206,12 @@ const ManagePage = () => {
                     <td className="py-1 pr-2">
                       {new Date(row.updated).toLocaleString()}
                     </td>
-                    <td className="py-1 text-right">
-                      <button
-                        onClick={() => deleteExitRow(row.strategy)}
-                        disabled={!!deleting[row.strategy]}
-                        className="text-red-600 hover:text-red-800 disabled:opacity-50"
-                      >
-                        {deleting[row.strategy] ? "Removing..." : "Remove"}
-                      </button>
-                    </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
         )}
-
-        {/* Add-new-row form. Hidden when every strategy is already armed. */}
-        <div className="mt-4 p-3 border rounded bg-gray-50">
-          <p className="text-sm font-semibold mb-2">Add exit request</p>
-          {availableStrategyOptions.length === 0 ? (
-            <p className="text-xs text-gray-600">
-              All strategies are already armed for this symbol.
-            </p>
-          ) : (
-            <div className="flex flex-wrap items-center gap-2">
-              <label htmlFor="new-strategy" className="font-medium">
-                Strategy:
-              </label>
-              <select
-                id="new-strategy"
-                value={newStrategy}
-                onChange={(e) => setNewStrategy(e.target.value)}
-                disabled={addingRow}
-                className="border rounded px-2 py-1"
-              >
-                <option value="" disabled>
-                  Select strategy...
-                </option>
-                {availableStrategyOptions.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-
-              <label htmlFor="new-trim" className="font-medium">
-                Trim %:
-              </label>
-              <select
-                id="new-trim"
-                value={newTrim}
-                onChange={(e) => setNewTrim(Number(e.target.value))}
-                disabled={addingRow}
-                className="border rounded px-2 py-1"
-              >
-                {TRIM_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-
-              <button
-                onClick={addExitRow}
-                disabled={addingRow || !newStrategy}
-                className="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 disabled:opacity-50"
-              >
-                {addingRow ? "Adding..." : "Add"}
-              </button>
-            </div>
-          )}
-        </div>
       </div>
 
       {/* Total Risk Input */}

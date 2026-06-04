@@ -245,7 +245,7 @@ const WatchlistManager: React.FC = () => {
         <div className="flex gap-2">
           <input
             type="text"
-            placeholder="Ticker (e.g. NBIS)"
+            placeholder="Ticker"
             value={newSymbol}
             onChange={(e) => setNewSymbol(e.target.value)}
             className="flex-1 px-2 py-1 border rounded text-xs uppercase"

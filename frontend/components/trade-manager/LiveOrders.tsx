@@ -45,7 +45,7 @@ type CancelResult = {
 };
 
 const TERMINAL = new Set(["Filled", "Cancelled", "ApiCancelled", "Inactive"]);
-// On the Risk Levels page we only want ACTIVE orders to be visible.
+// On the Trade Manager page we only want ACTIVE orders to be visible.
 // Every terminal state is hidden here and shows up in /order-log instead.
 const HIDDEN_STATUSES = TERMINAL;
 

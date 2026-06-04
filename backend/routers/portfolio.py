@@ -107,10 +107,11 @@ async def get_bid_ask_price(symbol: str, ib=Depends(get_ib)):
 async def entry_request(
     payload: EntryRequest,
     ib=Depends(get_ib),
+    db_conn=Depends(get_db_conn),
     tracker: OrderTracker = Depends(get_order_tracker),
 ):
     client = IbClient(ib, tracker=tracker)
-    return await process_entry_request(client, payload)
+    return await process_entry_request(client, db_conn, payload)
 
 
 @router.post("/add-request", response_model=AddRequestResponse)
@@ -261,7 +262,7 @@ async def get_entry_attempts(ib=Depends(get_ib)):
     """
     Per-symbol entry-attempt stats for today plus the daily total. Only
     symbols with at least one entry attempt today are returned (ordered
-    alphabetically). Used by the Risk Levels UI to surface how close each
+    alphabetically). Used by the Trade Manager UI to surface how close each
     symbol is to MAX_ATTEMPTS_PER_SYMBOL_PER_DAY and how close the day is
     to MAX_TOTAL_ENTRIES_PER_DAY.
     """

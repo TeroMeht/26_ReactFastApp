@@ -11,7 +11,6 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
-import { Button } from "@/components/ui/button";
 
 type OrderLogEntry = {
   ts: number;
@@ -74,16 +73,22 @@ const fmtTime = (ts: number): string => {
   }
 };
 
-const OrderLogTable = () => {
+type OrderLogTableProps = {
+  refreshSignal?: number;
+  onLoadingChange?: (loading: boolean) => void;
+};
+
+const OrderLogTable = ({
+  refreshSignal = 0,
+  onLoadingChange,
+}: OrderLogTableProps) => {
   const [entries, setEntries] = useState<OrderLogEntry[]>([]);
-  const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<StatusFilter>("All");
   const [symbolFilter, setSymbolFilter] = useState("");
-  const [autoRefresh, setAutoRefresh] = useState(true);
 
   const fetchLog = useCallback(async () => {
     try {
-      setLoading(true);
+      onLoadingChange?.(true);
       const res = await fetch(`${API_PREFIX}/portfolio/order-log`);
       if (!res.ok) {
         console.error("Order log fetch failed:", res.statusText);
@@ -96,21 +101,15 @@ const OrderLogTable = () => {
       console.error("Order log fetch error:", err);
       setEntries([]);
     } finally {
-      setLoading(false);
+      onLoadingChange?.(false);
     }
-  }, []);
+  }, [onLoadingChange]);
 
+  // Fetch on mount and whenever the shared page-level Refresh is clicked.
   useEffect(() => {
     fetchLog();
-  }, [fetchLog]);
+  }, [fetchLog, refreshSignal]);
 
-  // Soft auto-refresh — pull every 5s so the page stays current without
-  // needing SSE. Cheap because the log is in-memory on the backend.
-  useEffect(() => {
-    if (!autoRefresh) return;
-    const id = setInterval(fetchLog, 5000);
-    return () => clearInterval(id);
-  }, [autoRefresh, fetchLog]);
 
   const filtered = useMemo(() => {
     const sym = symbolFilter.trim().toUpperCase();
@@ -129,19 +128,6 @@ const OrderLogTable = () => {
   return (
     <div className="py-4">
       <div className="flex flex-wrap items-center gap-3 mb-4">
-        <Button variant="outline" onClick={fetchLog} disabled={loading}>
-          {loading ? "Refreshing..." : "Refresh"}
-        </Button>
-
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={autoRefresh}
-            onChange={(e) => setAutoRefresh(e.target.checked)}
-          />
-          Auto-refresh (5s)
-        </label>
-
         <div className="flex items-center gap-2 text-sm">
           <span>Status:</span>
           {STATUS_FILTERS.map((s) => (

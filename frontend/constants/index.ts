@@ -12,8 +12,8 @@ export const sidebarLinks = [
 
   {
     imgURL: "/icons/money-send.svg",
-    route: "/risk-levels",
-    label: "Risk Levels",
+    route: "/trade-manager",
+    label: "Trade Manager",
   },
     {
     imgURL: "/icons/money-send.svg",

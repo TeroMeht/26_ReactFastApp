@@ -4,7 +4,7 @@
  */
 
 export interface paths {
-    "/api/tickers": {
+    "/api/strategies": {
         parameters: {
             query?: never;
             header?: never;
@@ -12,24 +12,43 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Read Input Tickers
-         * @description Return all tickers or files in the tickers path.
+         * List Strategies
+         * @description Names of entry strategies the user can bind to a ticker.
          */
-        get: operations["read_input_tickers_api_tickers_get"];
+        get: operations["list_strategies_api_strategies_get"];
         put?: never;
-        /**
-         * Write Input Tickers
-         * @description Save content to a ticker file.
-         *     Body must include 'file' and 'content'.
-         */
-        post: operations["write_input_tickers_api_tickers_post"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/add-tickers-watchlist": {
+    "/api/watchlist": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Watchlist */
+        get: operations["read_watchlist_api_watchlist_get"];
+        put?: never;
+        /**
+         * Add Watchlist Entry
+         * @description Add a brand-new ticker. Returns 409 if the symbol is already in the
+         *     watchlist — use PUT /api/watchlist/{symbol} to update its strategies.
+         *     Pydantic validates strategy names against ENTRY_STRATEGY_NAMES; unknown
+         *     names get rejected with a 422 before reaching this handler.
+         */
+        post: operations["add_watchlist_entry_api_watchlist_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/watchlist/{symbol}": {
         parameters: {
             query?: never;
             header?: never;
@@ -37,14 +56,14 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        put?: never;
         /**
-         * Add Tickers
-         * @description Add tickers to a ticker file.
-         *     Body must include 'file' and 'content'.
+         * Replace Strategies
+         * @description Replace the strategy set bound to an existing ticker.
          */
-        post: operations["add_tickers_api_add_tickers_watchlist_post"];
-        delete?: never;
+        put: operations["replace_strategies_api_watchlist__symbol__put"];
+        post?: never;
+        /** Remove Watchlist Entry */
+        delete: operations["remove_watchlist_entry_api_watchlist__symbol__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -61,6 +80,31 @@ export interface paths {
         put?: never;
         /** Run Script */
         post: operations["run_script_api_run_script_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/streamer-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Streamer Status
+         * @description Health probe for the 22_WatchlistStreamer process. Returns:
+         *         {"status": "running" | "offline" | "error", ...}
+         *
+         *     The UI polls this to render the green/grey/red dot next to "Live Strategy
+         *     Assistance". A 200 with status=error means the backend itself can't
+         *     determine the state (psutil missing, script path bad, etc).
+         */
+        get: operations["streamer_status_api_streamer_status_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -331,8 +375,101 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Cancel Order */
+        /**
+         * Cancel Order
+         * @description Cancel an open IB order by permId and *wait* for IB to acknowledge a
+         *     terminal state. The response tells the caller whether the order was
+         *     actually cancelled, or whether it filled before the cancel landed.
+         */
         post: operations["cancel_order_api_portfolio_cancel_order__order_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/portfolio/order-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Order Status
+         * @description Current snapshot of every order the tracker knows about.
+         */
+        get: operations["get_order_status_api_portfolio_order_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/portfolio/order-log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Order Log
+         * @description Chronological audit log of every status transition and error attached
+         *     to any order since the backend started. Newest events first.
+         */
+        get: operations["get_order_log_api_portfolio_order_log_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/portfolio/order-status/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream Order Status
+         * @description Server-Sent Events stream. On connect we send the current snapshot,
+         *     then push one event per orderStatus / openOrder / error update.
+         *
+         *     Event shapes:
+         *       data: {"type": "snapshot", "orders": [...]}
+         *       data: {"type": "update",   "order":  {...}}
+         *       data: {"type": "ping"}                          (every 15s keepalive)
+         */
+        get: operations["stream_order_status_api_portfolio_order_status_stream_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/portfolio/cancel-all-unfilled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel All Unfilled
+         * @description Cancel every currently-open order that has zero fills. Useful as a
+         *     panic button when you want to flatten pending entries quickly.
+         */
+        post: operations["cancel_all_unfilled_api_portfolio_cancel_all_unfilled_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -554,6 +691,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/live-scanner/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Status */
+        get: operations["status_api_live_scanner_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/live-scanner/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream
+         * @description Server-Sent Events stream of LiveScannerUpdate.
+         *
+         *     Each event payload is a JSON LiveScannerUpdate. The client should
+         *     keep two pieces of state — gap-up rows and gap-down rows — and
+         *     replace whichever side comes in.
+         */
+        get: operations["stream_api_live_scanner_stream_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -600,6 +778,27 @@ export interface components {
              * Format: date
              */
             Date: string;
+        };
+        /** CancelOrderResult */
+        CancelOrderResult: {
+            /** Status */
+            status: string;
+            /** Order Id */
+            order_id: number;
+            /** Symbol */
+            symbol?: string | null;
+            /**
+             * Filled
+             * @default 0
+             */
+            filled: number;
+            /**
+             * Remaining
+             * @default 0
+             */
+            remaining: number;
+            /** Message */
+            message?: string | null;
         };
         /** CandleRow */
         CandleRow: {
@@ -733,6 +932,61 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** LiveOrder */
+        LiveOrder: {
+            /** Perm Id */
+            perm_id: number;
+            /** Order Id */
+            order_id: number;
+            /** Symbol */
+            symbol?: string | null;
+            /** Sec Type */
+            sec_type?: string | null;
+            /** Action */
+            action?: string | null;
+            /** Order Type */
+            order_type?: string | null;
+            /**
+             * Total Qty
+             * @default 0
+             */
+            total_qty: number;
+            /** Lmt Price */
+            lmt_price?: number | null;
+            /** Aux Price */
+            aux_price?: number | null;
+            /**
+             * Parent Id
+             * @default 0
+             */
+            parent_id: number;
+            /** Status */
+            status?: string | null;
+            /**
+             * Filled
+             * @default 0
+             */
+            filled: number;
+            /**
+             * Remaining
+             * @default 0
+             */
+            remaining: number;
+            /**
+             * Avg Fill Price
+             * @default 0
+             */
+            avg_fill_price: number;
+            /** Last Error */
+            last_error?: string | null;
+            /** Last Error Code */
+            last_error_code?: number | null;
+            /**
+             * Submitted At
+             * @default 0
+             */
+            submitted_at: number;
+        };
         /** NewsItem */
         NewsItem: {
             /** Title */
@@ -771,6 +1025,57 @@ export interface components {
             position: number;
             /** Openrisk */
             openrisk: number;
+        };
+        /** OrderLogEntry */
+        OrderLogEntry: {
+            /** Ts */
+            ts: number;
+            /**
+             * Perm Id
+             * @default 0
+             */
+            perm_id: number;
+            /**
+             * Order Id
+             * @default 0
+             */
+            order_id: number;
+            /** Symbol */
+            symbol?: string | null;
+            /** Action */
+            action?: string | null;
+            /** Order Type */
+            order_type?: string | null;
+            /**
+             * Total Qty
+             * @default 0
+             */
+            total_qty: number;
+            /** Lmt Price */
+            lmt_price?: number | null;
+            /** Aux Price */
+            aux_price?: number | null;
+            /** Status */
+            status?: string | null;
+            /**
+             * Filled
+             * @default 0
+             */
+            filled: number;
+            /**
+             * Remaining
+             * @default 0
+             */
+            remaining: number;
+            /**
+             * Avg Fill Price
+             * @default 0
+             */
+            avg_fill_price: number;
+            /** Last Error */
+            last_error?: string | null;
+            /** Last Error Code */
+            last_error_code?: number | null;
         };
         /** PendingOrder */
         PendingOrder: {
@@ -820,12 +1125,13 @@ export interface components {
             /** Change */
             change: number;
         };
-        /** TickerFile */
-        TickerFile: {
-            /** Filename */
-            filename: string;
-            /** Content */
-            content: string;
+        /**
+         * StrategiesResponse
+         * @description Body returned by GET /api/strategies — drives the UI's multi-select.
+         */
+        StrategiesResponse: {
+            /** Strategies */
+            strategies: string[];
         };
         /** UpdateExitRequest */
         UpdateExitRequest: {
@@ -859,6 +1165,47 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /**
+         * WatchlistCreateRequest
+         * @description Body for POST /api/watchlist and PUT /api/watchlist/{symbol}.
+         */
+        WatchlistCreateRequest: {
+            /**
+             * Symbol
+             * @description Ticker (auto-uppercased)
+             */
+            symbol: string;
+            /**
+             * Strategies
+             * @description Entry strategy names to bind to this ticker.
+             */
+            strategies?: string[];
+        };
+        /**
+         * WatchlistRow
+         * @description One row returned by GET /api/watchlist.
+         */
+        WatchlistRow: {
+            /** Id */
+            id: number;
+            /** Symbol */
+            symbol: string;
+            /** Strategies */
+            strategies: string[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /**
+         * WatchlistStrategiesRequest
+         * @description Body for PUT /api/watchlist/{symbol}/strategies (replaces strategy set).
+         */
+        WatchlistStrategiesRequest: {
+            /** Strategies */
+            strategies?: string[];
+        };
     };
     responses: never;
     parameters: never;
@@ -868,7 +1215,146 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    read_input_tickers_api_tickers_get: {
+    list_strategies_api_strategies_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StrategiesResponse"];
+                };
+            };
+        };
+    };
+    read_watchlist_api_watchlist_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistRow"][];
+                };
+            };
+        };
+    };
+    add_watchlist_entry_api_watchlist_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchlistCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistRow"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    replace_strategies_api_watchlist__symbol__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                symbol: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchlistStrategiesRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistRow"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_watchlist_entry_api_watchlist__symbol__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                symbol: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistRow"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_script_api_run_script_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -888,73 +1374,7 @@ export interface operations {
             };
         };
     };
-    write_input_tickers_api_tickers_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TickerFile"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    add_tickers_api_add_tickers_watchlist_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TickerFile"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    run_script_api_run_script_post: {
+    streamer_status_api_streamer_status_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -1376,7 +1796,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["CancelOrderResult"];
                 };
             };
             /** @description Validation Error */
@@ -1386,6 +1806,86 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_order_status_api_portfolio_order_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LiveOrder"][];
+                };
+            };
+        };
+    };
+    get_order_log_api_portfolio_order_log_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderLogEntry"][];
+                };
+            };
+        };
+    };
+    stream_order_status_api_portfolio_order_status_stream_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    cancel_all_unfilled_api_portfolio_cancel_all_unfilled_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CancelOrderResult"][];
                 };
             };
         };
@@ -1732,6 +2232,48 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    status_api_live_scanner_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    stream_api_live_scanner_stream_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

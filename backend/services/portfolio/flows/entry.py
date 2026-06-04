@@ -22,6 +22,7 @@ from services.portfolio.trades_snapshot import (
     TradesSnapshot,
     build_today_snapshot,
 )
+from db.exits import update_exit_request
 
 from core.config import settings
 from schemas.api_schemas import EntryRequest, EntryRequestResponse
@@ -176,11 +177,19 @@ def check_frequency(
 # ----------------------------------------------------------------------
 # Orchestration
 # ----------------------------------------------------------------------
-async def process_entry_request(client: IbClient, payload: EntryRequest) -> EntryRequestResponse:
+async def process_entry_request(
+    client: IbClient,
+    db_conn,
+    payload: EntryRequest,
+) -> EntryRequestResponse:
     """
     Validate guards (one IB executions fetch), fetch the quote, size the
-    position, build the order, and place a bracket. Public contract
-    unchanged.
+    position, build the order, and place a bracket. On success, persist the
+    user-defined exit_strategies into exit_requests so the streamer's exit
+    alarms have somewhere to match against.
+
+    The schema enforces ``len(payload.exit_strategies) >= 1`` — there is no
+    "no exits" code path here.
     """
     symbol = payload.symbol
     stop_price = payload.stop_price
@@ -252,6 +261,24 @@ async def process_entry_request(client: IbClient, payload: EntryRequest) -> Entr
                 message=msg,
                 symbol=symbol,
             )
+
+        # Arm the user-defined exits now that the bracket is live. Insert
+        # after order placement so a failed order doesn't leave stranded
+        # exit_request rows. Per-strategy errors are logged but do not roll
+        # back the entry — the position is open either way.
+        for spec in payload.exit_strategies:
+            try:
+                await update_exit_request(
+                    db_conn,
+                    symbol,
+                    strategy=spec.strategy,
+                    trim_percentage=float(spec.trim_percentage),
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to persist exit_request | symbol=%s strategy=%s",
+                    symbol, spec.strategy,
+                )
 
         return EntryRequestResponse(
             allowed=True,
