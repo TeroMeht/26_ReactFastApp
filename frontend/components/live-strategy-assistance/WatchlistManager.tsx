@@ -355,7 +355,6 @@ const WatchlistManager: React.FC = () => {
                 <div className="flex flex-wrap gap-1">
                   {row.strategies.length === 0 ? (
                     <span className="text-xs text-gray-400 italic">
-                      no strategies — won&apos;t trigger alarms
                     </span>
                   ) : (
                     row.strategies.map((s) => (
