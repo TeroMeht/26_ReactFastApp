@@ -25,25 +25,6 @@ ENTRY_STRATEGY_NAMES: List[str] = [
 ]
 
 
-# Exit strategies the user MUST choose between when sending an entry. Every
-# new position is required to carry at least one of these from the moment it
-# is opened -- there are no positions without an exit plan. The goal is to
-# force the decision up front and eliminate mid-trade discretion.
-#
-#   - momentum_exit : auto-trigger on EMA9 cross (up or down)
-#   - swing_exit    : marker only, user trims manually over a few days
-#   - vwap_exit     : auto-trigger when price closes near VWAP
-#
-# This list is intentionally narrower than settings.EXIT_TRIGGERS -- the
-# broader EXIT_TRIGGERS still gates which alarm names the streamer is
-# allowed to fire, but only these three may be chosen at entry time.
-ENTRY_EXIT_STRATEGY_NAMES: List[str] = [
-    "momentum_exit",
-    "swing_exit",
-    "vwap_exit",
-]
-
-
 class WatchlistCreateRequest(BaseModel):
     """Body for POST /api/watchlist and PUT /api/watchlist/{symbol}."""
     symbol: str = Field(..., min_length=1, description="Ticker (auto-uppercased)")
@@ -318,49 +299,6 @@ class ExitRequestResponseIB(BaseModel):
     symbol: str
     message: str
     order_id :Optional[int] = None
-
-
-# A single slice of the exit plan: which trigger fires this slice, and
-# what fraction of the position it should peel off when it does.
-class EntryExitLeg(BaseModel):
-    strategy: str = Field(
-        ...,
-        min_length=1,
-        description=(
-            "Exit trigger name. Must be one of "
-            "ENTRY_EXIT_STRATEGY_NAMES (momentum_exit, swing_exit, vwap_exit)."
-        ),
-    )
-    trim_percentage: Decimal = Field(
-        ...,
-        description=(
-            "Fraction of the position this leg trims when it fires. "
-            "Must be one of 0.25, 0.5, 0.75, 1. The sum of all legs in "
-            "exit_plan must equal 1.0."
-        ),
-    )
-
-    @field_validator("strategy")
-    @classmethod
-    def _validate_strategy(cls, v: str) -> str:
-        v = v.strip()
-        allowed = set(ENTRY_EXIT_STRATEGY_NAMES)
-        if v not in allowed:
-            raise ValueError(
-                f"strategy must be one of {sorted(allowed)} (got '{v}')"
-            )
-        return v
-
-    @field_validator("trim_percentage")
-    @classmethod
-    def _validate_trim_percentage(cls, v: Decimal) -> Decimal:
-        normalized = v.normalize() if v != 0 else v
-        allowed_normalized = {p.normalize() for p in ALLOWED_TRIM_PERCENTAGES}
-        if normalized not in allowed_normalized:
-            raise ValueError(
-                f"trim_percentage must be one of 0.25, 0.5, 0.75, or 1 (got {v})"
-            )
-        return v
 
 
 # Entry

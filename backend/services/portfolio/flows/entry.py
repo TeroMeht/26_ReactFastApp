@@ -23,7 +23,6 @@ from services.portfolio.trades_snapshot import (
     build_today_snapshot,
 )
 from db.exits import update_exit_request
-from db.exits import update_exit_request
 
 from core.config import settings
 from schemas.api_schemas import EntryRequest, EntryRequestResponse
@@ -33,14 +32,8 @@ logger = logging.getLogger(__name__)
 HELSINKI = pytz.timezone("Europe/Helsinki")
 
 
-# ----------------------------------------------------------------------
-# Public helper used by routers/portfolio.py
-# ----------------------------------------------------------------------
 async def count_entry_attempts_today_all(client: IbClient) -> dict[str, int]:
-    """
-    Per-symbol entry-attempt counts for today. Thin wrapper around the
-    snapshot so the existing router can keep calling this name.
-    """
+    """Per-symbol entry-attempt counts for today."""
     try:
         snapshot = await build_today_snapshot(client)
         return dict(snapshot.entry_counts)
@@ -49,9 +42,6 @@ async def count_entry_attempts_today_all(client: IbClient) -> dict[str, int]:
         return {}
 
 
-# ----------------------------------------------------------------------
-# Guards - pure functions over a snapshot + clock + settings
-# ----------------------------------------------------------------------
 def _parse_helsinki(value) -> datetime | None:
     if value is None:
         return None
@@ -68,10 +58,8 @@ def _parse_helsinki(value) -> datetime | None:
 
 
 def _in_block_window(now_t: time, start: time, end: time) -> bool:
-    """Window is inclusive on both ends. Supports overnight windows."""
     if start <= end:
         return start <= now_t <= end
-    # crosses midnight, e.g. 22:00-06:00
     return now_t >= start or now_t <= end
 
 
@@ -102,11 +90,6 @@ def check_attempts(snapshot: TradesSnapshot, symbol: str) -> tuple[bool, str]:
 
 
 def check_total_attempts(snapshot: TradesSnapshot) -> tuple[bool, str]:
-    """
-    Daily cap across all tickers. Independent of per-symbol limits - once
-    the total number of entries today reaches MAX_TOTAL_ENTRIES_PER_DAY no
-    further entries are allowed regardless of which symbol is requested.
-    """
     total = snapshot.total_attempts()
     max_total = settings.MAX_TOTAL_ENTRIES_PER_DAY
     if total >= max_total:
@@ -119,24 +102,13 @@ def check_total_attempts(snapshot: TradesSnapshot) -> tuple[bool, str]:
     return True, ""
 
 
-def check_loss_cooldown(
-    snapshot: TradesSnapshot, now: datetime
-) -> tuple[bool, str, datetime | None]:
-    """
-    Returns (ok, message, cooldown_until).
-
-    `cooldown_until` is set only when the cooldown is active so the UI can
-    display a persistent banner with a countdown until entries become
-    allowed again.
-    """
+def check_loss_cooldown(snapshot: TradesSnapshot, now: datetime):
     last_loss = snapshot.last_loss()
     if not last_loss:
         return True, "", None
-
     exit_time = _parse_helsinki(last_loss.get("exit_time"))
     if exit_time is None:
         return True, "", None
-
     threshold = timedelta(minutes=settings.MAX_ENTRY_FREQUENCY_MINUTES)
     cooldown_until = exit_time + threshold
     elapsed = now - exit_time
@@ -151,67 +123,47 @@ def check_loss_cooldown(
     return True, "", None
 
 
-def check_frequency(
-    snapshot: TradesSnapshot, symbol: str, now: datetime
-) -> tuple[bool, str]:
+def check_frequency(snapshot: TradesSnapshot, symbol: str, now: datetime) -> tuple[bool, str]:
     latest = snapshot.latest_fill_for_symbol(symbol)
     if not latest:
         logger.info("No executions found. Entry allowed.")
         return True, ""
-
     trade_time = _parse_helsinki(latest.get("time"))
     if trade_time is None:
         return True, ""
-
     elapsed = now - trade_time
     threshold = timedelta(minutes=settings.MAX_ENTRY_FREQUENCY_MINUTES)
     if elapsed > threshold:
         logger.info(f"Last execution was {elapsed}. Entry allowed.")
         return True, ""
-
     elapsed_str = str(elapsed).split(".")[0]
     msg = f"Too soon to re-enter. Last execution was {elapsed_str} ago."
     logger.info(msg)
     return False, msg
 
 
-# ----------------------------------------------------------------------
-# Orchestration
-# ----------------------------------------------------------------------
 async def process_entry_request(
     client: IbClient,
     db_conn,
     payload: EntryRequest,
 ) -> EntryRequestResponse:
-async def process_entry_request(
-    client: IbClient,
-    payload: EntryRequest,
-    db_conn=None,
-) -> EntryRequestResponse:
     """
-    Validate guards (one IB executions fetch), fetch the quote, size the
-    position, build the order, and place a bracket. On success, persist the
-    user-defined exit_strategies into exit_requests so the streamer's exit
-    alarms have somewhere to match against.
-
-    The schema enforces ``len(payload.exit_strategies) >= 1`` — there is no
-    "no exits" code path here.
+    Validate guards, place a bracket, then arm payload.exit_strategies as
+    exit_request rows. Schema enforces >=1 exit so we never reach this with
+    an empty list.
     """
     symbol = payload.symbol
     stop_price = payload.stop_price
-    exit_plan = payload.exit_plan
 
     try:
         snapshot = await build_today_snapshot(client)
         now = datetime.now(HELSINKI)
 
-        # Daily loss is a kill-switch: fire the circuit breaker on breach.
         ok, message = check_daily_loss(snapshot)
         if not ok:
             enforce_daily_loss_circuit_breaker(client)
             return EntryRequestResponse(allowed=False, message=message, symbol=symbol)
 
-        # Cheap, pure guards in cheapest-to-most-relevant order.
         for ok, message in (
             check_block_window(now),
             check_total_attempts(snapshot),
@@ -221,9 +173,6 @@ async def process_entry_request(
             if not ok:
                 return EntryRequestResponse(allowed=False, message=message, symbol=symbol)
 
-        # Loss cooldown is handled separately so we can surface the exact
-        # expiry time to the UI (it shows a persistent banner with a
-        # countdown until entries become allowed again).
         cd_ok, cd_msg, cd_until = check_loss_cooldown(snapshot, now)
         if not cd_ok:
             return EntryRequestResponse(
@@ -236,7 +185,6 @@ async def process_entry_request(
 
         logger.info(f"Entry allowed for {symbol}")
 
-        # Quote -> size -> order -> bracket
         bid_ask = await client.get_bid_ask_price(symbol)
         entry_price = calculate_entry_price(bid_ask, stop_price)
         position_size = calculate_position_size(
@@ -258,21 +206,14 @@ async def process_entry_request(
 
         parent, stop = await client.place_bracket_order(order)
 
-        # place_bracket_order returns (None, None) on failure. Don't claim
-        # success in that case - surface a clear rejection to the caller.
         if not parent or not stop:
             msg = f"Bracket order placement failed for {symbol}"
             logger.error(msg)
-            return EntryRequestResponse(
-                allowed=False,
-                message=msg,
-                symbol=symbol,
-            )
+            return EntryRequestResponse(allowed=False, message=msg, symbol=symbol)
 
-        # Arm the user-defined exits now that the bracket is live. Insert
-        # after order placement so a failed order doesn't leave stranded
-        # exit_request rows. Per-strategy errors are logged but do not roll
-        # back the entry — the position is open either way.
+        # Arm exits after the bracket is live so a failed order doesn't
+        # leave stranded rows. Per-strategy errors are logged but do not
+        # roll back the entry.
         for spec in payload.exit_strategies:
             try:
                 await update_exit_request(
@@ -287,64 +228,12 @@ async def process_entry_request(
                     symbol, spec.strategy,
                 )
 
-        # Arm the user-defined exits now that the bracket is live. Insert
-        # after order placement so a failed order doesn't leave stranded
-        # exit_request rows. Per-strategy errors are logged but do not roll
-        # back the entry — the position is open either way.
-        for spec in payload.exit_strategies:
-            try:
-                await update_exit_request(
-                    db_conn,
-                    symbol,
-                    strategy=spec.strategy,
-                    trim_percentage=float(spec.trim_percentage),
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to persist exit_request | symbol=%s strategy=%s",
-                    symbol, spec.strategy,
-                )
-
-        # Arm every leg of the chosen exit plan. We do this AFTER the
-        # bracket has been accepted by IB so we never leave dangling
-        # exit_request rows for a symbol that didn't actually go live.
-        # Each leg becomes its own (symbol, strategy) row with its trim
-        # percentage. The schema has already validated that the trims
-        # sum to 1.0 and that strategies are unique, so we don't need
-        # to re-check here. A failure mid-loop is logged but does not
-        # invalidate the entry -- the position is already open.
         plan_summary = ", ".join(
-            f"{leg.strategy}@{leg.trim_percentage}" for leg in exit_plan
+            f"{s.strategy}@{s.trim_percentage}" for s in payload.exit_strategies
         )
-        if db_conn is not None:
-            for leg in exit_plan:
-                try:
-                    await update_exit_request(
-                        db_conn,
-                        symbol=symbol,
-                        strategy=leg.strategy,
-                        trim_percentage=float(leg.trim_percentage),
-                    )
-                    logger.info(
-                        "Armed exit leg | symbol=%s strategy=%s trim=%s",
-                        symbol, leg.strategy, leg.trim_percentage,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to arm exit leg after entry | "
-                        "symbol=%s strategy=%s trim=%s",
-                        symbol, leg.strategy, leg.trim_percentage,
-                    )
-        else:
-            logger.warning(
-                "No db_conn passed to process_entry_request - exit plan "
-                "for %s (%s) was NOT armed.",
-                symbol, plan_summary,
-            )
-
         return EntryRequestResponse(
             allowed=True,
-            message=f"Entry ok (exit plan: {plan_summary})",
+            message=f"Entry ok (exits: {plan_summary})",
             symbol=symbol,
             parentOrderId=parent.orderId,
             stopOrderId=stop.orderId,
