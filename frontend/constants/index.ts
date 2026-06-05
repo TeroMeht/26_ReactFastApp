@@ -22,6 +22,11 @@ export const sidebarLinks = [
   },
     {
     imgURL: "/icons/money-send.svg",
+    route: "/trade-log",
+    label: "Trade Log",
+  },
+    {
+    imgURL: "/icons/money-send.svg",
     route: "/scanner",
     label: "Scanner",
   },

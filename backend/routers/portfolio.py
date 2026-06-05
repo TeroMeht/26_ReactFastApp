@@ -31,7 +31,11 @@ from schemas.api_schemas import (
     LiveOrder,
     CancelOrderResult,
     OrderLogEntry,
+    TradeLogRow,
+    TradeLogResponse,
 )
+from collections import defaultdict
+from datetime import date as _date
 
 
 logger = logging.getLogger(__name__)
@@ -184,6 +188,78 @@ async def cancel_order(
 async def get_order_status(tracker: OrderTracker = Depends(get_order_tracker)):
     """Current snapshot of every order the tracker knows about."""
     return [LiveOrder(**row) for row in tracker.snapshot()]
+
+
+@router.get("/trade-log", response_model=TradeLogResponse)
+async def get_trade_log(
+    ib=Depends(get_ib),
+    tracker: OrderTracker = Depends(get_order_tracker),
+):
+    """
+    Per-symbol realized PnL for today via IB's reqPnLSingle subscriptions.
+    Fill count and last-fill time come from today's executions. Works for
+    positions opened on any prior day, since IB owns the cost basis.
+    In-memory only — no DB writes.
+    """
+    client = IbClient(ib, tracker=tracker)
+
+    # Two parallel reads: IB's accounting layer (per-symbol realizedPnL)
+    # and today's fills (for fill counts + timestamps).
+    pnl_by_symbol = await client.get_realized_pnl_by_symbol_today()
+    trades = await client.get_trades()
+    today = _date.today()
+
+    fill_stats: dict[str, dict] = defaultdict(
+        lambda: {"fills": 0, "last_fill_time": None, "commission": 0.0,
+                 "has_commission": False}
+    )
+    for f in trades:
+        if not (f.get("time") or "").startswith(today.isoformat()):
+            continue
+        sym = (f.get("symbol") or "").upper()
+        if not sym:
+            continue
+        stats = fill_stats[sym]
+        stats["fills"] += 1
+        t = f.get("time")
+        if t and (stats["last_fill_time"] is None or t > stats["last_fill_time"]):
+            stats["last_fill_time"] = t
+        c = f.get("commission")
+        if c is not None:
+            stats["commission"] += float(c)
+            stats["has_commission"] = True
+
+    rows: list[TradeLogRow] = []
+    for sym, pnl in pnl_by_symbol.items():
+        sym_upper = sym.upper()
+        rp = float(pnl.get("realized_pnl", 0.0) or 0.0)
+        # Show every symbol IB reports activity for today, even at zero —
+        # the user wants to see what was active.
+        stats = fill_stats.get(sym_upper, {})
+        # Only attribute commission when CommissionReport actually fired.
+        commission = stats.get("commission", 0.0) if stats.get("has_commission") else 0.0
+        rows.append(TradeLogRow(
+            symbol=sym_upper,
+            realized_pnl=round(rp, 4),
+            commission=round(commission, 4),
+            net_pnl=round(rp - commission, 4),
+            fills=stats.get("fills", 0),
+            last_fill_time=stats.get("last_fill_time"),
+            is_loss=rp < 0,
+        ))
+
+    # Newest activity first; symbols without a fill time fall to the bottom.
+    rows.sort(key=lambda r: r.last_fill_time or "", reverse=True)
+
+    total_realized = round(sum(r.realized_pnl for r in rows), 4)
+    total_commission = round(sum(r.commission for r in rows), 4)
+    return TradeLogResponse(
+        rows=rows,
+        realized_pnl=total_realized,
+        total_commission=total_commission,
+        net_pnl=round(total_realized - total_commission, 4),
+        symbol_count=len(rows),
+    )
 
 
 @router.get("/order-log", response_model=List[OrderLogEntry])

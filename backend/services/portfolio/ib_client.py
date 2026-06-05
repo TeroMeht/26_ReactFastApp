@@ -122,12 +122,20 @@ class IbClient:
         try:
             helsinki_tz = pytz.timezone("Europe/Helsinki")
 
-            # Request fresh executions and wait for IB to signal completion
-            # reqExecutions triggers execDetailsEnd event when all data is delivered
+            # Request fresh executions and wait for IB to signal completion.
+            # reqExecutions triggers execDetailsEnd when executions are
+            # delivered, but commissionReports stream in separately AFTER
+            # that — IB sends one commissionReport per execution as its own
+            # message. The Fill objects are mutated in place when those
+            # reports arrive, so we need to wait a beat (and ideally poll
+            # until every Fill has a populated report) before reading
+            # commission / realizedPNL.
             trades = await asyncio.wait_for(
                 self.ib.reqExecutionsAsync(),
                 timeout=10.0
             )
+
+
 
             executed = []
 
@@ -138,22 +146,16 @@ class IbClient:
 
                 time_utc = fill.execution.time
                 time_helsinki = time_utc.astimezone(helsinki_tz)
-
-                # Resolve commission — may be None if report hasn't arrived yet
-                commission = None
-                if fill.commissionReport:
-                    commission = fill.commissionReport.commission
-
                 executed.append({
-                    "tradeid":    fill.execution.permId,
-                    "symbol":     fill.contract.symbol    if fill.contract   else None,
-                    "sectype":    fill.contract.secType   if fill.contract   else None,
-                    "action":     fill.execution.side,
-                    "quantity":   fill.execution.shares,
-                    "price":      fill.execution.price,
-                    "time":       time_helsinki.isoformat(),
-                    "exchange":   fill.execution.exchange,
-                    "commission": commission,
+                    "tradeid":     fill.execution.permId,
+                    "symbol":      fill.contract.symbol    if fill.contract   else None,
+                    "conid":       fill.contract.conId     if fill.contract   else None,
+                    "sectype":     fill.contract.secType   if fill.contract   else None,
+                    "action":      fill.execution.side,
+                    "quantity":    fill.execution.shares,
+                    "price":       fill.execution.price,
+                    "time":        time_helsinki.isoformat(),
+                    "exchange":    fill.execution.exchange,
                 })
 
             logging.debug(f"Fetched executed trades: {executed}")
@@ -301,6 +303,96 @@ class IbClient:
         except Exception as e:
             logging.error(f"Error fetching latest executed trade for {symbol}: {e}")
             return None
+
+    async def get_realized_pnl_by_symbol_today(self) -> dict[str, dict]:
+        """
+        Per-symbol realized PnL for today via streaming reqPnLSingle
+        subscriptions. Works for both currently-open positions and
+        positions that were closed earlier today, because IB's daily
+        accounting includes all activity since session start.
+
+        Why this exists: relying on CommissionReport.realizedPNL from
+        reqExecutions is unreliable — IB streams those reports live as
+        each fill happens, and they are NOT replayed when a client
+        reconnects after the fact. Subscribing via reqPnLSingle queries
+        IB's accounting layer directly, which has the data.
+
+        Returns a dict keyed by symbol:
+            { "AAPL": {"realized_pnl": 123.45, "unrealized_pnl": 0.0}, ... }
+        """
+        try:
+            # Resolve the account code. ib_async exposes accounts after
+            # the connection completes the managed-accounts handshake.
+            accounts = list(self.ib.managedAccounts() or [])
+            account = accounts[0] if accounts else None
+            if not account:
+                logging.warning(
+                    "get_realized_pnl_by_symbol_today: no managed account "
+                    "available; returning empty"
+                )
+                return {}
+
+            trades = await self.get_trades()
+            today_iso = date.today().isoformat()
+
+            # Collect a unique (symbol -> conId) map from today's fills.
+            # We need the conId for reqPnLSingle, which is contract-keyed.
+            by_symbol: dict[str, int] = {}
+            for t in trades:
+                if not (t.get("time") or "").startswith(today_iso):
+                    continue
+                sym = t.get("symbol")
+                conid = t.get("conid")
+                if sym and conid:
+                    by_symbol[sym] = int(conid)
+
+            if not by_symbol:
+                return {}
+
+            result: dict[str, dict] = {}
+
+            async def _fetch(symbol: str, conid: int) -> None:
+                pnl = self.ib.reqPnLSingle(account, "", conid)
+                try:
+                    # Wait up to ~2.5s for IB to push the first value.
+                    # PnLSingle is updated in place by the streaming
+                    # pnlSingleEvent.
+                    for _ in range(25):
+                        await asyncio.sleep(0.1)
+                        rp = getattr(pnl, "realizedPnL", None)
+                        # IB uses DBL_MAX (~1.7e308) as the "N/A" sentinel
+                        # before the first real tick lands. Wait it out.
+                        if rp is not None and abs(rp) < 1e15:
+                            result[symbol] = {
+                                "realized_pnl": float(rp),
+                                "unrealized_pnl": float(
+                                    getattr(pnl, "unrealizedPnL", 0.0) or 0.0
+                                ) if abs(getattr(pnl, "unrealizedPnL", 0.0) or 0.0) < 1e15 else 0.0,
+                            }
+                            return
+                    logging.warning(
+                        "reqPnLSingle never produced a valid realizedPnL "
+                        "for %s (conId=%s)", symbol, conid,
+                    )
+                finally:
+                    try:
+                        self.ib.cancelPnLSingle(account, "", conid)
+                    except Exception:
+                        logging.exception(
+                            "cancelPnLSingle failed for %s", symbol
+                        )
+
+            # Subscribe to all symbols in parallel; each one independently
+            # waits for its first tick and unsubscribes.
+            await asyncio.gather(*[
+                _fetch(sym, cid) for sym, cid in by_symbol.items()
+            ])
+
+            return result
+
+        except Exception:
+            logging.exception("get_realized_pnl_by_symbol_today failed")
+            return {}
 
     async def get_realized_pnl_today(self) -> dict:
         """
