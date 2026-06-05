@@ -383,6 +383,11 @@ class AddRequestResponse(BaseModel):
     new_order: Optional[Any] = None
     place_result: Optional[Any] = None
     modified_stp_qty: Optional[int] = None
+    # When the add is blocked by the open-position cooldown, this is the
+    # ISO-8601 timestamp at which adds will be allowed again. Mirrors the
+    # entry flow's loss_cooldown surface.
+    reason: Optional[str] = None  # e.g. "add_cooldown"
+    cooldown_until: Optional[str] = None
 
 
 # Entry attempts stats row (per-symbol per-day count for the UI table)

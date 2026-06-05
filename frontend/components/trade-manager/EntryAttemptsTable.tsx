@@ -73,43 +73,43 @@ const EntryAttemptsTable: React.FC<Props> = ({ refreshTrigger = 0 }) => {
 
   return (
     <div>
-      <h2 className="text-xl font-bold mb-4">Entry Attempts</h2>
+      <h2 className="text-base font-bold mb-2">Entry Attempts</h2>
 
       {/*
-        Viewport: header + 3 data rows (~13.5rem). Vertical-only scrolling.
+        Compact viewport: ~7 data rows + header + footer at text-xs / h-6
+        (~1.5rem per row). Vertical-only scrolling.
 
-        Two key tricks so the 4th row's scrollbar doesn't push "Remaining"
+        Two key tricks so the scrollbar appearing doesn't push "Remaining"
         out of view:
           1. scrollbar-gutter: stable always reserves space for the
              scrollbar so the available width is the same whether or not
              the bar is visible.
           2. The <table> uses table-fixed with explicit column widths,
-             so columns can't reflow as more rows are added — they stay
-             at the percentages we set.
+             so columns can't reflow as more rows are added.
         The inner div from shadcn's Table still needs overflow-x-hidden
         so it doesn't render its own horizontal bar.
       */}
       <div
         className="
-          max-h-[13.5rem] overflow-y-auto overflow-x-hidden
+          max-h-[14rem] overflow-y-auto overflow-x-hidden
           [scrollbar-gutter:stable]
           [&>div]:overflow-x-hidden [&>div]:overflow-y-visible
         "
       >
-        <Table className="table-fixed w-full">
+        <Table className="table-fixed w-full text-xs">
           <TableHeader className="sticky top-0 bg-background z-10">
-            <TableRow>
-              <TableHead className="w-[34%] px-2">Symbol</TableHead>
-              <TableHead className="w-[22%] px-2 text-right">Attempts</TableHead>
-              <TableHead className="w-[22%] px-2 text-right">Max</TableHead>
-              <TableHead className="w-[22%] px-2 text-right">Remaining</TableHead>
+            <TableRow className="h-7">
+              <TableHead className="w-[34%] px-2 py-1 h-7 whitespace-nowrap">Symbol</TableHead>
+              <TableHead className="w-[22%] px-2 py-1 h-7 text-right whitespace-nowrap">Attempts</TableHead>
+              <TableHead className="w-[22%] px-2 py-1 h-7 text-right whitespace-nowrap">Max</TableHead>
+              <TableHead className="w-[22%] px-2 py-1 h-7 text-right whitespace-nowrap">Remaining</TableHead>
             </TableRow>
           </TableHeader>
 
           <TableBody>
             {rows.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={4} className="text-gray-500 px-2">
+              <TableRow className="h-6">
+                <TableCell colSpan={4} className="text-gray-500 px-2 py-1">
                   {loading ? "Loading..." : "No entries today."}
                 </TableCell>
               </TableRow>
@@ -118,12 +118,12 @@ const EntryAttemptsTable: React.FC<Props> = ({ refreshTrigger = 0 }) => {
                 const atLimit = row.remaining === 0;
                 const oneLeft = row.remaining === 1;
                 return (
-                  <TableRow key={row.symbol}>
-                    <TableCell className="font-medium px-2 truncate">{row.symbol}</TableCell>
-                    <TableCell className="px-2 text-right">{row.attempts}</TableCell>
-                    <TableCell className="px-2 text-right">{row.max_attempts}</TableCell>
+                  <TableRow key={row.symbol} className="h-6">
+                    <TableCell className="font-medium px-2 py-1 truncate">{row.symbol}</TableCell>
+                    <TableCell className="px-2 py-1 text-right">{row.attempts}</TableCell>
+                    <TableCell className="px-2 py-1 text-right">{row.max_attempts}</TableCell>
                     <TableCell
-                      className={`px-2 text-right font-semibold ${
+                      className={`px-2 py-1 text-right font-semibold ${
                         atLimit
                           ? "text-red-600"
                           : oneLeft
@@ -145,16 +145,16 @@ const EntryAttemptsTable: React.FC<Props> = ({ refreshTrigger = 0 }) => {
             MAX_TOTAL_ENTRIES_PER_DAY hard cap defined in backend config.
           */}
           <TableFooter className="sticky bottom-0 bg-background">
-            <TableRow>
-              <TableCell className="font-semibold px-2">Total</TableCell>
-              <TableCell className="px-2 text-right font-semibold">
+            <TableRow className="h-7">
+              <TableCell className="font-semibold px-2 py-1">Total</TableCell>
+              <TableCell className="px-2 py-1 text-right font-semibold">
                 {totalAttempts}
               </TableCell>
-              <TableCell className="px-2 text-right font-semibold">
+              <TableCell className="px-2 py-1 text-right font-semibold">
                 {maxTotal}
               </TableCell>
               <TableCell
-                className={`px-2 text-right font-semibold ${
+                className={`px-2 py-1 text-right font-semibold ${
                   totalRemaining === 0
                     ? "text-red-600"
                     : totalRemaining === 1

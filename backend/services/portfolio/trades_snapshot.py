@@ -174,6 +174,30 @@ class TradesSnapshot:
             return None
         return max(fills, key=lambda f: f.get("time") or "")
 
+    def position_opened_at(self, symbol: str) -> datetime | None:
+        """
+        Time of the most recent fill that took net position from flat to
+        non-flat for this symbol (i.e. when the currently-open position
+        was opened). Returns None if the position was opened before today
+        or there are no fills for this symbol today.
+        """
+        fills = self.fills_by_symbol.get(symbol.upper())
+        if not fills:
+            return None
+        net = 0
+        open_time: datetime | None = None
+        for fill in fills:
+            signed = _signed_qty(
+                fill.get("action") or "", float(fill.get("quantity") or 0)
+            )
+            if signed == 0:
+                continue
+            if net == 0:
+                open_time = _parse_time(fill.get("time"))
+            net += signed
+        # Only return a time if the position is still open from that fill.
+        return open_time if net != 0 else None
+
     def last_loss(self) -> dict | None:
         """Most recent completed trade that closed at a loss, or None."""
         for trade in reversed(self.completed_trades):

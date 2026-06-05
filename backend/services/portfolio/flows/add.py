@@ -10,6 +10,9 @@ surface preserved:
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+
+import pytz
 
 from services.orders import (
     build_order,
@@ -17,7 +20,14 @@ from services.orders import (
     calculate_entry_price,
 )
 from services.portfolio.ib_client import IbClient
+from services.portfolio.trades_snapshot import (
+    TradesSnapshot,
+    build_today_snapshot,
+)
+from core.config import settings
 from schemas.api_schemas import AddRequest, AddRequestResponse
+
+HELSINKI = pytz.timezone("Europe/Helsinki")
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +95,32 @@ def check_not_losing(ctx: AddContext) -> tuple[bool, str]:
     return False, "No existing position to add to."
 
 
+def check_add_cooldown(
+    snapshot: TradesSnapshot, symbol: str, now: datetime
+):
+    """
+    Block adds within MAX_ENTRY_FREQUENCY_MINUTES of the position being
+    opened. Same cooldown window as entries. Returns (ok, msg, cooldown_until).
+    If the position was opened before today (no open fill in today's
+    snapshot), the cooldown does not apply.
+    """
+    opened_at = snapshot.position_opened_at(symbol)
+    if opened_at is None:
+        return True, "", None
+    threshold = timedelta(minutes=settings.MAX_ENTRY_FREQUENCY_MINUTES)
+    cooldown_until = opened_at + threshold
+    elapsed = now - opened_at
+    if elapsed <= threshold:
+        elapsed_str = str(elapsed).split(".")[0]
+        msg = (
+            f"Add cooldown active for {symbol}. Position opened "
+            f"{elapsed_str} ago."
+        )
+        logger.info(msg)
+        return False, msg, cooldown_until
+    return True, "", None
+
+
 def check_not_at_target_size(
     ctx: AddContext, total_size: int
 ) -> tuple[bool, str]:
@@ -125,6 +161,18 @@ async def process_add_request(client: IbClient, payload: AddRequest) -> AddReque
                 return AddRequestResponse(
                     allowed=False, message=message, symbol=symbol
                 )
+
+        snapshot = await build_today_snapshot(client)
+        now = datetime.now(HELSINKI)
+        cd_ok, cd_msg, cd_until = check_add_cooldown(snapshot, symbol, now)
+        if not cd_ok:
+            return AddRequestResponse(
+                allowed=False,
+                message=cd_msg,
+                symbol=symbol,
+                reason="add_cooldown",
+                cooldown_until=cd_until.isoformat() if cd_until else None,
+            )
 
         stp_aux_price = ctx.stp_order["auxprice"]
         stp_order_id = ctx.stp_order["orderid"]

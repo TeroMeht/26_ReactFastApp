@@ -83,7 +83,7 @@ const OrderLogTable = ({
   onLoadingChange,
 }: OrderLogTableProps) => {
   const [entries, setEntries] = useState<OrderLogEntry[]>([]);
-  const [filter, setFilter] = useState<StatusFilter>("All");
+  const [filter, setFilter] = useState<StatusFilter>("Filled");
   const [symbolFilter, setSymbolFilter] = useState("");
 
   const fetchLog = useCallback(async () => {

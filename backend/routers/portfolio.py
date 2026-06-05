@@ -12,6 +12,7 @@ from services.portfolio.flows.entry import process_entry_request,count_entry_att
 from services.portfolio.flows.add import process_add_request
 from services.portfolio.flows.exit import process_exit_request
 from services.portfolio.flows.open_risk import process_openrisktable
+from db.order_log import fetch_order_log
 
 
 from dependencies import get_ib, get_db_conn, get_order_tracker
@@ -186,12 +187,18 @@ async def get_order_status(tracker: OrderTracker = Depends(get_order_tracker)):
 
 
 @router.get("/order-log", response_model=List[OrderLogEntry])
-async def get_order_log(tracker: OrderTracker = Depends(get_order_tracker)):
+async def get_order_log(
+    limit: int = 2000,
+    symbol: str | None = None,
+    db_conn=Depends(get_db_conn),
+):
     """
     Chronological audit log of every status transition and error attached
-    to any order since the backend started. Newest events first.
+    to any order, read from the persistent `order_log` table. Survives
+    application restarts. Newest events first.
     """
-    return [OrderLogEntry(**row) for row in tracker.event_log()]
+    rows = await fetch_order_log(db_conn, limit=limit, symbol=symbol)
+    return [OrderLogEntry(**row) for row in rows]
 
 
 @router.get("/order-status/stream")

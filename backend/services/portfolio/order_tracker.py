@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Optional, Set
 
 from ib_async import IB, Trade
 
+from db.order_log import insert_order_log_event
+
 logger = logging.getLogger(__name__)
 
 
@@ -88,10 +90,50 @@ class OrderTracker:
         # Append-only event log. Every status transition produces one entry
         # so the /order-log page can show a chronological audit trail.
         # Bounded to avoid unbounded memory in long-running sessions.
+        # NOTE: the persistent copy of this log lives in the `order_log`
+        # postgres table — _event_log is just the current-session cache.
         self._event_log: List[Dict[str, Any]] = []
         self._max_log = max_log
         # Dedup: same (perm_id, status) within one tick shouldn't double-log.
         self._last_logged_status: Dict[int, str] = {}
+
+        # DB pool used to persist events. Set by main.py at startup via
+        # set_db_pool(); when None, events are kept in memory only.
+        self._db_pool = None
+
+    # ------------------------------------------------------------------
+    # Persistence wiring
+    # ------------------------------------------------------------------
+    def set_db_pool(self, pool) -> None:
+        """Attach an asyncpg pool so events are persisted to order_log."""
+        self._db_pool = pool
+
+    def _persist_event(self, entry: Dict[str, Any]) -> None:
+        """
+        Fire-and-forget DB write for one event. Safe to call from ib_async
+        sync callbacks because we schedule via the bound event loop. If no
+        pool is configured (e.g. tests) the call is a no-op.
+        """
+        pool = self._db_pool
+        loop = self._loop
+        if pool is None or loop is None:
+            return
+
+        async def _write():
+            try:
+                async with pool.acquire() as conn:
+                    await insert_order_log_event(conn, entry)
+            except Exception:
+                logger.exception("Failed to persist order_log event")
+
+        try:
+            if loop.is_running():
+                # Same loop (ib_async dispatches on the FastAPI loop).
+                asyncio.run_coroutine_threadsafe(_write(), loop)
+            else:
+                loop.create_task(_write())
+        except Exception:
+            logger.exception("Failed to schedule order_log persist")
 
     # ------------------------------------------------------------------
     # Subscription plumbing for SSE
@@ -205,6 +247,8 @@ class OrderTracker:
         if len(self._event_log) > self._max_log:
             overflow = len(self._event_log) - self._max_log
             del self._event_log[:overflow]
+        # Mirror to the persistent order_log table.
+        self._persist_event(entry)
 
     def event_log(self) -> List[Dict[str, Any]]:
         """Return a copy of the event log, newest first."""
@@ -253,7 +297,7 @@ class OrderTracker:
 
             # Capture error as its own log entry — useful when an order is
             # rejected (code ~200-210) without a follow-up status change.
-            self._event_log.append({
+            err_entry = {
                 "ts": _time.time(),
                 "perm_id": state.get("perm_id", 0),
                 "order_id": state.get("order_id", 0),
@@ -269,10 +313,12 @@ class OrderTracker:
                 "avg_fill_price": state.get("avg_fill_price", 0),
                 "last_error": errorString,
                 "last_error_code": errorCode,
-            })
+            }
+            self._event_log.append(err_entry)
             if len(self._event_log) > self._max_log:
                 overflow = len(self._event_log) - self._max_log
                 del self._event_log[:overflow]
+            self._persist_event(err_entry)
 
             self._broadcast({"type": "update", "order": state})
         except Exception:

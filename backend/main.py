@@ -14,6 +14,7 @@ import uvicorn
 import asyncpg
 from db.exits import clear_exit_requests,create_exit_requests_table
 from db.watchlist import create_watchlist_tables
+from db.order_log import create_order_log_table
 from helpers.events import StreamerStatusStore
 
 # Import routers
@@ -65,6 +66,12 @@ async def lifespan(app: FastAPI):
             await create_watchlist_tables(conn)
             logger.info("watchlist + watchlist_strategies tables ensured")
 
+            # Order log: idempotent CREATE IF NOT EXISTS, no truncation.
+            # Permanent audit trail across restarts — the OrderTracker writes
+            # to this table for every status transition and order error.
+            await create_order_log_table(conn)
+            logger.info("order_log table ensured")
+
         # Store shared services
         app.state.ib = ib
         app.state.db_pool = db_pool
@@ -72,6 +79,8 @@ async def lifespan(app: FastAPI):
 
         # Bind order tracker to ib_async events and seed from existing open
         # orders. Done after the IB connection is up so events flow cleanly.
+        # Attach the pool first so seed/bind writes are persisted.
+        order_tracker.set_db_pool(db_pool)
         order_tracker.bind_events(ib)
         await order_tracker.seed(ib)
 
