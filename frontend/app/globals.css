@@ -142,11 +142,18 @@
 
   /* Home */
   .home {
-    @apply no-scrollbar flex w-full flex-row max-xl:max-h-screen max-xl:overflow-y-scroll;
+    /* h-full + min-h-0 so this section fills the parent flex slot — which
+       is (viewport - LockoutBanner). Using max-h-screen here would clip
+       the bottom of the page (the portfolio table on /trade-manager)
+       whenever the global LockoutBanner takes vertical space. */
+    @apply no-scrollbar flex w-full flex-row h-full min-h-0 max-xl:overflow-y-scroll;
   }
 
   .home-content {
-    @apply no-scrollbar flex w-full flex-1 flex-col gap-3 px-5 sm:px-8 py-3 lg:py-4 xl:max-h-screen xl:overflow-y-scroll;
+    /* Same reasoning as .home: scroll inside the parent's height, not the
+       viewport's, so the page content doesn't get cut off when the
+       LockoutBanner shrinks the available area. */
+    @apply no-scrollbar flex w-full flex-1 min-h-0 flex-col gap-3 px-5 sm:px-8 py-3 lg:py-4 xl:h-full xl:overflow-y-scroll;
   }
 
   .home-header {

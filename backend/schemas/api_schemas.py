@@ -301,6 +301,59 @@ class ExitRequestResponseIB(BaseModel):
     order_id :Optional[int] = None
 
 
+# --- Custom (user-defined) price-target exits ----------------------------
+# A custom exit is a real IB LIMIT order placed at target_price for a
+# trim_percentage slice of the open position. On fill, the fill listener
+# resizes the symbol's STP (or cancels it on a 100% trim) — same end
+# state the strategy-based exit flow produces.
+
+
+class CreateCustomExitRequest(BaseModel):
+    symbol: str = Field(..., min_length=1)
+    target_price: Decimal = Field(
+        ..., gt=0, description="Limit price at which IB will execute the exit."
+    )
+    trim_percentage: Decimal = Field(
+        default=Decimal("1"),
+        description="Fraction of the position to exit. Allowed: 0.25, 0.5, 0.75, 1.",
+    )
+
+    @field_validator("symbol")
+    @classmethod
+    def _upper(cls, v: str) -> str:
+        v = v.strip().upper()
+        if not v:
+            raise ValueError("symbol cannot be empty")
+        return v
+
+    @field_validator("trim_percentage")
+    @classmethod
+    def _trim(cls, v: Decimal) -> Decimal:
+        normalized = v.normalize() if v != 0 else v
+        allowed_normalized = {p.normalize() for p in ALLOWED_TRIM_PERCENTAGES}
+        if normalized not in allowed_normalized:
+            raise ValueError(
+                f"trim_percentage must be one of 0.25, 0.5, 0.75, or 1 (got {v})"
+            )
+        return v
+
+
+class CustomExitResponse(BaseModel):
+    # IB-only — no DB row, so no internal id and no created/updated stamps.
+    # `perm_id` is what the frontend passes back on cancel.
+    symbol: str
+    contract_type: str = ""
+    order_id: int
+    perm_id: Optional[int] = None
+    target_price: Decimal
+    # Null for externally-placed LIMIT orders when we can't derive trim
+    # (e.g. position size unavailable).
+    trim_percentage: Optional[Decimal] = None
+    action: str  # SELL (long exit) or BUY (short exit)
+    quantity: int
+    status: str  # IB status (Submitted, PreSubmitted, …) or 'armed' on create
+
+
 # Entry
 class ExitStrategySpec(BaseModel):
     """One armed exit attached to an entry.

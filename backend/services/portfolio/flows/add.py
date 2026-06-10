@@ -99,15 +99,17 @@ def check_add_cooldown(
     snapshot: TradesSnapshot, symbol: str, now: datetime
 ):
     """
-    Block adds within MAX_ENTRY_FREQUENCY_MINUTES of the position being
-    opened. Same cooldown window as entries. Returns (ok, msg, cooldown_until).
-    If the position was opened before today (no open fill in today's
-    snapshot), the cooldown does not apply.
+    Block adds within MAX_ADD_FREQUENCY_MINUTES of the position being
+    opened. Uses its own cooldown window (separate from
+    MAX_ENTRY_FREQUENCY_MINUTES) so adds can be paced differently than
+    fresh entries. Returns (ok, msg, cooldown_until). If the position was
+    opened before today (no open fill in today's snapshot), the cooldown
+    does not apply.
     """
     opened_at = snapshot.position_opened_at(symbol)
     if opened_at is None:
         return True, "", None
-    threshold = timedelta(minutes=settings.MAX_ENTRY_FREQUENCY_MINUTES)
+    threshold = timedelta(minutes=settings.MAX_ADD_FREQUENCY_MINUTES)
     cooldown_until = opened_at + threshold
     elapsed = now - opened_at
     if elapsed <= threshold:

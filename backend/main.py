@@ -20,10 +20,12 @@ from helpers.events import StreamerStatusStore
 # Import routers
 from routers import (
     watchlist, script, alarms, livestream, portfolio,
-    pending_orders, exits, scanner, live_scanner,
+    pending_orders, exits, scanner, live_scanner, custom_exits,
 )
 from services.live_scanner import LiveScannerManager
 from services.portfolio.order_tracker import OrderTracker
+from services.portfolio.ib_client import IbClient
+from services.custom_exits import handle_custom_exit_fill, parse_order_ref
 
 
 # Global IBKR object
@@ -56,21 +58,8 @@ async def lifespan(app: FastAPI):
         # ENSURE TABLE EXISTS, THEN CLEAN ON STARTUP
         async with db_pool.acquire() as conn:
             await create_exit_requests_table(conn)
-            logger.info("exit_requests table ensured")
-            await clear_exit_requests(conn)
-            logger.info("exit_requests table cleared on startup")
-
-            # Watchlist tables: idempotent CREATE IF NOT EXISTS, no truncation.
-            # The watchlist is the user's persistent list of monitored tickers,
-            # so it must survive restarts (unlike exit_requests).
             await create_watchlist_tables(conn)
-            logger.info("watchlist + watchlist_strategies tables ensured")
-
-            # Order log: idempotent CREATE IF NOT EXISTS, no truncation.
-            # Permanent audit trail across restarts — the OrderTracker writes
-            # to this table for every status transition and order error.
             await create_order_log_table(conn)
-            logger.info("order_log table ensured")
 
         # Store shared services
         app.state.ib = ib
@@ -81,6 +70,37 @@ async def lifespan(app: FastAPI):
         # orders. Done after the IB connection is up so events flow cleanly.
         # Attach the pool first so seed/bind writes are persisted.
         order_tracker.set_db_pool(db_pool)
+
+        # Custom-exit fill bridge. When IB reports a fill, look at its
+        # orderRef — if it carries the CUSTOM_EXIT tag we placed, run the
+        # same STP-adjustment logic the strategy-based exit flow does
+        # (resize on partial, cancel on 100%). No DB lookup; the tag
+        # itself encodes the trim percentage.
+        async def _custom_exit_on_fill(snap: dict) -> None:
+            trim = parse_order_ref(snap.get("order_ref"))
+            if trim is None:
+                return  # not a custom-exit order
+            symbol = snap.get("symbol")
+            if not symbol:
+                return
+            try:
+                client = IbClient(ib, tracker=order_tracker)
+                await handle_custom_exit_fill(
+                    client,
+                    symbol=symbol,
+                    trim_percentage=trim,
+                    filled_qty=int(snap.get("filled") or snap.get("total_qty") or 0),
+                )
+            except Exception:
+                logger.exception(
+                    "custom-exit fill handler failed for symbol=%s perm_id=%s",
+                    symbol, snap.get("perm_id"),
+                )
+
+        order_tracker.add_fill_handler(
+            lambda snap: _custom_exit_on_fill(snap)
+        )
+
         order_tracker.bind_events(ib)
         await order_tracker.seed(ib)
 
@@ -183,6 +203,11 @@ app.include_router(alarms.router)
 app.include_router(livestream.router)
 app.include_router(portfolio.router)
 app.include_router(pending_orders.router)
+# custom_exits MUST be registered before exits: both share the /api/exits
+# prefix, and exits.py declares DELETE /api/exits/{symbol}/{strategy}, which
+# otherwise greedily matches DELETE /api/exits/custom/{id} (interpreting
+# "custom" as the symbol).
+app.include_router(custom_exits.router)
 app.include_router(exits.router)
 app.include_router(scanner.router)
 app.include_router(live_scanner.router)

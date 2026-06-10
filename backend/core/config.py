@@ -26,6 +26,8 @@ class Settings(BaseSettings):
 
     # --- Strategy parameters ---
     RISK: int
+
+    MAX_ADD_FREQUENCY_MINUTES: int
     MAX_ENTRY_FREQUENCY_MINUTES: int
     MAX_ATTEMPTS_PER_SYMBOL_PER_DAY: int
     # Hard cap on total entries across all tickers in one day.

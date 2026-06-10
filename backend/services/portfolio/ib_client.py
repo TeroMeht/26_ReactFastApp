@@ -88,6 +88,9 @@ class IbClient:
                     "totalqty": t.order.totalQuantity if t.order else None,
                     "lmtprice": getattr(t.order, "lmtPrice", None) if t.order else None,
                     "auxprice": getattr(t.order, "auxPrice", None) if t.order else None,
+                    # orderRef is the only place we stash custom-exit metadata
+                    # (e.g. "CUSTOM_EXIT:0.25"); custom_exits.py filters on it.
+                    "orderref": getattr(t.order, "orderRef", None) if t.order else None,
                     "status": t.orderStatus.status if t.orderStatus else None,
                     "filled": t.orderStatus.filled if t.orderStatus else None,
                     "remaining": t.orderStatus.remaining if t.orderStatus else None
@@ -636,9 +639,13 @@ class IbClient:
             logging.error(f"Error in place_bracket_order for {order.symbol}: {e}")
             return None, None
 
-    async def place_limit_order(self, order: Order):
+    async def place_limit_order(self, order: Order, order_ref: str | None = None):
         """
         Place a simple limit order asynchronously.
+
+        `order_ref` is forwarded to IB's `orderRef` field. The custom-exits
+        flow uses it to tag its LIMIT orders so they can be enumerated and
+        recognised on fill without any DB state.
         """
         try:
             contract = _build_contract(order.symbol,order.contract_type)
@@ -655,6 +662,8 @@ class IbClient:
                 outsideRth=True,
                 tif="GTC",
             )
+            if order_ref:
+                limit_order.orderRef = order_ref
 
             trade = self.ib.placeOrder(contract, limit_order)
             self._register(trade)

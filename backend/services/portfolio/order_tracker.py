@@ -13,7 +13,7 @@ permId, at which point the row is re-keyed).
 import asyncio
 import logging
 import time as _time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
 from ib_async import IB, Trade
 
@@ -54,6 +54,9 @@ def _trade_snapshot(trade: Trade) -> Dict[str, Any]:
         "total_qty": float(getattr(o, "totalQuantity", 0) or 0),
         "lmt_price": getattr(o, "lmtPrice", None),
         "aux_price": getattr(o, "auxPrice", None),
+        # Carry orderRef through so the custom-exits fill bridge can
+        # identify which fills are CUSTOM_EXIT-tagged without a DB lookup.
+        "order_ref": getattr(o, "orderRef", None),
         "parent_id": getattr(o, "parentId", 0) or 0,
         "status": getattr(s, "status", None) if s else None,
         "filled": float(getattr(s, "filled", 0) or 0) if s else 0.0,
@@ -100,6 +103,17 @@ class OrderTracker:
         # DB pool used to persist events. Set by main.py at startup via
         # set_db_pool(); when None, events are kept in memory only.
         self._db_pool = None
+
+        # Subscribers notified once when an order transitions into the
+        # 'Filled' terminal status. Used by the custom-exits flow to run
+        # post-fill STP adjustment. Handlers receive the order snapshot
+        # and may be async; sync handlers are also supported.
+        self._fill_handlers: List[
+            Callable[[Dict[str, Any]], Optional[Awaitable[None]]]
+        ] = []
+        # Track which (perm_id|order_id) we've already fired 'Filled' for
+        # so duplicate IB callbacks don't double-trigger the handler.
+        self._fill_fired: Set[int] = set()
 
     # ------------------------------------------------------------------
     # Persistence wiring
@@ -212,7 +226,55 @@ class OrderTracker:
         # for the same state don't spam the log.
         self._log_event(snap)
 
+        # Notify fill subscribers (custom-exits flow) — once per order.
+        self._maybe_fire_fill(snap)
+
         self._broadcast({"type": "update", "order": snap})
+
+    # ------------------------------------------------------------------
+    # Fill-event subscribers
+    # ------------------------------------------------------------------
+    def add_fill_handler(
+        self,
+        handler: Callable[[Dict[str, Any]], Optional[Awaitable[None]]],
+    ) -> None:
+        """
+        Register a callback fired exactly once when any order transitions
+        into 'Filled'. Handler receives the order snapshot. Async handlers
+        are scheduled on the bound event loop; sync handlers run inline.
+        """
+        self._fill_handlers.append(handler)
+
+    def _maybe_fire_fill(self, snap: Dict[str, Any]) -> None:
+        if (snap.get("status") or "") != "Filled":
+            return
+        key = snap.get("perm_id") or snap.get("order_id") or 0
+        if not key or key in self._fill_fired:
+            return
+        self._fill_fired.add(key)
+
+        for h in self._fill_handlers:
+            try:
+                result = h(snap)
+                if asyncio.iscoroutine(result):
+                    loop = self._loop
+                    if loop is not None:
+                        try:
+                            if loop.is_running():
+                                asyncio.run_coroutine_threadsafe(result, loop)
+                            else:
+                                loop.create_task(result)
+                        except Exception:
+                            logger.exception("Failed to schedule fill handler")
+                    else:
+                        # No loop bound yet — drop, this only happens before
+                        # bind_events(), which is during startup.
+                        logger.warning(
+                            "Fill handler returned coroutine before "
+                            "event loop bound; dropping."
+                        )
+            except Exception:
+                logger.exception("Fill handler raised")
 
     def _log_event(self, snap: Dict[str, Any]) -> None:
         """Append a chronological event if status changed since last log."""
