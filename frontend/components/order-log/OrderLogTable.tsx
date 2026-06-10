@@ -85,6 +85,7 @@ const OrderLogTable = ({
   const [entries, setEntries] = useState<OrderLogEntry[]>([]);
   const [filter, setFilter] = useState<StatusFilter>("Filled");
   const [symbolFilter, setSymbolFilter] = useState("");
+  const [todayOnly, setTodayOnly] = useState(true);
 
   const fetchLog = useCallback(async () => {
     try {
@@ -113,8 +114,15 @@ const OrderLogTable = ({
 
   const filtered = useMemo(() => {
     const sym = symbolFilter.trim().toUpperCase();
+    // Local-midnight cutoff for "today only" — entries with ts (unix seconds)
+    // at or after this value count as today.
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const startOfTodaySec = Math.floor(startOfToday.getTime() / 1000);
+
     return entries.filter((e) => {
       if (sym && (e.symbol ?? "").toUpperCase() !== sym) return false;
+      if (todayOnly && (!e.ts || e.ts < startOfTodaySec)) return false;
 
       if (filter === "All") return true;
       if (filter === "Errors") return !!e.last_error;
@@ -123,7 +131,7 @@ const OrderLogTable = ({
       }
       return e.status === filter;
     });
-  }, [entries, filter, symbolFilter]);
+  }, [entries, filter, symbolFilter, todayOnly]);
 
   return (
     <div className="py-4">
@@ -155,6 +163,16 @@ const OrderLogTable = ({
             className="border border-gray-300 rounded-md px-2 py-1 text-sm w-32"
           />
         </div>
+
+        <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={todayOnly}
+            onChange={(e) => setTodayOnly(e.target.checked)}
+            className="h-4 w-4"
+          />
+          <span>Today only</span>
+        </label>
 
         <span className="text-xs text-gray-500 ml-auto">
           {filtered.length} of {entries.length} events

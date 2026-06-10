@@ -598,7 +598,9 @@ class IbClient:
                 lmtPrice=order.entry_price,
                 orderId=self.ib.client.getReqId(),
                 transmit=False,  # IMPORTANT for bracket logic
-                outsideRth=True,
+                outsideRth=False,
+                tif="GTC"
+                
             )
 
             stoploss = StopOrder(
@@ -608,7 +610,8 @@ class IbClient:
                 orderId=self.ib.client.getReqId(),
                 parentId=parent.orderId,
                 transmit=True,  # Last order transmits entire bracket
-                outsideRth=True,
+                outsideRth=False,
+                tif="GTC"
             )
 
             # 1️⃣ Place parent
@@ -650,6 +653,7 @@ class IbClient:
                 orderId=self.ib.client.getReqId(),
                 transmit=True,
                 outsideRth=True,
+                tif="GTC",
             )
 
             trade = self.ib.placeOrder(contract, limit_order)
@@ -677,6 +681,7 @@ class IbClient:
                 totalQuantity=order.position_size,
                 outsideRth=True,
                 transmit=True,
+                tif="DAY",
             )
 
             trade = self.ib.placeOrder(contract, market_order)

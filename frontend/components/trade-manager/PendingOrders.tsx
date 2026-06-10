@@ -15,31 +15,12 @@ import {
 
 import { Button } from "@/components/ui/button";
 
-// Exit strategies the user can arm at entry time. Mirrors backend
-// settings.EXIT_TRIGGERS — keep this in sync with the env config.
-// swing_trade is a passive marker (no streamer trigger); the rest map to
-// real alarms the streamer emits.
-const EXIT_STRATEGY_OPTIONS = [
-  { value: "momentum_long_exit", label: "momentum_long_exit" },
-  { value: "momentum_short_exit", label: "momentum_short_exit" },
-  { value: "endofday_exit", label: "endofday_exit" },
-  { value: "vwap_exit", label: "vwap_exit" },
-  { value: "swing_trade", label: "swing_trade" },
-];
-
-const TRIM_OPTIONS = [
-  { value: 0.25, label: "25%" },
-  { value: 0.5, label: "50%" },
-  { value: 0.75, label: "75%" },
-  { value: 1, label: "100%" },
-];
-
-// Small tolerance for floating-point sum comparisons (e.g. 0.25 + 0.5 + 0.25
-// can drift by ~1e-17). All trim values are 0.25 multiples so any miss > 1e-9
-// is a real discrepancy.
-const SUM_EPS = 1e-9;
-
-type ExitSpec = { strategy: string; trim_percentage: number };
+import {
+  EXIT_STRATEGY_OPTIONS,
+  TRIM_OPTIONS,
+  TRIM_SUM_EPS as SUM_EPS,
+  type ExitSpec,
+} from "@/constants/exits";
 
 type PendingOrder =
   paths["/api/pending_orders/orders"]["get"]["responses"]["200"]["content"]["application/json"][number];
