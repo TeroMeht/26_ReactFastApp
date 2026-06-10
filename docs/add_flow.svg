@@ -1,0 +1,96 @@
+<svg viewBox="0 0 760 740" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc" font-family="ui-sans-serif, system-ui, sans-serif">
+  <title id="title">Add flow</title>
+  <desc id="desc">process_add_request: build context, run guards, size add to target risk, place limit, resize STP.</desc>
+
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/>
+    </marker>
+    <style>
+      .box { fill: #f3f4f6; stroke: #d1d5db; stroke-width: 1.2; }
+      .accent { fill: #eef2ff; stroke: #6366f1; stroke-width: 1.4; }
+      .guard { fill: #fff7ed; stroke: #fb923c; stroke-width: 1.2; }
+      .terminal { fill: #e5e7eb; stroke: #d1d5db; stroke-width: 1.2; }
+      .title { fill: #111827; font-size: 13px; font-weight: 600; }
+      .sub { fill: #6b7280; font-size: 11px; }
+      .edge { stroke: #6b7280; stroke-width: 1.4; fill: none; }
+      .reject { stroke: #ef4444; stroke-width: 1.4; fill: none; stroke-dasharray: 4 3; }
+      .rejlabel { fill: #ef4444; font-size: 10px; font-weight: 600; }
+    </style>
+  </defs>
+
+  <!-- Add request -->
+  <g>
+    <rect class="accent" x="240" y="20" width="280" height="56" rx="10"/>
+    <text class="title" x="380" y="44" text-anchor="middle">AddRequest received</text>
+    <text class="sub" x="380" y="62" text-anchor="middle">symbol, total_risk</text>
+  </g>
+  <path class="edge" d="M380,76 L380,108" marker-end="url(#arr)"/>
+
+  <!-- Context -->
+  <g>
+    <rect class="box" x="180" y="108" width="400" height="64" rx="10"/>
+    <text class="title" x="380" y="132" text-anchor="middle">Build AddContext</text>
+    <text class="sub" x="380" y="150" text-anchor="middle">position · existing STP · bid/ask</text>
+    <text class="sub" x="380" y="164" text-anchor="middle" font-style="italic">one fetch each, no re-reads</text>
+  </g>
+  <path class="edge" d="M380,172 L380,204" marker-end="url(#arr)"/>
+
+  <!-- Position guards -->
+  <g>
+    <rect class="guard" x="140" y="204" width="480" height="84" rx="10"/>
+    <text class="title" x="380" y="226" text-anchor="middle">Position guards</text>
+    <text class="sub" x="380" y="246" text-anchor="middle">has_position · has_stp_order · has_quote · not_losing</text>
+    <text class="sub" x="380" y="270" text-anchor="middle" font-style="italic">any fail → AddRequestResponse(allowed=False)</text>
+  </g>
+  <path class="reject" d="M140,246 L50,246 L50,720 L130,720"/>
+  <text class="rejlabel" x="56" y="240">on fail</text>
+  <path class="edge" d="M380,288 L380,320" marker-end="url(#arr)"/>
+
+  <!-- Cooldown guard -->
+  <g>
+    <rect class="guard" x="180" y="320" width="400" height="64" rx="10"/>
+    <text class="title" x="380" y="344" text-anchor="middle">Add cooldown</text>
+    <text class="sub" x="380" y="362" text-anchor="middle">snapshot.position_opened_at(symbol)</text>
+    <text class="sub" x="380" y="376" text-anchor="middle" font-style="italic">block if within MAX_ADD_FREQUENCY_MINUTES</text>
+  </g>
+  <path class="reject" d="M180,352 L50,352"/>
+  <path class="edge" d="M380,384 L380,416" marker-end="url(#arr)"/>
+
+  <!-- Size -->
+  <g>
+    <rect class="box" x="180" y="416" width="400" height="80" rx="10"/>
+    <text class="title" x="380" y="440" text-anchor="middle">Size the add</text>
+    <text class="sub" x="380" y="460" text-anchor="middle">add_price = f(bid/ask, existing stop)</text>
+    <text class="sub" x="380" y="476" text-anchor="middle">risk_to_add = total_risk − current_open_risk</text>
+    <text class="sub" x="380" y="490" text-anchor="middle">total_size = current + size_to_add</text>
+  </g>
+  <path class="edge" d="M380,496 L380,524" marker-end="url(#arr)"/>
+
+  <!-- Target-size guard -->
+  <g>
+    <rect class="guard" x="200" y="524" width="360" height="44" rx="10"/>
+    <text class="title" x="380" y="552" text-anchor="middle">check_not_at_target_size</text>
+  </g>
+  <path class="reject" d="M200,548 L50,548"/>
+  <path class="edge" d="M380,568 L380,600" marker-end="url(#arr)"/>
+
+  <!-- Place LMT -->
+  <g>
+    <rect class="accent" x="220" y="600" width="320" height="48" rx="10"/>
+    <text class="title" x="380" y="628" text-anchor="middle">place_limit_order (add)</text>
+  </g>
+  <path class="edge" d="M380,648 L380,672" marker-end="url(#arr)"/>
+
+  <!-- Resize STP -->
+  <g>
+    <rect class="accent" x="220" y="672" width="320" height="48" rx="10"/>
+    <text class="title" x="380" y="700" text-anchor="middle">modify_stp_order_by_id(total_size)</text>
+  </g>
+
+  <!-- Reject terminal -->
+  <g>
+    <rect class="terminal" x="130" y="710" width="260" height="30" rx="10"/>
+    <text class="title" x="260" y="730" text-anchor="middle">AddRequestResponse(allowed=False)</text>
+  </g>
+</svg>

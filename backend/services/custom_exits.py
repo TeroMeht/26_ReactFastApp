@@ -3,14 +3,12 @@ Custom price-target exit service — IB-only, no DB.
 
 A custom exit is a real IB LIMIT order placed on the user's behalf at a
 target price for a fraction of their open position. We tag every such
-order with `orderRef = "CUSTOM_EXIT:<trim>"` so we can:
+order with `orderRef = "EXIT:<trim>"` (see exit_common.build_exit_ref)
+so we can:
   - enumerate them straight from IB's open orders (no DB scan),
-  - identify them on fill (so the fill listener can adjust the STP),
+  - identify them on fill (the OrderTracker fill bridge runs
+    exit_common.handle_exit_fill, shared with strategy-based exits),
   - cancel by permId without needing any local bookkeeping.
-
-When IB fills one, services.custom_exits.handle_custom_exit_fill mirrors
-the strategy-based exit flow's STP behaviour (resize + move-to-BE on
-partial, cancel on 100%).
 """
 
 import logging
@@ -19,37 +17,9 @@ from typing import Dict, List, Optional
 
 from services.orders import Order
 from services.portfolio.ib_client import IbClient
+from services.portfolio.exit_common import build_exit_ref, parse_exit_ref
 
 logger = logging.getLogger(__name__)
-
-
-CUSTOM_EXIT_PREFIX = "CUSTOM_EXIT"
-
-
-# ----------------------------------------------------------------------
-# orderRef helpers — single source of truth for the tag format
-# ----------------------------------------------------------------------
-def _build_order_ref(trim_percentage: float) -> str:
-    """Encode trim into orderRef so the fill listener can recover it."""
-    return f"{CUSTOM_EXIT_PREFIX}:{trim_percentage}"
-
-
-def parse_order_ref(order_ref: Optional[str]) -> Optional[float]:
-    """
-    Return the trim_percentage encoded in a CUSTOM_EXIT orderRef, or None
-    if this orderRef wasn't one of ours / is malformed.
-    """
-    if not order_ref or not order_ref.startswith(f"{CUSTOM_EXIT_PREFIX}:"):
-        return None
-    _, _, rest = order_ref.partition(":")
-    try:
-        return float(rest)
-    except (TypeError, ValueError):
-        return None
-
-
-def is_custom_exit_ref(order_ref: Optional[str]) -> bool:
-    return parse_order_ref(order_ref) is not None
 
 
 # ----------------------------------------------------------------------
@@ -130,22 +100,6 @@ async def place_custom_exit(
             f"Cancel an existing exit or pick a smaller trim %."
         )
 
-    avgcost = position.get("avgcost")
-    if avgcost is not None:
-        target_f = float(target_price)
-        if action == "SELL" and target_f <= avgcost:
-            logger.warning(
-                "Custom SELL exit for %s priced %.4f at/under avg cost %.4f — "
-                "this would realize a loss on fill.",
-                symbol, target_f, avgcost,
-            )
-        if action == "BUY" and target_f >= avgcost:
-            logger.warning(
-                "Custom BUY exit for %s priced %.4f at/over avg cost %.4f — "
-                "this would realize a loss on fill.",
-                symbol, target_f, avgcost,
-            )
-
     order = Order(
         symbol=symbol.upper(),
         action=action,
@@ -154,7 +108,7 @@ async def place_custom_exit(
         entry_price=float(target_price),  # place_limit_order maps entry_price -> lmtPrice
     )
 
-    order_ref = _build_order_ref(trim_f)
+    order_ref = build_exit_ref(trim_f)
     limit_order = await client.place_limit_order(order, order_ref=order_ref)
     if limit_order is None:
         raise RuntimeError(
@@ -213,7 +167,7 @@ async def list_custom_exits(client: IbClient, symbol: str) -> List[Dict]:
         if (o.get("ordertype") or "").upper() != "LMT":
             continue
 
-        tagged_trim = parse_order_ref(o.get("orderref"))
+        tagged_trim = parse_exit_ref(o.get("orderref"))
         qty = int(o.get("totalqty") or 0)
         if tagged_trim is not None:
             trim_val: Optional[float] = tagged_trim
@@ -251,59 +205,5 @@ async def cancel_custom_exit_by_perm_id(
         return {"status": "error", "perm_id": perm_id, "message": str(e)}
 
 
-# ----------------------------------------------------------------------
-# Fill handler — invoked by main.py's OrderTracker bridge
-# ----------------------------------------------------------------------
-async def handle_custom_exit_fill(
-    client: IbClient, symbol: str, trim_percentage: float, filled_qty: int
-) -> None:
-    """
-    Mirror the strategy-based exit flow's STP behaviour:
-      - trim < 1.0  -> resize STP to remaining + move to BE (avgcost)
-      - trim >= 1.0 -> cancel the STP outright
-
-    Pure-IB; no DB. Called only after we've confirmed the filled order's
-    orderRef matches CUSTOM_EXIT.
-    """
-    position = await client.get_position_by_symbol(symbol)
-    existing_stp_order = await client.get_stp_order_by_symbol(symbol)
-
-    if trim_percentage >= 1.0:
-        if existing_stp_order is None:
-            logger.info(
-                "No STP found to cancel after custom 100%% exit | symbol=%s",
-                symbol,
-            )
-        else:
-            await client.cancel_order_by_id(existing_stp_order["orderid"])
-            logger.info(
-                "Cancelled STP after custom 100%% exit | symbol=%s order_id=%s",
-                symbol, existing_stp_order["orderid"],
-            )
-        return
-
-    # Partial
-    if existing_stp_order is None:
-        logger.info(
-            "No STP found to modify after custom partial exit | symbol=%s",
-            symbol,
-        )
-        return
-
-    if position and position.get("position") is not None:
-        remaining_qty = abs(int(position["position"]))
-    else:
-        remaining_qty = max(0, filled_qty)
-
-    stp_order_id = existing_stp_order["orderid"]
-    await client.modify_stp_order_by_id(stp_order_id, remaining_qty)
-    if position and position.get("avgcost") is not None:
-        await client.move_stp_auxprice_to_avgcost(
-            order_id=stp_order_id,
-            new_auxprice=round(position["avgcost"], 2),
-        )
-    logger.info(
-        "Resized STP after custom partial exit | symbol=%s remaining=%s "
-        "order_id=%s",
-        symbol, remaining_qty, stp_order_id,
-    )
+# Fill-time STP adjustment lives in services.portfolio.exit_common; the
+# OrderTracker fill bridge in main.py routes EXIT-tagged fills to it.

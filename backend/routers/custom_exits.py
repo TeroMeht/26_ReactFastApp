@@ -2,7 +2,7 @@
 Custom (user-defined) price-target exits.
 
 IB-only — no DB. State of every custom exit comes from IB's open-orders
-API, filtered by the CUSTOM_EXIT orderRef tag we attach at placement.
+API, filtered by the EXIT orderRef tag we attach at placement.
 """
 
 import logging

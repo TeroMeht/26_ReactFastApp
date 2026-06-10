@@ -88,8 +88,8 @@ class IbClient:
                     "totalqty": t.order.totalQuantity if t.order else None,
                     "lmtprice": getattr(t.order, "lmtPrice", None) if t.order else None,
                     "auxprice": getattr(t.order, "auxPrice", None) if t.order else None,
-                    # orderRef is the only place we stash custom-exit metadata
-                    # (e.g. "CUSTOM_EXIT:0.25"); custom_exits.py filters on it.
+                    # orderRef is where we stash exit metadata
+                    # (e.g. "EXIT:0.25"); exit_common.py filters on it.
                     "orderref": getattr(t.order, "orderRef", None) if t.order else None,
                     "status": t.orderStatus.status if t.orderStatus else None,
                     "filled": t.orderStatus.filled if t.orderStatus else None,
@@ -678,8 +678,12 @@ class IbClient:
             logger.error(f"Error in place_limit_order for {order.symbol}: {e}")
             return None
 
-    async def place_market_order(self, order: Order):
-
+    async def place_market_order(self, order: Order, order_ref: str | None = None):
+        """
+        Place a market order. `order_ref` is forwarded to IB's `orderRef`
+        field so the OrderTracker fill bridge can recognise our exits on
+        fill (see services.portfolio.exit_common.handle_exit_fill).
+        """
         try:
             contract = _build_contract(order.symbol,order.contract_type)
 
@@ -692,6 +696,8 @@ class IbClient:
                 transmit=True,
                 tif="DAY",
             )
+            if order_ref:
+                market_order.orderRef = order_ref
 
             trade = self.ib.placeOrder(contract, market_order)
             self._register(trade)

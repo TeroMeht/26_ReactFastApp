@@ -2,6 +2,7 @@ import logging
 from typing import List, Dict
 from services.orders import Order
 from services.portfolio.ib_client import IbClient
+from services.portfolio.exit_common import build_exit_ref
 from db.exits import (
     fetch_exits_by_symbol,
     delete_exit_request,
@@ -61,13 +62,16 @@ def _find_matching_exit(exits_for_this_symbol: List[Dict], alarm: str) -> Dict:
 
 
 # handlers to deal with ib client and db together, called by the router
-async def _handle_partial_exit(client, position, matched_exit) -> ExitRequestResponseIB:
-    exit_qty            = _calculate_exit_mkt_order_size(position, matched_exit["trim_percentage"])
-    action              = _decide_exit_mtk_order_action(position)
-    remaining_qty       = abs(position["position"]) - exit_qty
+#
+# Both partial and full strategy exits place a tagged MKT order and stop
+# there. STP adjustment (resize on partial, cancel on full) is handled
+# off the fill event in services.portfolio.exit_common.handle_exit_fill,
+# wired up by main.py's OrderTracker fill bridge — same flow as
+# user-placed custom exits.
+async def _handle_exit(client, position, trim_percentage) -> ExitRequestResponseIB:
+    action = _decide_exit_mtk_order_action(position)
+    exit_qty = _calculate_exit_mkt_order_size(position, trim_percentage)
 
-
-    # ---- 4. Create order
     order = Order(
         symbol=position["symbol"],
         action=action,
@@ -75,50 +79,12 @@ async def _handle_partial_exit(client, position, matched_exit) -> ExitRequestRes
         contract_type=position["sectype"],
     )
 
-    await client.place_market_order(order)
+    await client.place_market_order(order, order_ref=build_exit_ref(trim_percentage))
 
-    existing_stp_order = await client.get_stp_order_by_symbol(position["symbol"])
-
-    if existing_stp_order is None:
-        logger.info("No STP found to modify on partial exit")
-    else:
-        # Resize the STP, then move it to breakeven if we know avgcost.
-        # IbClient methods expect an integer permId, not the full order dict.
-        stp_order_id = existing_stp_order["orderid"]
-        await client.modify_stp_order_by_id(stp_order_id, remaining_qty)
-        await client.move_stp_auxprice_to_avgcost(
-            order_id=stp_order_id,
-            new_auxprice=round(position.get("avgcost"), 2),
-        )
     return ExitRequestResponseIB(
         symbol=position["symbol"],
-        message="Partial exit and stop adjustments done")
-
-async def _handle_full_exit(client, position) -> ExitRequestResponseIB:
-
-    action              = _decide_exit_mtk_order_action(position)
-
-    # ---- 4. Create order
-    order = Order(
-        symbol=position["symbol"],
-        action=action,
-        position_size=abs(position["position"]),
-        contract_type=position["sectype"],
+        message="Exit MKT placed; STP will be adjusted on fill",
     )
-
-    await client.place_market_order(order)
-
-    existing_stp_order = await client.get_stp_order_by_symbol(position["symbol"])
-
-    if existing_stp_order is None:
-        logger.info("No STP found to cancel it full exit")
-    else:
-        # cancel_order_by_id expects an integer permId, not the full order dict.
-        await client.cancel_order_by_id(existing_stp_order["orderid"])
-
-    return ExitRequestResponseIB(
-        symbol=position["symbol"],
-        message="Full exit done and stp order cancelled")
 
 
 # wrapper
@@ -135,10 +101,10 @@ async def _dispatch_exit(client, db_conn, position, matched_exit) -> ExitRequest
     symbol = position["symbol"]
 
     if trim < 1.0:
-        response = await _handle_partial_exit(client, position, matched_exit)
+        response = await _handle_exit(client, position, trim)
         await delete_exit_request(db_conn, symbol, matched_exit["strategy"])
     elif trim == 1.0:
-        response = await _handle_full_exit(client, position)
+        response = await _handle_exit(client, position, trim)
         await delete_exit_requests_by_symbol(db_conn, symbol)
     else:
         raise ValueError(f"Unexpected trim_percentage: {trim}")

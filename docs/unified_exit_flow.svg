@@ -1,0 +1,87 @@
+<svg viewBox="0 0 760 620" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc" font-family="ui-sans-serif, system-ui, sans-serif">
+  <title id="title">Unified exit flow</title>
+  <desc id="desc">Two trigger paths converge on a shared EXIT-tagged order, an IB fill, the OrderTracker fill bridge, and the shared handle_exit_fill which either resizes or cancels the STP.</desc>
+
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/>
+    </marker>
+    <style>
+      .box { fill: #f3f4f6; stroke: #d1d5db; stroke-width: 1.2; }
+      .accent { fill: #eef2ff; stroke: #6366f1; stroke-width: 1.4; }
+      .terminal { fill: #e5e7eb; stroke: #d1d5db; stroke-width: 1.2; }
+      .title { fill: #111827; font-size: 13px; font-weight: 600; }
+      .sub { fill: #6b7280; font-size: 11px; }
+      .label { fill: #6b7280; font-size: 11px; font-style: italic; }
+      .edge { stroke: #6b7280; stroke-width: 1.4; fill: none; }
+      .branchlabel { fill: #111827; font-size: 11px; font-weight: 600; }
+    </style>
+  </defs>
+
+  <!-- TRIGGERS -->
+  <g>
+    <rect class="box" x="60" y="30" width="280" height="64" rx="10"/>
+    <text class="title" x="200" y="55" text-anchor="middle">Strategy webhook</text>
+    <text class="sub" x="200" y="74" text-anchor="middle">flows/exit.py — places MKT</text>
+    <text class="sub" x="200" y="88" text-anchor="middle">deletes DB exit_request row(s)</text>
+  </g>
+  <g>
+    <rect class="box" x="420" y="30" width="280" height="64" rx="10"/>
+    <text class="title" x="560" y="55" text-anchor="middle">User custom exit</text>
+    <text class="sub" x="560" y="74" text-anchor="middle">custom_exits.py — places LMT</text>
+    <text class="sub" x="560" y="88" text-anchor="middle">no DB</text>
+  </g>
+
+  <!-- merge arrows -->
+  <path class="edge" d="M200,94 L200,140 L380,140 L380,160" marker-end="url(#arr)"/>
+  <path class="edge" d="M560,94 L560,140 L380,140" />
+
+  <!-- SHARED PLACEMENT -->
+  <g>
+    <rect class="accent" x="220" y="160" width="320" height="60" rx="10"/>
+    <text class="title" x="380" y="184" text-anchor="middle">Place EXIT-tagged order</text>
+    <text class="sub" x="380" y="204" text-anchor="middle">orderRef = "EXIT:&lt;trim&gt;"</text>
+  </g>
+
+  <path class="edge" d="M380,220 L380,260" marker-end="url(#arr)"/>
+
+  <!-- IB FILL -->
+  <g>
+    <rect class="box" x="240" y="260" width="280" height="56" rx="10"/>
+    <text class="title" x="380" y="284" text-anchor="middle">IB executes &amp; reports Filled</text>
+    <text class="sub" x="380" y="302" text-anchor="middle">terminal status</text>
+  </g>
+
+  <path class="edge" d="M380,316 L380,356" marker-end="url(#arr)"/>
+
+  <!-- FILL BRIDGE -->
+  <g>
+    <rect class="box" x="220" y="356" width="320" height="60" rx="10"/>
+    <text class="title" x="380" y="380" text-anchor="middle">OrderTracker fill bridge</text>
+    <text class="sub" x="380" y="400" text-anchor="middle">main.py — parse_exit_ref(orderRef)</text>
+  </g>
+
+  <path class="edge" d="M380,416 L380,456" marker-end="url(#arr)"/>
+
+  <!-- HANDLE -->
+  <g>
+    <rect class="accent" x="220" y="456" width="320" height="60" rx="10"/>
+    <text class="title" x="380" y="480" text-anchor="middle">handle_exit_fill</text>
+    <text class="sub" x="380" y="500" text-anchor="middle">exit_common.py — branch on trim</text>
+  </g>
+
+  <!-- BRANCHES -->
+  <path class="edge" d="M300,516 L300,548 L160,548 L160,568" marker-end="url(#arr)"/>
+  <path class="edge" d="M460,516 L460,548 L600,548 L600,568" marker-end="url(#arr)"/>
+  <text class="branchlabel" x="220" y="544">trim &lt; 1.0</text>
+  <text class="branchlabel" x="500" y="544">trim ≥ 1.0</text>
+
+  <g>
+    <rect class="terminal" x="40" y="568" width="240" height="44" rx="10"/>
+    <text class="title" x="160" y="595" text-anchor="middle">Resize STP to remaining</text>
+  </g>
+  <g>
+    <rect class="terminal" x="480" y="568" width="240" height="44" rx="10"/>
+    <text class="title" x="600" y="595" text-anchor="middle">Cancel STP</text>
+  </g>
+</svg>

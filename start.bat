@@ -8,7 +8,7 @@ start "Backend" cmd /k "cd /d %ROOT%backend && python -m uvicorn main:app"
 timeout /t 3 /nobreak >nul
 
 echo Starting Next.js Frontend...
-start "Frontend" cmd /k "cd /d %ROOT%frontend && npn start -p 3000"
+start "Frontend" cmd /k "cd /d %ROOT%frontend && npm run build && npm start -- -p 3000"
 
 timeout /t 5 /nobreak >nul
 

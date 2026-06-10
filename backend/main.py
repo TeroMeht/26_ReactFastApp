@@ -25,7 +25,7 @@ from routers import (
 from services.live_scanner import LiveScannerManager
 from services.portfolio.order_tracker import OrderTracker
 from services.portfolio.ib_client import IbClient
-from services.custom_exits import handle_custom_exit_fill, parse_order_ref
+from services.portfolio.exit_common import handle_exit_fill, parse_exit_ref
 
 
 # Global IBKR object
@@ -71,34 +71,33 @@ async def lifespan(app: FastAPI):
         # Attach the pool first so seed/bind writes are persisted.
         order_tracker.set_db_pool(db_pool)
 
-        # Custom-exit fill bridge. When IB reports a fill, look at its
-        # orderRef — if it carries the CUSTOM_EXIT tag we placed, run the
-        # same STP-adjustment logic the strategy-based exit flow does
-        # (resize on partial, cancel on 100%). No DB lookup; the tag
-        # itself encodes the trim percentage.
-        async def _custom_exit_on_fill(snap: dict) -> None:
-            trim = parse_order_ref(snap.get("order_ref"))
+        # Exit fill bridge. When IB reports a fill, look at its orderRef
+        # — if it carries the EXIT tag (from either the strategy-based
+        # exit flow or a user-placed custom exit), run the shared STP
+        # adjustment logic (resize on partial, cancel on 100%). No DB
+        # lookup; the tag itself encodes the trim percentage.
+        async def _exit_on_fill(snap: dict) -> None:
+            trim = parse_exit_ref(snap.get("order_ref"))
             if trim is None:
-                return  # not a custom-exit order
+                return  # not one of our exits
             symbol = snap.get("symbol")
             if not symbol:
                 return
             try:
                 client = IbClient(ib, tracker=order_tracker)
-                await handle_custom_exit_fill(
+                await handle_exit_fill(
                     client,
                     symbol=symbol,
                     trim_percentage=trim,
-                    filled_qty=int(snap.get("filled") or snap.get("total_qty") or 0),
                 )
             except Exception:
                 logger.exception(
-                    "custom-exit fill handler failed for symbol=%s perm_id=%s",
+                    "exit fill handler failed for symbol=%s perm_id=%s",
                     symbol, snap.get("perm_id"),
                 )
 
         order_tracker.add_fill_handler(
-            lambda snap: _custom_exit_on_fill(snap)
+            lambda snap: _exit_on_fill(snap)
         )
 
         order_tracker.bind_events(ib)

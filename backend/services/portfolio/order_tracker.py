@@ -54,8 +54,8 @@ def _trade_snapshot(trade: Trade) -> Dict[str, Any]:
         "total_qty": float(getattr(o, "totalQuantity", 0) or 0),
         "lmt_price": getattr(o, "lmtPrice", None),
         "aux_price": getattr(o, "auxPrice", None),
-        # Carry orderRef through so the custom-exits fill bridge can
-        # identify which fills are CUSTOM_EXIT-tagged without a DB lookup.
+        # Carry orderRef through so the exit fill bridge can identify
+        # which fills are EXIT-tagged without a DB lookup.
         "order_ref": getattr(o, "orderRef", None),
         "parent_id": getattr(o, "parentId", 0) or 0,
         "status": getattr(s, "status", None) if s else None,
