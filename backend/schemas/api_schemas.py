@@ -370,6 +370,17 @@ class EntryRequestResponse(BaseModel):
     cooldown_until: Optional[str] = None
 
 
+# Lockout status -- proactive view of the loss-cooldown so the UI can
+# show a countdown *before* the user attempts an entry. Polled by the
+# global LockoutBanner.
+class LockoutStatusResponse(BaseModel):
+    locked: bool
+    reason: Optional[str] = None  # "loss_cooldown" when locked
+    message: str = ""
+    cooldown_until: Optional[str] = None  # ISO-8601 with tz
+    streak: int = 0  # current consecutive-loss count
+
+
 # Add
 class AddRequest(BaseModel):
     symbol: str

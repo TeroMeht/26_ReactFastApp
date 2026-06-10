@@ -22,6 +22,7 @@ from services.portfolio.trades_snapshot import (
     TradesSnapshot,
     build_today_snapshot,
 )
+from services.portfolio import lockout_cache
 from db.exits import update_exit_request
 
 from core.config import settings
@@ -123,6 +124,114 @@ def check_loss_cooldown(snapshot: TradesSnapshot, now: datetime):
     return True, "", None
 
 
+_TIER1_CACHE_KEY = "consecutive_losses:tier1_floating"
+
+
+def check_consecutive_losses(snapshot: TradesSnapshot, now: datetime):
+    """
+    Escalating lockout based on the current losing streak:
+      - tier 2 (>= CONSECUTIVE_LOSS_TIER2_COUNT): locked until end of
+        trading day (midnight Helsinki).
+      - tier 1 (>= CONSECUTIVE_LOSS_TIER1_COUNT): locked for
+        CONSECUTIVE_LOSS_TIER1_MINUTES from the last loss's exit_time.
+    Returns the same (ok, msg, cooldown_until) shape as check_loss_cooldown
+    so the existing EntryRequestResponse(reason="loss_cooldown", ...)
+    surface is reused and the frontend banner picks it up unchanged.
+
+    Refresh safety: the tier-1 cooldown is normally anchored to a real
+    loss fill's exit_time, which is stable across requests. When no fill
+    is available to anchor on (test overrides; future code paths) we
+    cache the first cooldown_until we compute so subsequent polls don't
+    slide the timer forward. The cache is cleared once the streak breaks
+    or the window elapses.
+    """
+    streak = snapshot.consecutive_losses()
+    tier1 = settings.CONSECUTIVE_LOSS_TIER1_COUNT
+    tier2 = settings.CONSECUTIVE_LOSS_TIER2_COUNT
+
+    if streak < tier1:
+        # No streak -- drop any stale fallback anchor so the next streak
+        # starts fresh instead of inheriting yesterday's expired window.
+        lockout_cache.clear(_TIER1_CACHE_KEY)
+        return True, "", None
+
+    last_loss = snapshot.last_loss()
+    exit_time = _parse_helsinki(last_loss.get("exit_time")) if last_loss else None
+
+    # Tier 2: rest of trading day. Use end of today in Helsinki. Already
+    # stable across refreshes (anchored to today's date, not to "now").
+    if streak >= tier2:
+        end_of_day = HELSINKI.localize(
+            datetime.combine(now.date(), time(23, 59, 59))
+        )
+        msg = (
+            f"Consecutive-loss lockout (tier 2): {streak} losses in a row. "
+            f"No new entries for the rest of the day."
+        )
+        logger.warning(msg)
+        return False, msg, end_of_day
+
+    # Tier 1: N minutes from last loss exit_time.
+    threshold = timedelta(minutes=settings.CONSECUTIVE_LOSS_TIER1_MINUTES)
+    if exit_time is not None:
+        # Stable anchor -- exit_time is the same across every refresh.
+        cooldown_until = exit_time + threshold
+        # If we had a fallback cache from before the fill materialized,
+        # clear it -- the real anchor takes over from here.
+        lockout_cache.clear(_TIER1_CACHE_KEY)
+    else:
+        # No fill-derived anchor -- cache the first cooldown_until we
+        # compute. Subsequent calls return the same value, so refreshing
+        # the page cannot reset the timer.
+        candidate = now + threshold
+        cooldown_until = lockout_cache.remember(_TIER1_CACHE_KEY, candidate)
+
+    if now >= cooldown_until:
+        # Window elapsed -- drop the cache and allow entries again.
+        lockout_cache.clear(_TIER1_CACHE_KEY)
+        return True, "", None
+
+    remaining = cooldown_until - now
+    remaining_str = str(remaining).split(".")[0]
+    msg = (
+        f"Consecutive-loss lockout (tier 1): {streak} losses in a row. "
+        f"No new entries for {remaining_str} more."
+    )
+    logger.warning(msg)
+    return False, msg, cooldown_until
+
+
+def compute_lockout_state(snapshot: TradesSnapshot, now: datetime) -> dict:
+    """
+    Pure read-only status of the loss-cooldown lockouts. Used by the
+    /portfolio/lockout-status endpoint so the UI can show a countdown
+    *before* the user attempts an entry. Mirrors the order in which
+    process_entry_request runs the checks (consecutive first), so the
+    decision the UI shows matches what an entry attempt would receive.
+    """
+    streak = snapshot.consecutive_losses()
+
+    for cd_ok, cd_msg, cd_until in (
+        check_consecutive_losses(snapshot, now),
+        check_loss_cooldown(snapshot, now),
+    ):
+        if not cd_ok:
+            return {
+                "locked": True,
+                "reason": "loss_cooldown",
+                "message": cd_msg,
+                "cooldown_until": cd_until.isoformat() if cd_until else None,
+                "streak": streak,
+            }
+    return {
+        "locked": False,
+        "reason": None,
+        "message": "",
+        "cooldown_until": None,
+        "streak": streak,
+    }
+
+
 def check_frequency(snapshot: TradesSnapshot, symbol: str, now: datetime) -> tuple[bool, str]:
     latest = snapshot.latest_fill_for_symbol(symbol)
     if not latest:
@@ -173,15 +282,21 @@ async def process_entry_request(
             if not ok:
                 return EntryRequestResponse(allowed=False, message=message, symbol=symbol)
 
-        cd_ok, cd_msg, cd_until = check_loss_cooldown(snapshot, now)
-        if not cd_ok:
-            return EntryRequestResponse(
-                allowed=False,
-                message=cd_msg,
-                symbol=symbol,
-                reason="loss_cooldown",
-                cooldown_until=cd_until.isoformat() if cd_until else None,
-            )
+        # Escalating consecutive-loss lockout runs first -- it's the more
+        # restrictive of the two and they share the loss_cooldown response
+        # shape, so the frontend banner handles either tier transparently.
+        for cd_ok, cd_msg, cd_until in (
+            check_consecutive_losses(snapshot, now),
+            check_loss_cooldown(snapshot, now),
+        ):
+            if not cd_ok:
+                return EntryRequestResponse(
+                    allowed=False,
+                    message=cd_msg,
+                    symbol=symbol,
+                    reason="loss_cooldown",
+                    cooldown_until=cd_until.isoformat() if cd_until else None,
+                )
 
         logger.info(f"Entry allowed for {symbol}")
 

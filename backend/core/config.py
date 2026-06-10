@@ -41,6 +41,17 @@ class Settings(BaseSettings):
     # Daily loss limit
     MAX_DAILY_LOSS: int
 
+    # --- Consecutive-loss escalating lockout ---
+    # Tier 1: after this many losses in a row, block new entries for
+    # CONSECUTIVE_LOSS_TIER1_MINUTES from the last loss's exit_time.
+    # Tier 2: after this many losses in a row, block new entries for the
+    # rest of the trading day (until midnight Helsinki).
+    # Both tiers reuse the existing loss_cooldown response shape so the
+    # frontend cooldown banner picks them up without changes.
+    CONSECUTIVE_LOSS_TIER1_COUNT: int = 2
+    CONSECUTIVE_LOSS_TIER1_MINUTES: int = 60
+    CONSECUTIVE_LOSS_TIER2_COUNT: int = 3
+
     # --- Exit triggers ---
     EXIT_TRIGGERS: set[str]
 

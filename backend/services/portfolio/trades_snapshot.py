@@ -205,6 +205,21 @@ class TradesSnapshot:
                 return trade
         return None
 
+    def consecutive_losses(self) -> int:
+        """
+        Count losses on the tail of today's completed_trades until a win
+        breaks the streak. completed_trades is sorted by exit_time, so
+        walking from the end gives the current streak. Returns 0 if the
+        most recent trade is a win or there are no trades yet.
+        """
+        streak = 0
+        for trade in reversed(self.completed_trades):
+            if trade.get("is_loss"):
+                streak += 1
+            else:
+                break
+        return streak
+
     def attempts_for(self, symbol: str) -> int:
         return self.entry_counts.get(symbol.upper(), 0)
 

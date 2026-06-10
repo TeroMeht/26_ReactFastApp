@@ -8,7 +8,13 @@ from typing import List
 
 from services.portfolio.ib_client import IbClient
 from services.portfolio.order_tracker import OrderTracker
-from services.portfolio.flows.entry import process_entry_request,count_entry_attempts_today_all
+from services.portfolio.flows.entry import (
+    process_entry_request,
+    count_entry_attempts_today_all,
+    compute_lockout_state,
+    HELSINKI,
+)
+from services.portfolio.trades_snapshot import build_today_snapshot
 from services.portfolio.flows.add import process_add_request
 from services.portfolio.flows.exit import process_exit_request
 from services.portfolio.flows.open_risk import process_openrisktable
@@ -33,9 +39,10 @@ from schemas.api_schemas import (
     OrderLogEntry,
     TradeLogRow,
     TradeLogResponse,
+    LockoutStatusResponse,
 )
 from collections import defaultdict
-from datetime import date as _date
+from datetime import date as _date, datetime as _datetime
 
 
 logger = logging.getLogger(__name__)
@@ -108,6 +115,25 @@ async def get_bid_ask_price(symbol: str, ib=Depends(get_ib)):
 # ----------------------------------------------------------------------
 # Workflow endpoints - call the function-style handlers in services.portfolio
 # ----------------------------------------------------------------------
+# Proactive lockout status — polled by the global LockoutBanner so the UI
+# can show a countdown without waiting for the user to attempt an entry.
+# Same decision logic as process_entry_request runs through; locked=True
+# here means an entry attempt right now would return reason=loss_cooldown.
+@router.get("/lockout-status", response_model=LockoutStatusResponse)
+async def get_lockout_status(
+    ib=Depends(get_ib),
+    tracker: OrderTracker = Depends(get_order_tracker),
+):
+    try:
+        client = IbClient(ib, tracker=tracker)
+        snapshot = await build_today_snapshot(client)
+        now = _datetime.now(HELSINKI)
+        return compute_lockout_state(snapshot, now)
+    except Exception as e:
+        logger.exception("lockout-status failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/entry-request", response_model=EntryRequestResponse)
 async def entry_request(
     payload: EntryRequest,

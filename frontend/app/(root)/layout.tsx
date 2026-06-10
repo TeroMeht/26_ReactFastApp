@@ -3,6 +3,7 @@
 import * as React from "react";
 import Sidebar from "@/components/Sidebar";
 import RightSidebar from "@/components/RightSideBar";
+import LockoutBanner from "@/components/trade-manager/LockoutBanner";
 import { API_PREFIX } from '@/lib/api_prefix';
 import { components } from "@/generated/api"; // generated type from OpenAPI
 
@@ -69,7 +70,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         - overflow-hidden clips anything that would spill horizontally so the
           two sidebars stay at their fixed widths regardless of what renders here.
       */}
-      <div className="flex-1 min-w-0 overflow-hidden p-1">{children}</div>
+      <div className="flex-1 min-w-0 overflow-hidden p-1 flex flex-col">
+        {/*
+          Global loss-cooldown banner. Polls the backend every 15s so the
+          freeze is visible the moment the 2nd consecutive loss closes —
+          the user never has to attempt a 3rd entry to learn they're locked.
+        */}
+        <LockoutBanner />
+        <div className="flex-1 min-h-0 overflow-hidden">{children}</div>
+      </div>
 
       {/* Right Sidebar with alarms — fixed 450px (xl+) */}
       <RightSidebar alarms={alarms} pageSpecific={true} />
