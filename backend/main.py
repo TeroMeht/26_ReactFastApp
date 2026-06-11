@@ -15,12 +15,14 @@ import asyncpg
 from db.exits import clear_exit_requests,create_exit_requests_table
 from db.watchlist import create_watchlist_tables
 from db.order_log import create_order_log_table
+from db.daily_summary import create_daily_summary_tables
 from helpers.events import StreamerStatusStore
 
 # Import routers
 from routers import (
     watchlist, script, alarms, livestream, portfolio,
     pending_orders, exits, scanner, live_scanner, custom_exits,
+    daily_summary,
 )
 from services.live_scanner import LiveScannerManager
 from services.portfolio.order_tracker import OrderTracker
@@ -60,6 +62,7 @@ async def lifespan(app: FastAPI):
             await create_exit_requests_table(conn)
             await create_watchlist_tables(conn)
             await create_order_log_table(conn)
+            await create_daily_summary_tables(conn)
 
         # Store shared services
         app.state.ib = ib
@@ -209,6 +212,7 @@ app.include_router(pending_orders.router)
 app.include_router(custom_exits.router)
 app.include_router(exits.router)
 app.include_router(scanner.router)
+app.include_router(daily_summary.router)
 app.include_router(live_scanner.router)
 
 

@@ -541,6 +541,33 @@ class NewsItem(BaseModel):
     thumbnail: str
 
 
+# ---------------- Daily premarket summary ----------------
+# Produced by services.daily_summary, persisted in daily_summary_run /
+# daily_summary_row, served by routers.daily_summary.
+
+class DailySummaryRow(BaseModel):
+    # run_date is included on every row so symbol-history queries can return
+    # a flat list without losing the date dimension.
+    run_date: date
+    side: str               # "up" or "down"
+    rank: int               # 1..5 within the side
+    symbol: str
+    change: Optional[float] = None    # % change at scan time, signed
+    rvol: Optional[float] = None      # relative volume at scan time
+    # 1-10 blended catalyst score: news impact + gap size + rvol.
+    # None means the LLM couldn't produce a valid rating (no key, parse failure).
+    catalyst_strength: Optional[int] = None
+    reason: str = ""        # few-words "why is it moving" summary
+    headline: str = ""      # the headline the reason was distilled from
+    news_url: str = ""      # link to that headline
+
+
+class DailySummaryResponse(BaseModel):
+    run_date: date
+    created_at: datetime
+    rows: List[DailySummaryRow] = []
+
+
 # ---------------- Auto Assist ----------------
 
 class AutoAssistStartRequest(BaseModel):

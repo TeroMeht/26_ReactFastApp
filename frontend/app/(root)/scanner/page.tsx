@@ -1,5 +1,6 @@
 import HeaderBox from '@/components/HeaderBox';
 import { SequentialScannerTables } from '@/components/scanner/SequentialScanTables';
+import DailySummary from '@/components/scanner/DailySummary';
 
 
 const Scanner = () => {
@@ -25,6 +26,7 @@ const Scanner = () => {
         </header>
 
         <main className="home-main mt-6">
+          <DailySummary />
           <h2 className="text-lg font-semibold mb-2">IB Scanner Results</h2>
           <SequentialScannerTables tables={scannerTables} />
         </main>
