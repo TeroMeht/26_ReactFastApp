@@ -11,9 +11,9 @@ to fall back to "anchor on now". Without a cache, every poll picks a new
 indefinitely.
 
 This module remembers the first cooldown_until we compute for a given
-key and returns it on subsequent calls until either:
-  - the streak breaks (caller invokes clear()), or
-  - the cooldown_until is in the past (caller invokes expire_if_past()).
+key and returns it on subsequent calls until the caller invokes clear()
+(either because the streak broke or because the cooldown_until has
+elapsed -- check_consecutive_losses handles both inline).
 
 State lives in-process only -- a backend restart clears it. That's fine:
 on restart, if the streak still exists, we'll set a new anchor on the
@@ -45,17 +45,3 @@ def clear(key: str) -> None:
     """Drop the cached anchor for `key`. Called when the streak breaks."""
     with _lock:
         _cache.pop(key, None)
-
-
-def expire_if_past(key: str, now: datetime) -> bool:
-    """
-    If the cached cooldown_until is in the past, drop it. Returns True if
-    the entry was expired (and the caller should treat as unlocked), else
-    False.
-    """
-    with _lock:
-        v = _cache.get(key)
-        if v is not None and now >= v:
-            _cache.pop(key, None)
-            return True
-        return False

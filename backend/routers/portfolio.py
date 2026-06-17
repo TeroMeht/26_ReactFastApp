@@ -138,13 +138,12 @@ async def get_lockout_status(
 async def entry_request(
     payload: EntryRequest,
     ib=Depends(get_ib),
-    db_conn=Depends(get_db_conn),
     tracker: OrderTracker = Depends(get_order_tracker),
 ):
-    # db_conn is forwarded so process_entry_request can arm the chosen
-    # exit_request row atomically with a successful bracket placement.
+    # Entry no longer arms exits -- exits are managed independently on the
+    # trade-manager page, so no db_conn is needed here.
     client = IbClient(ib, tracker=tracker)
-    return await process_entry_request(client, db_conn, payload)
+    return await process_entry_request(client, payload)
 
 
 @router.post("/add-request", response_model=AddRequestResponse)

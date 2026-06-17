@@ -355,59 +355,12 @@ class CustomExitResponse(BaseModel):
 
 
 # Entry
-class ExitStrategySpec(BaseModel):
-    """One armed exit attached to an entry.
-
-    Mirrors the validation done by UpdateExitRequest so the entry endpoint
-    accepts the same shape the manage page used to write directly.
-    """
-    strategy: str = Field(..., min_length=1)
-    trim_percentage: Decimal = Field(default=Decimal("1"))
-
-    @field_validator("strategy")
-    @classmethod
-    def _validate_strategy(cls, v: str) -> str:
-        v = v.strip()
-        allowed = set(settings.EXIT_TRIGGERS)
-        if v not in allowed:
-            raise ValueError(
-                f"strategy must be one of {sorted(allowed)} (got '{v}')"
-            )
-        return v
-
-    @field_validator("trim_percentage")
-    @classmethod
-    def _validate_trim(cls, v: Decimal) -> Decimal:
-        normalized = v.normalize() if v != 0 else v
-        allowed_normalized = {p.normalize() for p in ALLOWED_TRIM_PERCENTAGES}
-        if normalized not in allowed_normalized:
-            raise ValueError(
-                f"trim_percentage must be one of 0.25, 0.5, 0.75, or 1 (got {v})"
-            )
-        return v
-
-
 class EntryRequest(BaseModel):
     symbol: str
     contract_type: str
     entry_price: float
     stop_price: float
     position_size: int
-    # Exit strategies must be defined up-front. process_entry_request inserts
-    # these into exit_requests after a successful bracket order so the
-    # streamer's alarms have somewhere to land. min_length=1 enforces the
-    # "no entry without exit" rule.
-    exit_strategies: List[ExitStrategySpec] = Field(..., min_length=1)
-
-    @field_validator("exit_strategies")
-    @classmethod
-    def _no_duplicate_strategies(cls, v: List[ExitStrategySpec]) -> List[ExitStrategySpec]:
-        names = [s.strategy for s in v]
-        if len(set(names)) != len(names):
-            raise ValueError(
-                f"exit_strategies has duplicate strategy names: {names}"
-            )
-        return v
 
 
 class EntryRequestResponse(BaseModel):

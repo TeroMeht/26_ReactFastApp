@@ -15,13 +15,6 @@ import {
 
 import { Button } from "@/components/ui/button";
 
-import {
-  EXIT_STRATEGY_OPTIONS,
-  TRIM_OPTIONS,
-  TRIM_SUM_EPS as SUM_EPS,
-  type ExitSpec,
-} from "@/constants/exits";
-
 type PendingOrder =
   paths["/api/pending_orders/orders"]["get"]["responses"]["200"]["content"]["application/json"][number];
 
@@ -77,57 +70,6 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
   const [contractTypes, setContractTypes] = useState<Record<string, "CFD" | "stock">>({});
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
 
-  // Per-order exit_strategies the user has armed. Send is gated on >=1 entry
-  // here. Cleared whenever an order is removed or successfully sent.
-  const [exitsByOrder, setExitsByOrder] = useState<Record<string, ExitSpec[]>>({});
-  // Inline add-exit form state, keyed by orderId so two rows can edit at once.
-  const [exitDraft, setExitDraft] = useState<Record<string, { strategy: string; trim: number }>>({});
-
-  const getExits = (orderId: string): ExitSpec[] => exitsByOrder[orderId] || [];
-
-  const getDraft = (orderId: string) => exitDraft[orderId] || { strategy: "", trim: 1 };
-
-  const setDraft = (orderId: string, patch: Partial<{ strategy: string; trim: number }>) => {
-    setExitDraft((prev) => ({
-      ...prev,
-      [orderId]: { ...getDraft(orderId), ...patch },
-    }));
-  };
-
-  const addExitToOrder = (orderId: string) => {
-    const draft = getDraft(orderId);
-    if (!draft.strategy) return;
-    setExitsByOrder((prev) => {
-      const list = prev[orderId] || [];
-      if (list.some((e) => e.strategy === draft.strategy)) return prev;
-      return {
-        ...prev,
-        [orderId]: [...list, { strategy: draft.strategy, trim_percentage: draft.trim }],
-      };
-    });
-    setExitDraft((prev) => ({ ...prev, [orderId]: { strategy: "", trim: 1 } }));
-  };
-
-  const removeExitFromOrder = (orderId: string, strategy: string) => {
-    setExitsByOrder((prev) => ({
-      ...prev,
-      [orderId]: (prev[orderId] || []).filter((e) => e.strategy !== strategy),
-    }));
-  };
-
-  const clearOrderState = (orderId: string) => {
-    setExitsByOrder((prev) => {
-      const next = { ...prev };
-      delete next[orderId];
-      return next;
-    });
-    setExitDraft((prev) => {
-      const next = { ...prev };
-      delete next[orderId];
-      return next;
-    });
-  };
-
   const fetchPositions = useCallback(async () => {
     try {
       setLoading(true);
@@ -180,27 +122,12 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
   const handleSend = async (order: PendingOrder) => {
     try {
       const contractType = contractTypes[order.id] ?? "stock";
-      const exits = getExits(order.id);
-      const exitsSum = exits.reduce((s, e) => s + e.trim_percentage, 0);
-      if (Math.abs(exitsSum - 1) > SUM_EPS) {
-        setApiMessage(
-          `Exit strategies must cover exactly 100% for ${order.symbol} ` +
-            `(currently ${Math.round(exitsSum * 100)}%).`,
-        );
-        setApiMessageAllowed(false);
-        setTimeout(() => {
-          setApiMessage(null);
-          setApiMessageAllowed(null);
-        }, 5000);
-        return;
-      }
       const payload = {
         symbol: order.symbol,
         entry_price: order.latest_price,
         stop_price: order.stop_price,
         position_size: order.position_size,
         contract_type: contractType,
-        exit_strategies: exits,
       };
 
       const res = await fetch(`${API_PREFIX}/portfolio/entry-request`, {
@@ -262,7 +189,6 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
           next.delete(order.id);
           return next;
         });
-        clearOrderState(order.id);
         // Tell parent the underlying state changed so the EntryAttemptsTable
         // refetches once IB reports the fill.
         onRefreshed?.();
@@ -297,7 +223,6 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
       if (!ok) return;
 
       setPositions((prev) => prev.filter((o) => o.id !== order.id));
-      clearOrderState(order.id);
       setMessage(`Order ${order.id} canceled successfully.`);
     } catch (err: any) {
       console.error("Error canceling order:", err);
@@ -370,7 +295,6 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
             <TableHead>Stop Price</TableHead>
             <TableHead>Quantity</TableHead>
             <TableHead>Size</TableHead>
-            <TableHead>Exits</TableHead>
             <TableHead className="text-center">Actions</TableHead>
           </TableRow>
         </TableHeader>
@@ -378,40 +302,19 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
         <TableBody>
           {positions.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={9} className="text-gray-500">
+              <TableCell colSpan={8} className="text-gray-500">
                 No orders found.
               </TableCell>
             </TableRow>
           ) : (
             positions.map((order) => {
-              const exits = getExits(order.id);
-              const draft = getDraft(order.id);
-              const availableExitOptions = EXIT_STRATEGY_OPTIONS.filter(
-                (opt) => !exits.some((e) => e.strategy === opt.value),
-              );
-              const exitsSum = exits.reduce(
-                (s, e) => s + e.trim_percentage,
-                0,
-              );
-              const remaining = Math.max(0, 1 - exitsSum);
-              // Only trim values that fit inside the remaining capacity.
-              // SUM_EPS guards against floating drift when remaining lands
-              // exactly on 0.25/0.5/0.75/1.
-              const availableTrimOptions = TRIM_OPTIONS.filter(
-                (t) => t.value <= remaining + SUM_EPS,
-              );
-              const canAdd =
-                availableExitOptions.length > 0 &&
-                availableTrimOptions.length > 0;
-              const sumIsFull = Math.abs(exitsSum - 1) <= SUM_EPS;
-              const sendDisabled =
-                allowedOrders.has(order.id) || !sumIsFull;
+              const sendDisabled = allowedOrders.has(order.id);
               return (
                 <TableRow key={order.id}>
                   <TableCell>{order.id}</TableCell>
                   <TableCell>{order.symbol}</TableCell>
                   <TableCell>
-                    <div className="relative">
+                    <div>
                       <button
                         className="px-3 py-1 text-sm rounded-md border border-input bg-gray-200 hover:bg-gray-400 transition-colors"
                         onClick={() =>
@@ -422,7 +325,7 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
                       </button>
 
                       {openDropdown === order.id && (
-                        <div className="absolute z-50 mt-1 w-28 rounded-md border border-input bg-white shadow-md">
+                        <div className="mt-1 w-28 rounded-md border border-input bg-white shadow-md">
                           {(["stock", "CFD"] as const).map((option) => (
                             <button
                               key={option}
@@ -451,102 +354,6 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
                   <TableCell>{order.stop_price}</TableCell>
                   <TableCell>{order.position_size}</TableCell>
                   <TableCell>{order.size}</TableCell>
-                  <TableCell>
-                    <div className="flex flex-col gap-1 min-w-[260px]">
-                      {/* Already-added exits as removable chips, plus a
-                          running coverage indicator. */}
-                      <div className="flex flex-wrap items-center gap-1">
-                        {exits.length === 0 ? (
-                          <span className="text-[11px] text-red-600">
-                            Required — cover 100%
-                          </span>
-                        ) : (
-                          exits.map((e) => (
-                            <span
-                              key={e.strategy}
-                              className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded text-[11px] font-mono"
-                            >
-                              {e.strategy} @ {Math.round(e.trim_percentage * 100)}%
-                              <button
-                                type="button"
-                                className="text-blue-700 hover:text-red-700"
-                                onClick={() =>
-                                  removeExitFromOrder(order.id, e.strategy)
-                                }
-                                aria-label={`remove ${e.strategy}`}
-                              >
-                                ×
-                              </button>
-                            </span>
-                          ))
-                        )}
-                        {exits.length > 0 && (
-                          <span
-                            className={`text-[11px] font-mono ${
-                              sumIsFull ? "text-green-700" : "text-amber-700"
-                            }`}
-                          >
-                            {Math.round(exitsSum * 100)}%
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Add-form: dropdowns + Add. Hidden once coverage is
-                          full (sum >= 100%) or no strategies/trim values
-                          remain. Trim dropdown is filtered to options that
-                          fit inside the remaining capacity, so the picked
-                          trim can never push the sum over 100%. */}
-                      {canAdd && (
-                        <div className="flex flex-wrap items-center gap-1">
-                          <select
-                            value={draft.strategy}
-                            onChange={(e) =>
-                              setDraft(order.id, { strategy: e.target.value })
-                            }
-                            className="border rounded px-1 py-0.5 text-xs"
-                          >
-                            <option value="" disabled>
-                              strategy…
-                            </option>
-                            {availableExitOptions.map((opt) => (
-                              <option key={opt.value} value={opt.value}>
-                                {opt.label}
-                              </option>
-                            ))}
-                          </select>
-                          <select
-                            value={
-                              availableTrimOptions.some(
-                                (t) => t.value === draft.trim,
-                              )
-                                ? draft.trim
-                                : availableTrimOptions[
-                                    availableTrimOptions.length - 1
-                                  ].value
-                            }
-                            onChange={(e) =>
-                              setDraft(order.id, { trim: Number(e.target.value) })
-                            }
-                            className="border rounded px-1 py-0.5 text-xs"
-                          >
-                            {availableTrimOptions.map((opt) => (
-                              <option key={opt.value} value={opt.value}>
-                                {opt.label}
-                              </option>
-                            ))}
-                          </select>
-                          <button
-                            type="button"
-                            disabled={!draft.strategy}
-                            onClick={() => addExitToOrder(order.id)}
-                            className="px-2 py-0.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-                          >
-                            Add
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </TableCell>
                   <TableCell className="text-center whitespace-nowrap">
                     <div className="flex flex-row items-center justify-center gap-2">
                       <Button variant="ghost" onClick={() => handleDelete(order)}>
@@ -556,13 +363,6 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
                         variant="outline"
                         onClick={() => handleSend(order)}
                         disabled={sendDisabled}
-                        title={
-                          sumIsFull
-                            ? undefined
-                            : `Exit coverage must total 100% (currently ${Math.round(
-                                exitsSum * 100,
-                              )}%)`
-                        }
                       >
                         Send
                       </Button>

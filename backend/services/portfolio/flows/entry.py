@@ -23,7 +23,6 @@ from services.portfolio.trades_snapshot import (
     build_today_snapshot,
 )
 from services.portfolio import lockout_cache
-from db.exits import update_exit_request
 
 from core.config import settings
 from schemas.api_schemas import EntryRequest, EntryRequestResponse
@@ -253,13 +252,11 @@ def check_frequency(snapshot: TradesSnapshot, symbol: str, now: datetime) -> tup
 
 async def process_entry_request(
     client: IbClient,
-    db_conn,
     payload: EntryRequest,
 ) -> EntryRequestResponse:
     """
-    Validate guards, place a bracket, then arm payload.exit_strategies as
-    exit_request rows. Schema enforces >=1 exit so we never reach this with
-    an empty list.
+    Validate guards and place a bracket order. No exit arming happens
+    here -- exits are managed separately on the trade-manager page.
     """
     symbol = payload.symbol
     stop_price = payload.stop_price
@@ -326,29 +323,9 @@ async def process_entry_request(
             logger.error(msg)
             return EntryRequestResponse(allowed=False, message=msg, symbol=symbol)
 
-        # Arm exits after the bracket is live so a failed order doesn't
-        # leave stranded rows. Per-strategy errors are logged but do not
-        # roll back the entry.
-        for spec in payload.exit_strategies:
-            try:
-                await update_exit_request(
-                    db_conn,
-                    symbol,
-                    strategy=spec.strategy,
-                    trim_percentage=float(spec.trim_percentage),
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to persist exit_request | symbol=%s strategy=%s",
-                    symbol, spec.strategy,
-                )
-
-        plan_summary = ", ".join(
-            f"{s.strategy}@{s.trim_percentage}" for s in payload.exit_strategies
-        )
         return EntryRequestResponse(
             allowed=True,
-            message=f"Entry ok (exits: {plan_summary})",
+            message="Entry ok",
             symbol=symbol,
             parentOrderId=parent.orderId,
             stopOrderId=stop.orderId,

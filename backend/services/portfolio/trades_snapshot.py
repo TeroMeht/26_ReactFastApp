@@ -78,14 +78,56 @@ def count_entries_from_fills(fills: Iterable[dict]) -> int:
 
 def build_completed_trades(fills_by_symbol: dict[str, list[dict]]) -> list[dict]:
     """
-    FIFO-match BOT against SLD per symbol and emit one dict per closed leg
-    with prorated commission. Mirrors the previous IbClient.get_trades_with_pnl.
+    Emit one completed trade per flat-to-flat position cycle per symbol.
+
+    A "cycle" is the stretch from net position == 0 to net position == 0
+    again. All fills inside the cycle -- the initial entry, any adds, any
+    partial trims, and the final exit -- collapse into one row. This is
+    the user's mental model of a trade: one decision, one outcome, even
+    if it took several fills to enter and exit.
+
+    Why not per-leg FIFO. The previous implementation emitted one row for
+    every buy_queue entry a sell consumed. If you added to a position and
+    then got stopped out at a single price between your adds, that one
+    stop fill produced N losses (one per add) -- enough to trip the
+    consecutive-loss lockout from a single trade. Aggregating by cycle
+    fixes that and also makes shorts work (SELL-open, BUY-close), which
+    the FIFO matcher silently dropped.
+
+    Cycle classification:
+      direction = sign of the first fill that takes us off flat
+      gross     = (sum of exit values) - (sum of entry values), where
+                  "entry" fills are in the cycle's direction and "exit"
+                  fills are opposite. For a long this is the usual
+                  sell_value - buy_value; for a short it's
+                  sell_value - buy_value as well (entries are sells,
+                  exits are buys, signs invert -- the arithmetic ends up
+                  the same).
+      is_loss   = gross < 0 (commissions are not part of the lockout
+                  classifier; see net_pnl on the row for accounting).
+
+    Position flips on a single fill (e.g. one SELL that closes a long
+    AND opens a short past zero) are not split -- that's exotic for this
+    flow and would muddy cycle direction. If it ever matters, the fix is
+    to split the flipping fill into a close portion and an open portion.
+
+    Open positions at end-of-day are not emitted: net never returns to
+    zero so no cycle closes.
     """
     completed: list[dict] = []
 
     for symbol, fills in fills_by_symbol.items():
         fills_sorted = sorted(fills, key=lambda x: x["time"])
-        buy_queue: list[tuple[float, float, str, float]] = []  # qty, price, time, commission
+
+        net = 0
+        direction = 0  # +1 long cycle, -1 short cycle, 0 flat
+        entry_value = 0.0  # sum of qty*price on entry-side fills
+        exit_value = 0.0   # sum of qty*price on exit-side fills
+        entry_qty = 0.0
+        exit_qty = 0.0
+        total_commission = 0.0
+        entry_time: str | None = None
+        last_fill_time: str | None = None
 
         for fill in fills_sorted:
             qty = float(fill.get("quantity") or 0)
@@ -94,49 +136,68 @@ def build_completed_trades(fills_by_symbol: dict[str, list[dict]]) -> list[dict]
             action = (fill.get("action") or "").upper()
             time_str = fill.get("time")
 
-            if action in ("BUY", "BOT"):
-                buy_queue.append((qty, price, time_str, commission))
+            signed = _signed_qty(action, qty)
+            if signed == 0:
                 continue
 
-            if action not in ("SELL", "SLD"):
-                continue
+            if net == 0:
+                # Cycle starts.
+                direction = 1 if signed > 0 else -1
+                entry_value = qty * price
+                exit_value = 0.0
+                entry_qty = qty
+                exit_qty = 0.0
+                total_commission = commission
+                entry_time = time_str
+            else:
+                # Mid-cycle fill -- adds to entry side or trims/closes
+                # from exit side depending on direction.
+                same_side = (signed > 0 and direction > 0) or (signed < 0 and direction < 0)
+                if same_side:
+                    entry_value += qty * price
+                    entry_qty += qty
+                else:
+                    exit_value += qty * price
+                    exit_qty += qty
+                total_commission += commission
 
-            remaining = qty
-            sell_commission = commission
+            net += signed
+            last_fill_time = time_str
 
-            while remaining > 0 and buy_queue:
-                buy_qty, buy_price, buy_time, buy_commission = buy_queue[0]
-                matched = min(remaining, buy_qty)
-                gross = matched * (price - buy_price)
+            if net == 0 and direction != 0:
+                # Cycle closed -- emit one row.
+                if direction > 0:
+                    gross = exit_value - entry_value
+                else:
+                    # Short: entry fills are sells (proceeds), exit fills
+                    # are buys (cost). Profit = proceeds - cost.
+                    gross = entry_value - exit_value
 
-                prorated_buy = buy_commission * (matched / buy_qty) if buy_qty else 0.0
-                prorated_sell = sell_commission * (matched / qty) if qty else 0.0
-                total_commission = prorated_buy + prorated_sell
-                net = gross - total_commission
+                avg_entry_price = entry_value / entry_qty if entry_qty else 0.0
+                avg_exit_price = exit_value / exit_qty if exit_qty else 0.0
 
                 completed.append({
                     "symbol":      symbol,
-                    "entry_time":  buy_time,
-                    "exit_time":   time_str,
-                    "entry_price": buy_price,
-                    "exit_price":  price,
-                    "quantity":    matched,
+                    "entry_time":  entry_time,
+                    "exit_time":   last_fill_time,
+                    "entry_price": round(avg_entry_price, 4),
+                    "exit_price":  round(avg_exit_price, 4),
+                    "quantity":    exit_qty,
                     "gross_pnl":   round(gross, 4),
                     "commission":  round(total_commission, 4),
-                    "net_pnl":     round(net, 4),
-                    "is_loss":     net < 0,
+                    "net_pnl":     round(gross - total_commission, 4),
+                    # Classified on gross so commissions never flip a
+                    # winning trade into the streak that drives the
+                    # consecutive-loss lockout.
+                    "is_loss":     gross < 0,
                 })
 
-                remaining -= matched
-                if matched == buy_qty:
-                    buy_queue.pop(0)
-                else:
-                    buy_queue[0] = (
-                        buy_qty - matched,
-                        buy_price,
-                        buy_time,
-                        buy_commission - prorated_buy,
-                    )
+                # Reset for the next cycle.
+                direction = 0
+                entry_value = exit_value = 0.0
+                entry_qty = exit_qty = 0.0
+                total_commission = 0.0
+                entry_time = None
 
     completed.sort(key=lambda x: x["exit_time"])
     return completed
