@@ -66,10 +66,10 @@ class Settings(BaseSettings):
     # --- Anthropic (news summarization for daily premarket summary) ---
     # Optional so the rest of the backend boots even before the user wires the
     # key. The daily-summary endpoint surfaces a clear 503 if it's missing.
-    ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str
     # Lightweight, cheap, fast model is fine for "summarize this news in a few
     # words". Override via env if you want a bigger model.
-    ANTHROPIC_MODEL: str = "claude-haiku-4-5-20251001"
+    ANTHROPIC_MODEL: str
 
 
     @field_validator("ALLOWED_ORIGINS")
