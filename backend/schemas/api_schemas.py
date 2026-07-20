@@ -499,6 +499,19 @@ class NewsItem(BaseModel):
 # daily_summary_row, served by routers.daily_summary.
 
 class DailySummaryRow(BaseModel):
+    """One ticker's row in the daily premarket snapshot.
+
+    The catalyst evaluation follows the Catalyst Value Equation rubric in
+    docs/CATALYST_EVALUATION.md: Magnitude × Speed → Grade → daily-risk cap.
+    The four CVE text fields use a constrained vocabulary, but we don't
+    enforce it via Enum here — the LLM occasionally returns a near-miss
+    ("ABSOLUTE" / "absolute"), and we'd rather store it than fail the row.
+    The frontend normalises on display.
+
+    Defaults match the rubric's "every trade starts at D" bias: if the LLM
+    couldn't produce a clean reading, the row collapses to D / 0% sizing so
+    a partial response is never silently treated as a tradeable signal.
+    """
     # run_date is included on every row so symbol-history queries can return
     # a flat list without losing the date dimension.
     run_date: date
@@ -507,11 +520,17 @@ class DailySummaryRow(BaseModel):
     symbol: str
     change: Optional[float] = None    # % change at scan time, signed
     rvol: Optional[float] = None      # relative volume at scan time
-    # 1-10 blended catalyst score: news impact + gap size + rvol.
-    # None means the LLM couldn't produce a valid rating (no key, parse failure).
-    catalyst_strength: Optional[int] = None
-    reason: str = ""        # few-words "why is it moving" summary
-    headline: str = ""      # the headline the reason was distilled from
+
+    # --- CVE evaluation ---
+    catalyst_type: str = "none"   # confirmed | coverage | narrative | none
+    magnitude: str = "No"         # Absolute | Yes | Maybe | No
+    speed: str = "No"             # Absolute | Yes | Maybe | No
+    grade: str = "D"              # A+ | A | B | C | D
+    sizing_pct: int = 0           # 0..80, the rubric's daily-risk cap for this grade
+    reason: str = ""              # short sentence naming the catalyst itself
+    notes: str = ""               # caveats: float, peer flow, already in price, etc.
+
+    headline: str = ""      # the headline the eval was derived from
     news_url: str = ""      # link to that headline
 
 

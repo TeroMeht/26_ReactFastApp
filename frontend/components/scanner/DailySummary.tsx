@@ -17,6 +17,11 @@ import { API_PREFIX } from "@/lib/api_prefix";
 //     paths["/api/scanner/daily-summary"]["get"]["responses"]["200"]["content"]["application/json"];
 //
 // Kept manual for now so the page compiles before `npm run gen:types` is run.
+//
+// Catalyst Value Equation (CVE) fields mirror docs/CATALYST_EVALUATION.md.
+// The constrained vocabularies (Magnitude/Speed/Grade/CatalystType) are kept
+// as plain strings here — the backend already normalises the LLM output, and
+// using string literal unions would make stray casing crash the table render.
 type DailySummaryRow = {
   run_date: string;             // ISO date "YYYY-MM-DD" — present on every row
   side: "up" | "down" | string;
@@ -24,8 +29,13 @@ type DailySummaryRow = {
   symbol: string;
   change: number | null;
   rvol: number | null;
-  catalyst_strength: number | null;   // 1-10 blended LLM rating
+  catalyst_type: string;        // confirmed | coverage | narrative | none
+  magnitude: string;            // Absolute | Yes | Maybe | No
+  speed: string;                // Absolute | Yes | Maybe | No
+  grade: string;                // A+ | A | B | C | D
+  sizing_pct: number;           // 0..80, derived risk cap from grade
   reason: string;
+  notes: string;
   headline: string;
   news_url: string;
 };
@@ -49,14 +59,51 @@ const changeColor = (v: number | null | undefined): string => {
 const fmtRvol = (v: number | null | undefined): string =>
   v === null || v === undefined ? "-" : `${v.toFixed(2)}x`;
 
-type SortMode = "catalyst" | "side";
+// CVE colour helpers — keep grade visible at a glance. The palette deliberately
+// pushes D toward a soft grey rather than red: D means "don't trade", not
+// "this is a bad stock", so red would mis-signal direction.
+const gradeStyle = (g: string): string => {
+  switch (g) {
+    case "A+": return "bg-emerald-600 text-white";
+    case "A":  return "bg-emerald-500 text-white";
+    case "B":  return "bg-amber-400 text-amber-950";
+    case "C":  return "bg-orange-300 text-orange-950";
+    case "D":
+    default:   return "bg-gray-200 text-gray-600";
+  }
+};
+
+// Magnitude / Speed cells share a 4-step scale. A muted background keeps the
+// row scannable while preserving ordinality.
+const scoreStyle = (s: string): string => {
+  switch (s) {
+    case "Absolute": return "bg-emerald-100 text-emerald-900 font-semibold";
+    case "Yes":      return "bg-emerald-50 text-emerald-800";
+    case "Maybe":    return "bg-amber-50 text-amber-800";
+    case "No":
+    default:         return "bg-gray-50 text-gray-500";
+  }
+};
+
+// Grade ordering used by the "by grade" sort. A+ first, then A, etc., with
+// unrecognised letters dropping to the bottom so they're easy to spot.
+const _gradeRank = (g: string): number => {
+  const o: Record<string, number> = { "A+": 5, A: 4, B: 3, C: 2, D: 1 };
+  return o[g] ?? 0;
+};
+
+type SortMode = "grade" | "side";
 
 const DailySummary: React.FC = () => {
   const [data, setData] = React.useState<DailySummaryResponse | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [running, setRunning] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const [sortMode, setSortMode] = React.useState<SortMode>("catalyst");
+  const [sortMode, setSortMode] = React.useState<SortMode>("grade");
+  // Hide D-grade rows by default — the rubric says D = don't trade, so they
+  // just add noise to pre-market prep. Toggle exposes them when the trader
+  // wants to double-check that nothing tradeable was misgraded as D.
+  const [hideD, setHideD] = React.useState<boolean>(true);
 
   const loadLatest = React.useCallback(async () => {
     setLoading(true);
@@ -103,22 +150,22 @@ const DailySummary: React.FC = () => {
   const allRows = data?.rows ?? [];
 
   // Two view modes:
-  //  - "catalyst": one combined list sorted by strength desc, biggest catalysts first
-  //  - "side":     up movers first then down movers, preserving the original rank order
+  //  - "grade": one combined list sorted by CVE grade desc (A+ first), so the
+  //            tradeable names float to the top and the Ds collapse at the
+  //            bottom.
+  //  - "side":  up movers first then down movers, preserving original rank.
   const sortedRows: DailySummaryRow[] = React.useMemo(() => {
-    if (sortMode === "catalyst") {
-      // Nulls go to the bottom regardless of direction.
-      return [...allRows].sort((a, b) => {
-        const av = a.catalyst_strength ?? -1;
-        const bv = b.catalyst_strength ?? -1;
-        return bv - av;
-      });
+    const filtered = hideD ? allRows.filter((r) => r.grade !== "D") : allRows;
+    if (sortMode === "grade") {
+      return [...filtered].sort((a, b) => _gradeRank(b.grade) - _gradeRank(a.grade));
     }
-    return [...allRows].sort((a, b) => {
+    return [...filtered].sort((a, b) => {
       if (a.side !== b.side) return a.side === "up" ? -1 : 1;
       return a.rank - b.rank;
     });
-  }, [allRows, sortMode]);
+  }, [allRows, sortMode, hideD]);
+
+  const hiddenCount = hideD ? allRows.filter((r) => r.grade === "D").length : 0;
 
   return (
     <section className="mt-4 mb-6">
@@ -172,15 +219,15 @@ const DailySummary: React.FC = () => {
               <div className="flex items-center gap-1 text-xs">
                 <span className="text-gray-500 mr-1">Sort:</span>
                 <button
-                  onClick={() => setSortMode("catalyst")}
+                  onClick={() => setSortMode("grade")}
                   className={
                     "px-2 py-0.5 rounded " +
-                    (sortMode === "catalyst"
+                    (sortMode === "grade"
                       ? "bg-blue-500 text-white"
                       : "bg-gray-100 text-gray-600 hover:bg-gray-200")
                   }
                 >
-                  Catalyst
+                  Grade
                 </button>
                 <button
                   onClick={() => setSortMode("side")}
@@ -193,23 +240,39 @@ const DailySummary: React.FC = () => {
                 >
                   Up/Down
                 </button>
+                <span className="text-gray-300 mx-1">|</span>
+                <button
+                  onClick={() => setHideD((v) => !v)}
+                  className={
+                    "px-2 py-0.5 rounded " +
+                    (hideD
+                      ? "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                      : "bg-blue-500 text-white")
+                  }
+                  title="Toggle D-grade rows (rubric says D = don't trade)"
+                >
+                  {hideD ? `Show D (${hiddenCount})` : "Hide D"}
+                </button>
               </div>
             </div>
-            <Table className="table-auto text-xs">
+            <Table className="table-auto text-sm">
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-14">Rank</TableHead>
-                  <TableHead className="w-12">Side</TableHead>
+                  <TableHead className="w-12">Grade</TableHead>
+                  <TableHead className="w-12">Size</TableHead>
                   <TableHead className="w-20">Symbol</TableHead>
                   <TableHead className="w-20">Change</TableHead>
                   <TableHead className="w-16">RVol</TableHead>
-                  <TableHead>Reason</TableHead>
+                  <TableHead className="w-20">Type</TableHead>
+                  <TableHead className="w-20">Magnitude</TableHead>
+                  <TableHead className="w-20">Speed</TableHead>
+                  <TableHead className="font-bold text-black">Catalyst</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {sortedRows.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center text-xs">
+                    <TableCell colSpan={9} className="text-center text-sm">
                       No movers in this snapshot
                     </TableCell>
                   </TableRow>
@@ -225,29 +288,60 @@ const DailySummary: React.FC = () => {
                     }}
                   >
                     <TableCell
-                      className="font-bold"
-                      title="LLM-rated catalyst rank (1-10): blends news impact, gap size, and rvol"
+                      title="CVE grade: Magnitude × Speed → A+ / A / B / C / D"
                     >
-                      {r.catalyst_strength ?? "—"}
+                      <span
+                        className={
+                          "inline-block px-1.5 py-0.5 rounded text-xs font-bold " +
+                          gradeStyle(r.grade)
+                        }
+                      >
+                        {r.grade || "D"}
+                      </span>
                     </TableCell>
-                    <TableCell className="uppercase text-[10px] tracking-wider text-gray-600">
-                      {r.side}
+                    <TableCell
+                      className="text-gray-700"
+                      title="Suggested daily-risk cap derived from the grade (see docs/CATALYST_EVALUATION.md §4)"
+                    >
+                      {r.sizing_pct}%
                     </TableCell>
                     <TableCell className="font-medium">{r.symbol}</TableCell>
                     <TableCell className={changeColor(r.change)}>
                       {fmtPct(r.change)}
                     </TableCell>
                     <TableCell className="text-gray-700">{fmtRvol(r.rvol)}</TableCell>
+                    <TableCell className="text-gray-700 capitalize">
+                      {r.catalyst_type || "none"}
+                    </TableCell>
                     <TableCell>
-                      <div className="text-gray-800">{r.reason || "—"}</div>
+                      <span className={"inline-block px-1.5 py-0.5 rounded text-xs " + scoreStyle(r.magnitude)}>
+                        {r.magnitude || "No"}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <span className={"inline-block px-1.5 py-0.5 rounded text-xs " + scoreStyle(r.speed)}>
+                        {r.speed || "No"}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <div className="text-sm text-black">{r.reason || "—"}</div>
+                      {r.notes && (
+                        <div
+                          className="text-xs text-black mt-0.5"
+                          title="LLM caveats: float, peer flow, already in price, etc."
+                        >
+                          {r.notes}
+                        </div>
+                      )}
                       {r.headline && (
                         <a
                           href={r.news_url || undefined}
                           target="_blank"
                           rel="noreferrer noopener"
-                          className="text-[10px] text-gray-400 hover:text-blue-600 line-clamp-1 block mt-0.5"
+                          className="text-xs text-blue-600 underline hover:text-blue-800 line-clamp-1 block mt-0.5"
+                          title="Open source headline in a new tab"
                         >
-                          {r.headline}
+                          {r.headline} ↗
                         </a>
                       )}
                     </TableCell>

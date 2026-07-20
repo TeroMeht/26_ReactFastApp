@@ -8,16 +8,21 @@ Orchestration:
 2.   Take the top 5 by % change on each side (the same sort the frontend already
      uses).
 3.   For each of those 10 tickers, fetch news via the same yfinance/RSS path
-     the /api/scanner/news/{symbol} endpoint uses, then ask Claude to distill
-     the most relevant headline into a few-word "why is it moving" reason.
-4.   Pull SPY and QQQ premarket changes + a couple of headlines and ask Claude
-     for a one-line overall-market summary.
-5.   Persist the whole snapshot via db.daily_summary.upsert_daily_summary so
+     the /api/scanner/news/{symbol} endpoint uses, then ask Claude to apply
+     the Catalyst Value Equation (CVE) rubric — see docs/CATALYST_EVALUATION.md
+     — and return a structured evaluation: catalyst sentence, type, magnitude,
+     speed, and caveats. Grade and risk-allocation cap are derived server-side
+     from (magnitude, speed) using the §4 table in the rubric.
+4.   Persist the whole snapshot via db.daily_summary.upsert_daily_summary so
      the scanner page can read it back without rerunning the LLM.
 
 All Anthropic calls are gated on settings.ANTHROPIC_API_KEY being present; if
-it isn't, the service still runs and stores the scan + news headlines, just
-with empty reason/summary strings so the UI is still useful.
+it isn't, the service still runs and stores the scan + news headlines, with
+every row collapsing to grade D / 0% sizing — i.e. the rubric's safe default.
+
+Note: the CVE rubric defined in docs/CATALYST_EVALUATION.md is duplicated
+inline in _ticker_reason_prompt below so the LLM sees the same definitions
+the trader is reading. If you change the rubric, update both.
 """
 from __future__ import annotations
 
@@ -26,7 +31,7 @@ import json
 import logging
 import re
 from datetime import date, datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple  # Tuple used by _parse_ticker_response
+from typing import Dict, List, Optional
 
 import asyncpg
 import feedparser
@@ -177,16 +182,92 @@ async def _claude_complete(prompt: str, max_tokens: int = 60) -> str:
     return await asyncio.to_thread(_claude_complete_sync, prompt, max_tokens)
 
 
+# ---------------------------------------------------------------------------
+# CVE rubric — must mirror docs/CATALYST_EVALUATION.md
+# ---------------------------------------------------------------------------
+
+# Sizing caps come straight from the §4 grade table in the rubric. The LLM is
+# also asked for a sizing number, but we recompute it server-side from the
+# grade so the cap is always consistent with the table even if the LLM picks
+# a different number. This is the single source of truth.
+_GRADE_TO_SIZING_PCT: Dict[str, int] = {
+    "A+": 80,
+    "A":  30,
+    "B":  15,
+    "C":   5,
+    "D":   0,
+}
+
+# Magnitude×Speed → Grade lookup (also from §4 of the rubric). Order within
+# the pair doesn't matter — we normalise by sorting the two scores.
+_SCORE_ORDER = {"Absolute": 3, "Yes": 2, "Maybe": 1, "No": 0}
+
+
+def _normalise_score(raw: object) -> str:
+    """Coerce LLM output to one of {Absolute, Yes, Maybe, No}. Unknown → "No"
+    so an unparseable answer collapses to D, per the "starts at D" bias."""
+    if not isinstance(raw, str):
+        return "No"
+    s = raw.strip().lower()
+    if s.startswith("absol"):
+        return "Absolute"
+    if s == "yes":
+        return "Yes"
+    if s.startswith("maybe") or s == "partial":
+        return "Maybe"
+    return "No"
+
+
+def _normalise_catalyst_type(raw: object) -> str:
+    if not isinstance(raw, str):
+        return "none"
+    s = raw.strip().lower()
+    if s.startswith("confirm") or s in ("event", "material"):
+        return "confirmed"
+    if s.startswith("cover") or s in ("upgrade", "initiation", "13d"):
+        return "coverage"
+    if s.startswith("narr") or s in ("sector", "macro", "social"):
+        return "narrative"
+    return "none"
+
+
+def _grade_from_scores(magnitude: str, speed: str) -> str:
+    """Map (Magnitude, Speed) to a letter grade, ignoring order."""
+    pair = sorted([magnitude, speed], key=lambda x: -_SCORE_ORDER.get(x, 0))
+    hi, lo = pair[0], pair[1]
+    if "No" in (hi, lo):
+        return "D"
+    if hi == "Absolute" and lo == "Absolute":
+        return "A+"
+    if hi == "Yes" and lo == "Yes":
+        return "A"
+    # Absolute × Yes is one step better than Yes × Yes — keep it at A.
+    if hi == "Absolute" and lo == "Yes":
+        return "A"
+    if hi == "Yes" and lo == "Maybe":
+        return "B"
+    # Absolute × Maybe is a known edge case — the rubric's worked examples treat
+    # "huge implied move but ambiguous timing" as B (sized smaller than Yes×Yes A).
+    if hi == "Absolute" and lo == "Maybe":
+        return "B"
+    if hi == "Maybe" and lo == "Maybe":
+        return "C"
+    return "D"
+
+
 def _ticker_reason_prompt(
     symbol: str,
     change: Optional[float],
     rvol: Optional[float],
     headlines: List[Dict],
 ) -> str:
-    """
-    Ask Claude to produce a few-word reason AND a 1-10 catalyst strength that
-    blends news impact, gap size, and relative volume. Output is strict JSON
-    so we can parse it deterministically.
+    """Build the CVE prompt for a single ticker.
+
+    The prompt embeds the §3-§6 rubric from docs/CATALYST_EVALUATION.md so the
+    LLM has the same definitions the trader is reading. Output is strict JSON;
+    we recompute the grade and sizing server-side from the two scores so the
+    LLM cannot accidentally inflate the grade — its job is only to score
+    Magnitude and Speed and to write the reasoning, not to decide the cap.
     """
     direction = "up" if (change or 0) >= 0 else "down"
     change_str = f"{change:+.2f}%" if change is not None else "n/a"
@@ -196,65 +277,114 @@ def _ticker_reason_prompt(
         for h in headlines[:3]
     ) or "(no news available)"
     return (
-        f"You are a premarket trading analyst. Rate the catalyst behind a stock's move.\n\n"
-        f"Stock: {symbol}\n"
-        f"Premarket move: {direction} {change_str}\n"
-        f"Relative volume (RVol): {rvol_str}  (>2 = elevated, <1 = weak conviction)\n"
-        f"News headlines (last 24h):\n{bullets}\n\n"
-        f"Task: return STRICT JSON with two fields:\n"
-        f'  "reason": a short phrase (max ~10 words, no period) explaining WHY '
-        f"the stock is moving based on the news. If no clear catalyst exists in "
-        f'the headlines, use "No clear catalyst".\n'
-        f'  "catalyst_strength": an integer 1-10 that BLENDS:\n'
-        f"     - News impact: stock dilution / missed earnings / SEC probe = strong negative; "
-        f"double earnings beat / FDA approval / buyout / huge contract = strong positive. "
-        f"Direction does NOT change the score — both up and down are catalysts, scale is "
-        f"about how actionable and conviction-building the move is.\n"
-        f"     - Gap size: |change| > 10% is big, > 20% is huge.\n"
-        f"     - RVol: > 2 confirms institutional follow-through; < 1 means thin and untrustworthy.\n"
-        f"   RULES:\n"
-        f"     - Big gap + strong news + RVol > 2 → 8-10.\n"
-        f"     - Strong news + decent gap + RVol > 1 → 6-7.\n"
-        f"     - Big gap but no clear news catalyst and RVol < 1.5 → 3-4.\n"
-        f"     - Tiny gap or no signal → 1-2.\n\n"
-        f'Respond with ONLY the JSON object, nothing else. Example: {{"reason": "FDA approval for lead drug", "catalyst_strength": 9}}'
+        "You are a premarket trading analyst applying the Catalyst Value Equation (CVE).\n"
+        "Default bias: every trade starts at D (don't trade). Make the catalyst prove\n"
+        "itself. If you cannot name a concrete catalyst in one sentence, grade is D.\n\n"
+        "RUBRIC\n"
+        "  Two independent scores, each one of: Absolute, Yes, Maybe, No.\n"
+        "    Magnitude — how big is the implied repricing this catalyst alone should\n"
+        "                drive? (NOT company size; NOT current move size.)\n"
+        "    Speed     — must this be priced today / at open / in the first hour?\n"
+        "                Or is it a slow-burn thesis that could grind for a week?\n"
+        "  Score values:\n"
+        "    Absolute  unambiguous, market-moving, hard to argue with\n"
+        "    Yes       clearly present but with a debatable element\n"
+        "    Maybe     possibly there; requires interpretation\n"
+        "    No        not present / cannot be evidenced\n\n"
+        "CATALYST TYPES (pick one)\n"
+        "  confirmed  hard public event: earnings, M&A, FDA, index inclusion,\n"
+        "             regulatory ruling, post-IPO analyst initiations\n"
+        "  coverage   re-rating by flow-moving parties: multi-bank upgrades, 13D,\n"
+        "             unusual options tied to a date\n"
+        "  narrative  sector sympathy, macro/commodity theme, social-media attention\n"
+        "  none       no identifiable catalyst — default to this\n\n"
+        "WHAT IS *NOT* A CATALYST\n"
+        "  - 'big move on the chart' is a reaction, not a catalyst.\n"
+        "  - Pure technical setups (breakout, MA cross, gap-and-go).\n"
+        "  - 'It missed and faded' — disappointment is not a catalyst.\n\n"
+        "INPUTS\n"
+        f"  Stock: {symbol}\n"
+        f"  Premarket move: {direction} {change_str}\n"
+        f"  Relative volume (RVol): {rvol_str}\n"
+        f"  News headlines (last 24h):\n{bullets}\n\n"
+        "OUTPUT — STRICT JSON, no markdown fences, no prose around it.\n"
+        '  "reason"        : one sentence naming the actual catalyst. If none,\n'
+        '                    use "No clear catalyst".\n'
+        '  "catalyst_type" : confirmed | coverage | narrative | none\n'
+        '  "magnitude"     : Absolute | Yes | Maybe | No\n'
+        '  "speed"         : Absolute | Yes | Maybe | No\n'
+        '  "notes"         : caveats — already in price? float/liquidity? peer\n'
+        '                    flow? Confidence checks the reader should know.\n\n'
+        'Example:\n'
+        '  {"reason": "Post-quiet-period analyst initiations from 4 banks",\n'
+        '   "catalyst_type": "coverage", "magnitude": "Absolute", "speed": "Absolute",\n'
+        '   "notes": "First-day moves are crowded; watch float and opening drive."}\n'
     )
 
 
 # Best-effort JSON extraction — Claude usually obeys "JSON only", but sometimes
-# wraps it in ```json fences or adds a stray sentence. This grabs the first
-# {...} block and parses it; returns (reason, strength) with safe defaults.
+# wraps it in ```json fences or adds a stray sentence. _JSON_BLOCK_RE catches a
+# brace-balanced object via the greedy {...} with no nested braces (matches our
+# flat output shape).
 _JSON_BLOCK_RE = re.compile(r"\{[^{}]*\}", re.DOTALL)
 
 
-def _parse_ticker_response(text: str) -> Tuple[str, Optional[int]]:
+def _parse_ticker_response(text: str) -> Dict[str, object]:
+    """Parse the LLM output into a normalised CVE dict.
+
+    Returns a dict with: reason, catalyst_type, magnitude, speed, grade,
+    sizing_pct, notes. The grade and sizing_pct are derived server-side from
+    the two scores so the LLM cannot inflate them. Missing / unparseable
+    inputs collapse to D / 0% per the "every trade starts at D" bias.
+    """
+    fallback: Dict[str, object] = {
+        "reason": "",
+        "catalyst_type": "none",
+        "magnitude": "No",
+        "speed": "No",
+        "grade": "D",
+        "sizing_pct": 0,
+        "notes": "",
+    }
     if not text:
-        return "", None
+        return fallback
+
     try:
         obj = json.loads(text)
     except json.JSONDecodeError:
         m = _JSON_BLOCK_RE.search(text)
         if not m:
-            return text.strip().split("\n")[0][:120], None
+            fallback["reason"] = text.strip().split("\n")[0][:200]
+            return fallback
         try:
             obj = json.loads(m.group(0))
         except json.JSONDecodeError:
-            return text.strip().split("\n")[0][:120], None
+            fallback["reason"] = text.strip().split("\n")[0][:200]
+            return fallback
 
     reason = str(obj.get("reason") or "").strip()
-    raw_strength = obj.get("catalyst_strength")
-    strength: Optional[int] = None
-    if isinstance(raw_strength, (int, float)):
-        try:
-            strength = max(1, min(10, int(round(float(raw_strength)))))
-        except (ValueError, TypeError):
-            strength = None
-    elif isinstance(raw_strength, str):
-        try:
-            strength = max(1, min(10, int(round(float(raw_strength)))))
-        except ValueError:
-            strength = None
-    return reason, strength
+    notes = str(obj.get("notes") or "").strip()
+    catalyst_type = _normalise_catalyst_type(obj.get("catalyst_type"))
+    magnitude = _normalise_score(obj.get("magnitude"))
+    speed = _normalise_score(obj.get("speed"))
+    # If the LLM said the catalyst type is "none" or the reason is empty /
+    # "no clear catalyst", force the grade to D regardless of the score
+    # values it returned — the rubric is explicit that no catalyst → D.
+    if catalyst_type == "none" or not reason or reason.lower().startswith("no clear"):
+        grade = "D"
+    else:
+        grade = _grade_from_scores(magnitude, speed)
+    sizing_pct = _GRADE_TO_SIZING_PCT.get(grade, 0)
+
+    return {
+        "reason": reason,
+        "catalyst_type": catalyst_type,
+        "magnitude": magnitude,
+        "speed": speed,
+        "grade": grade,
+        "sizing_pct": sizing_pct,
+        "notes": notes,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -294,13 +424,15 @@ async def generate_daily_summary(
         rvol = float(row.rvol) if row.rvol is not None else None
         news = await _fetch_symbol_news(symbol)
 
-        # Always send the rating prompt so Claude can score "big gap, no news,
-        # weak rvol" appropriately low — we don't gate on news presence.
+        # Always send the rubric prompt so Claude can return "no catalyst →
+        # grade D" cleanly when news is empty — we don't gate on news presence.
+        # The token budget is larger than the old version because the structured
+        # output (reason + 4 fields + notes) needs more room than a one-liner.
         raw = await _claude_complete(
             _ticker_reason_prompt(symbol, change, rvol, news),
-            max_tokens=180,
+            max_tokens=400,
         )
-        reason, strength = _parse_ticker_response(raw)
+        cve = _parse_ticker_response(raw)
 
         if news:
             headline = news[0].get("title", "") or ""
@@ -308,8 +440,8 @@ async def generate_daily_summary(
         else:
             headline = ""
             news_url = ""
-            if not reason:
-                reason = "No clear catalyst"
+            if not cve["reason"]:
+                cve["reason"] = "No clear catalyst"
 
         return {
             "side": side,
@@ -317,8 +449,13 @@ async def generate_daily_summary(
             "symbol": symbol,
             "change": change,
             "rvol": rvol,
-            "catalyst_strength": strength,
-            "reason": reason,
+            "catalyst_type": cve["catalyst_type"],
+            "magnitude": cve["magnitude"],
+            "speed": cve["speed"],
+            "grade": cve["grade"],
+            "sizing_pct": cve["sizing_pct"],
+            "reason": cve["reason"],
+            "notes": cve["notes"],
             "headline": headline,
             "news_url": news_url,
         }
