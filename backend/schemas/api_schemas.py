@@ -274,16 +274,6 @@ class ExitRequest(BaseModel):
             raise ValueError("Symbol cannot be empty")
         return v
 
-    @field_validator("alarm")
-    @classmethod
-    def validate_alarm(cls, v: str) -> str:
-        v = v.strip()
-        allowed = set(settings.EXIT_TRIGGERS)
-        if v not in allowed:
-            raise ValueError(
-                f"alarm must be one of {sorted(allowed)} (got '{v}')"
-            )
-        return v
 
 
 class ExitRequestResponseIB(BaseModel):
