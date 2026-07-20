@@ -15,7 +15,8 @@ export const EXIT_STRATEGY_OPTIONS: ExitStrategyOption[] = [
   { value: "momentum_short_exit", label: "momentum_short_exit" },
   { value: "endofday_exit", label: "endofday_exit" },
   { value: "vwap_exit", label: "vwap_exit" },
-  { value: "swing_trade", label: "swing_trade" },
+  { value: "trim_into_weakness", label: "trim_into_weakness" },
+  { value: "trim_into_strength", label: "trim_into_strength" },
 ];
 
 export type TrimOption = {
