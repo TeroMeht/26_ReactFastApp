@@ -247,16 +247,7 @@ class UpdateExitRequest(BaseModel):
             )
         return v
 
-    @field_validator("strategy")
-    @classmethod
-    def validate_strategy(cls, v: str) -> str:
-        v = v.strip()
-        allowed = set(settings.EXIT_TRIGGERS)
-        if v not in allowed:
-            raise ValueError(
-                f"strategy must be one of {sorted(allowed)} (got '{v}')"
-            )
-        return v
+
 
 
 # Exits

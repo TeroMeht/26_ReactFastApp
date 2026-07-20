@@ -54,9 +54,6 @@ class Settings(BaseSettings):
     CONSECUTIVE_LOSS_TIER1_MINUTES: int = 60
     CONSECUTIVE_LOSS_TIER2_COUNT: int = 3
 
-    # --- Exit triggers ---
-    EXIT_TRIGGERS: set[str]
-
 
     # --- Alpaca API Config ---
     ALPACA_API_KEY: str
