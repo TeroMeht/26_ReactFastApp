@@ -12,7 +12,7 @@ from core.config import settings
 from ib_async import IB
 import uvicorn
 import asyncpg
-from db.exits import clear_exit_requests,create_exit_requests_table
+from db.exits import create_exit_requests_table
 from db.watchlist import create_watchlist_tables
 from db.order_log import create_order_log_table
 from db.daily_summary import create_daily_summary_tables

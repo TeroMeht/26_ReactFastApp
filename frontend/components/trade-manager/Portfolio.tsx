@@ -18,10 +18,18 @@ import { Button } from "@/components/ui/button";
 type OpenPosition =
   paths["/api/portfolio/open-risk-table"]["get"]["responses"]["200"]["content"]["application/json"][number];
 
+type ReconcileResult = {
+  deleted_count?: number;
+};
+
 const PortfolioTable = () => {
   const [positions, setPositions] = useState<OpenPosition[]>([]);
   const router = useRouter();
   const [loading, setLoading] = useState(false);
+  // "Reconcile exits" button state. Message auto-fades so the section
+  // header doesn't stay cluttered.
+  const [reconciling, setReconciling] = useState(false);
+  const [reconcileMsg, setReconcileMsg] = useState<string | null>(null);
 
   const fetchPortfolio = useCallback(async () => {
     try {
@@ -35,6 +43,29 @@ const PortfolioTable = () => {
       setPositions([]);
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const handleReconcile = useCallback(async () => {
+    setReconciling(true);
+    setReconcileMsg(null);
+    try {
+      const res = await fetch(`${API_PREFIX}/exits/reconcile`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as ReconcileResult;
+      const n = data.deleted_count ?? 0;
+      setReconcileMsg(
+        n === 0 ? "Nothing to clear" : `Cleared ${n} orphan exit${n === 1 ? "" : "s"}`,
+      );
+    } catch (err) {
+      setReconcileMsg(
+        `Failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setReconciling(false);
+      setTimeout(() => setReconcileMsg(null), 4000);
     }
   }, []);
 
@@ -55,15 +86,35 @@ const PortfolioTable = () => {
   return (
     <div className="py-4">
       <h2 className="text-xl font-bold mb-4">Portfolio</h2>
-          
-          {/*  Refresh Button */}
-          <Button
-            variant="outline"
-            onClick={fetchPortfolio}
-            disabled={loading}
-          >
-            {loading ? "Refreshing..." : "Refresh"}
-          </Button>
+
+          <div className="flex items-center gap-2">
+            {/*  Refresh Button */}
+            <Button
+              variant="outline"
+              onClick={fetchPortfolio}
+              disabled={loading}
+            >
+              {loading ? "Refreshing..." : "Refresh"}
+            </Button>
+
+            {/*  Clear-exits Button — drops armed exit_requests for symbols
+                 the portfolio no longer holds. Kept next to Refresh so the
+                 user can sync DB and IB from one place. Amber styling so
+                 it visually reads as a maintenance action, distinct from
+                 the blue Refresh. Border matches text color. */}
+            <Button
+              onClick={handleReconcile}
+              disabled={reconciling}
+              title="Delete armed exit requests for symbols no longer held in the portfolio"
+              className="border-2 border-amber-700 text-amber-700 bg-white hover:bg-amber-700 hover:text-white"
+            >
+              {reconciling ? "Clearing..." : "Clear exits"}
+            </Button>
+
+            {reconcileMsg && (
+              <span className="text-xs text-gray-600">{reconcileMsg}</span>
+            )}
+          </div>
 
       <Table>
         <TableHeader>

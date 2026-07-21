@@ -6,12 +6,10 @@ into and an SSE generator can drain. They are deliberately simple - no
 external broker, no persistence; the assumption is that there is one backend
 worker and the stream is best-effort.
 
-Three flavours live here:
+Two flavours live here:
 
 - ``SSEEvent``           -- legacy alarms queue, kept as-is so the existing
                             /api/alarms/* endpoints keep working.
-- ``LivestreamSSEEvent`` -- queue of per-symbol CandleRow updates pushed by
-                            the streamer (POST /api/livestream/emit).
 - ``StreamerStatusStore``-- heartbeat + status tracker for the streamer
                             process. The streamer pings POST
                             /api/streamer-status/heartbeat at a fixed cadence;
@@ -25,8 +23,6 @@ from __future__ import annotations
 import time
 from collections import deque
 from typing import Deque, Optional
-
-from schemas.api_schemas import CandleRow
 
 
 class SSEEvent:
@@ -47,26 +43,6 @@ class SSEEvent:
     @staticmethod
     def count() -> int:
         return len(SSEEvent.EVENTS)
-
-
-class LivestreamSSEEvent:
-    """Queue of CandleRow updates from the streamer."""
-
-    EVENTS: Deque[CandleRow] = deque()
-
-    @staticmethod
-    def add_event(event: CandleRow) -> None:
-        LivestreamSSEEvent.EVENTS.append(event)
-
-    @staticmethod
-    def get_event() -> Optional[CandleRow]:
-        if len(LivestreamSSEEvent.EVENTS) > 0:
-            return LivestreamSSEEvent.EVENTS.popleft()
-        return None
-
-    @staticmethod
-    def count() -> int:
-        return len(LivestreamSSEEvent.EVENTS)
 
 
 class StreamerStatusStore:

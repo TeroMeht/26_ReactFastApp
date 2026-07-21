@@ -5,9 +5,11 @@ from services.exits import (
     get_exits_by_symbol,
     update_exit_request,
     delete_exit_requests,
+    reconcile_exit_requests_with_positions,
 )
+from services.portfolio.ib_client import IbClient
 
-from dependencies import get_db_conn
+from dependencies import get_db_conn, get_ib
 from schemas.api_schemas import UpdateExitRequest, ExitRequestResponse
 
 router = APIRouter(
@@ -61,6 +63,27 @@ async def update_exit(request: UpdateExitRequest, db_conn=Depends(get_db_conn)):
         raise HTTPException(
             status_code=500,
             detail=f"Failed to update requested exits: {str(e)}",
+        )
+
+
+@router.post("/exits/reconcile", response_model=dict)
+async def reconcile_exits(
+    ib=Depends(get_ib),
+    db_conn=Depends(get_db_conn),
+):
+    """
+    Drop any armed exit_requests whose symbol is no longer held in the IB
+    portfolio. Meant to be called when the DB drifts out of sync — e.g.
+    a position was closed outside the normal exit flow and left an armed
+    row behind.
+    """
+    try:
+        client = IbClient(ib)
+        return await reconcile_exit_requests_with_positions(client, db_conn)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to reconcile exit requests: {str(e)}",
         )
 
 
