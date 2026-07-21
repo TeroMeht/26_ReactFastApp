@@ -6,20 +6,19 @@ from decimal import Decimal
 
 async def create_exit_requests_table(db_conn: asyncpg.Connection) -> None:
     """
-    Recreate the exit_requests table on startup. The table keys on
+    Ensure the exit_requests table exists. The table keys on
     (symbol, strategy) so a symbol may have multiple armed strategies at once
     (e.g., trim at vwap_exit AND full exit at endofday_exit). Every row is
     implicitly armed; to disarm a strategy the caller deletes the row.
 
-    We DROP + CREATE rather than CREATE IF NOT EXISTS so that schema changes
-    (e.g., the recent move from PK(symbol) to PK(symbol, strategy)) take
-    effect automatically on the next startup. This is safe because the app
-    treats exit_requests as ephemeral and truncates it on startup anyway.
+    Data must survive restarts (armed exits are the source of truth for the
+    strategy runner), so this uses CREATE IF NOT EXISTS — never DROP. Any
+    stale rows for symbols the portfolio no longer holds are cleaned up by
+    the "Reconcile exits" flow (services.exits.reconcile_exit_requests_with_positions).
     """
-    await db_conn.execute("DROP TABLE IF EXISTS exit_requests;")
     await db_conn.execute(
         """
-        CREATE TABLE exit_requests (
+        CREATE TABLE IF NOT EXISTS exit_requests (
             symbol TEXT NOT NULL,
             strategy TEXT NOT NULL,
             trim_percentage NUMERIC(5, 4) NOT NULL DEFAULT 1.0,
@@ -144,5 +143,31 @@ async def delete_exit_requests_by_symbol(
         RETURNING symbol, strategy, trim_percentage, updated;
         """,
         symbol.upper(),
+    )
+    return [dict(row) for row in rows]
+
+
+async def delete_orphan_exit_requests(
+    db_conn: asyncpg.Connection, open_symbols: List[str]
+) -> List[Dict]:
+    """
+    Delete every exit_requests row whose symbol is NOT in ``open_symbols``.
+
+    ``open_symbols`` is the set of tickers the IB portfolio currently holds
+    a non-zero position for. Any armed exit request outside that set is
+    stale (the position it targeted is already closed) and would fire on
+    the next re-entry, so it has to go.
+
+    Symbols in ``open_symbols`` are matched case-insensitively.
+    Returns the list of deleted rows.
+    """
+    normalized = [s.upper() for s in open_symbols if s]
+    rows = await db_conn.fetch(
+        """
+        DELETE FROM exit_requests
+        WHERE symbol <> ALL($1::text[])
+        RETURNING symbol, strategy, trim_percentage, updated;
+        """,
+        normalized,
     )
     return [dict(row) for row in rows]

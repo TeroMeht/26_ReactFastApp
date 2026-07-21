@@ -14,69 +14,51 @@ import {
 
 type LastRow = Record<string, string | number>;
 
+// How often to re-fetch the full latest snapshot from the backend.
+// SSE was flaky in practice, so we replaced push updates with a plain
+// polling loop: cheap, predictable, and easy to reason about.
+const POLL_INTERVAL_MS = 10_000;
+
 export const LastRowsTable: React.FC = () => {
-  // We keep a Symbol -> row map so SSE events can update individual rows
-  // in O(1). The rendered list is derived from it (sorted by Rvol desc).
+  // Symbol -> row map. Rebuilt on every poll from the /latest snapshot
+  // (which returns the full current state), so per-row merging is no
+  // longer needed.
   const [bySymbol, setBySymbol] = React.useState<Map<string, LastRow>>(
     () => new Map(),
   );
   const [error, setError] = React.useState<string | null>(null);
 
-  const mergeRow = React.useCallback((row: LastRow) => {
-    const symbol = String(row.Symbol ?? "");
-    if (!symbol) return;
-    setBySymbol((prev) => {
-      const next = new Map(prev);
-      next.set(symbol, row);
-      return next;
-    });
-  }, []);
-
   React.useEffect(() => {
     let cancelled = false;
 
-    // 1) Seed once with the current snapshot so the table paints on load.
-    (async () => {
+    const fetchLatest = async () => {
       try {
         const res = await fetch(`${API_PREFIX}/livestream/latest`);
         if (!res.ok) throw new Error("Failed to fetch table data");
         const json = (await res.json()) as LastRow[];
         if (cancelled) return;
-        const seeded = new Map<string, LastRow>();
+        const next = new Map<string, LastRow>();
         for (const row of json.filter(Boolean)) {
           const s = String(row.Symbol ?? "");
-          if (s) seeded.set(s, row);
+          if (s) next.set(s, row);
         }
-        setBySymbol(seeded);
+        setBySymbol(next);
         setError(null);
       } catch (err: unknown) {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : String(err));
       }
-    })();
+    };
 
-    // 2) Subscribe to incremental updates pushed by the streamer via the
-    //    backend's webhook -> SSE pipeline. Each event is a single row.
-    const es = new EventSource(`${API_PREFIX}/livestream/stream`);
-    es.onmessage = (e) => {
-      try {
-        const row = JSON.parse(e.data) as LastRow;
-        mergeRow(row);
-      } catch {
-        // Ignore malformed payloads -- next event will refresh state.
-      }
-    };
-    es.onerror = () => {
-      // EventSource auto-reconnects; surface a soft warning so the user
-      // sees that updates may be paused.
-      if (!cancelled) setError("Live updates paused (reconnecting...)");
-    };
+    // Immediate first fetch so the table paints on load, then poll.
+    fetchLatest();
+    const intervalId = setInterval(fetchLatest, POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
-      es.close();
+      clearInterval(intervalId);
     };
-  }, [mergeRow]);
+  }, []);
 
   const displayedColumns = ["Symbol", "Time", "Relatr", "Rvol"];
 
