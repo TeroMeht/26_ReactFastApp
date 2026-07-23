@@ -197,7 +197,7 @@ def group_dataset_by_symbol(dataset: List[dict]) -> DefaultDict[str, list]:
     symbol_groups: DefaultDict[str, list] = defaultdict(list)
 
     for row in dataset:
-        symbol_groups[row["symbol"]].extend(row.get("intraday_bars", []))
+        symbol_groups[row["symbol"]].extend(row.get("intraday_bars") or [])
 
     return symbol_groups
 
