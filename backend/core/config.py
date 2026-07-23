@@ -33,11 +33,9 @@ class Settings(BaseSettings):
     # Hard cap on total entries across all tickers in one day.
     MAX_TOTAL_ENTRIES_PER_DAY: int
 
-    # Block entry for time period
-    BLOCK_START_HOUR:int
-    BLOCK_START_MINUTE:int
-    BLOCK_END_HOUR:int
-    BLOCK_END_MINUTE:int
+    # No entries allowed before this time of day (Helsinki).
+    FIRST_ENTRY_HOUR: int
+    FIRST_ENTRY_MINUTE: int
 
 
     # Daily loss limit
@@ -46,13 +44,14 @@ class Settings(BaseSettings):
     # --- Consecutive-loss escalating lockout ---
     # Tier 1: after this many losses in a row, block new entries for
     # CONSECUTIVE_LOSS_TIER1_MINUTES from the last loss's exit_time.
-    # Tier 2: after this many losses in a row, block new entries for the
-    # rest of the trading day (until midnight Helsinki).
+    # Tier 2: after this many losses in a row, block new entries for
+    # CONSECUTIVE_LOSS_TIER2_MINUTES from the last loss's exit_time.
     # Both tiers reuse the existing loss_cooldown response shape so the
     # frontend cooldown banner picks them up without changes.
     CONSECUTIVE_LOSS_TIER1_COUNT: int = 2
     CONSECUTIVE_LOSS_TIER1_MINUTES: int = 60
     CONSECUTIVE_LOSS_TIER2_COUNT: int = 3
+    CONSECUTIVE_LOSS_TIER2_MINUTES: int = 120
 
 
     # --- Alpaca API Config ---

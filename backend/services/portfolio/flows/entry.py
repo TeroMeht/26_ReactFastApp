@@ -57,19 +57,12 @@ def _parse_helsinki(value) -> datetime | None:
     return dt
 
 
-def _in_block_window(now_t: time, start: time, end: time) -> bool:
-    if start <= end:
-        return start <= now_t <= end
-    return now_t >= start or now_t <= end
-
-
 def check_block_window(now: datetime) -> tuple[bool, str]:
-    start = time(settings.BLOCK_START_HOUR, settings.BLOCK_START_MINUTE)
-    end = time(settings.BLOCK_END_HOUR, settings.BLOCK_END_MINUTE)
-    if _in_block_window(now.time(), start, end):
+    first_entry = time(settings.FIRST_ENTRY_HOUR, settings.FIRST_ENTRY_MINUTE)
+    if now.time() < first_entry:
         msg = (
-            f"Entry blocked during {start.strftime('%H:%M')}-{end.strftime('%H:%M')} "
-            f"window (current time: {now.strftime('%H:%M')})."
+            f"Entry blocked before {first_entry.strftime('%H:%M')} "
+            f"(current time: {now.strftime('%H:%M')})."
         )
         logger.info(msg)
         return False, msg
@@ -124,51 +117,63 @@ def check_loss_cooldown(snapshot: TradesSnapshot, now: datetime):
 
 
 _TIER1_CACHE_KEY = "consecutive_losses:tier1_floating"
+_TIER2_CACHE_KEY = "consecutive_losses:tier2_floating"
 
 
 def check_consecutive_losses(snapshot: TradesSnapshot, now: datetime):
     """
     Escalating lockout based on the current losing streak:
-      - tier 2 (>= CONSECUTIVE_LOSS_TIER2_COUNT): locked until end of
-        trading day (midnight Helsinki).
+      - tier 2 (>= CONSECUTIVE_LOSS_TIER2_COUNT): locked for
+        CONSECUTIVE_LOSS_TIER2_MINUTES from the last loss's exit_time.
       - tier 1 (>= CONSECUTIVE_LOSS_TIER1_COUNT): locked for
         CONSECUTIVE_LOSS_TIER1_MINUTES from the last loss's exit_time.
     Returns the same (ok, msg, cooldown_until) shape as check_loss_cooldown
     so the existing EntryRequestResponse(reason="loss_cooldown", ...)
     surface is reused and the frontend banner picks it up unchanged.
 
-    Refresh safety: the tier-1 cooldown is normally anchored to a real
-    loss fill's exit_time, which is stable across requests. When no fill
-    is available to anchor on (test overrides; future code paths) we
-    cache the first cooldown_until we compute so subsequent polls don't
-    slide the timer forward. The cache is cleared once the streak breaks
-    or the window elapses.
+    Refresh safety: both cooldowns are normally anchored to a real loss
+    fill's exit_time, which is stable across requests. When no fill is
+    available to anchor on (test overrides; future code paths) we cache
+    the first cooldown_until we compute so subsequent polls don't slide
+    the timer forward. The cache is cleared once the streak breaks or
+    the window elapses.
     """
     streak = snapshot.consecutive_losses()
     tier1 = settings.CONSECUTIVE_LOSS_TIER1_COUNT
     tier2 = settings.CONSECUTIVE_LOSS_TIER2_COUNT
 
     if streak < tier1:
-        # No streak -- drop any stale fallback anchor so the next streak
+        # No streak -- drop any stale fallback anchors so the next streak
         # starts fresh instead of inheriting yesterday's expired window.
         lockout_cache.clear(_TIER1_CACHE_KEY)
+        lockout_cache.clear(_TIER2_CACHE_KEY)
         return True, "", None
 
     last_loss = snapshot.last_loss()
     exit_time = _parse_helsinki(last_loss.get("exit_time")) if last_loss else None
 
-    # Tier 2: rest of trading day. Use end of today in Helsinki. Already
-    # stable across refreshes (anchored to today's date, not to "now").
+    # Tier 2: N minutes from last loss exit_time.
     if streak >= tier2:
-        end_of_day = HELSINKI.localize(
-            datetime.combine(now.date(), time(23, 59, 59))
-        )
+        threshold = timedelta(minutes=settings.CONSECUTIVE_LOSS_TIER2_MINUTES)
+        if exit_time is not None:
+            cooldown_until = exit_time + threshold
+            lockout_cache.clear(_TIER2_CACHE_KEY)
+        else:
+            candidate = now + threshold
+            cooldown_until = lockout_cache.remember(_TIER2_CACHE_KEY, candidate)
+
+        if now >= cooldown_until:
+            lockout_cache.clear(_TIER2_CACHE_KEY)
+            return True, "", None
+
+        remaining = cooldown_until - now
+        remaining_str = str(remaining).split(".")[0]
         msg = (
             f"Consecutive-loss lockout (tier 2): {streak} losses in a row. "
-            f"No new entries for the rest of the day."
+            f"No new entries for {remaining_str} more."
         )
         logger.warning(msg)
-        return False, msg, end_of_day
+        return False, msg, cooldown_until
 
     # Tier 1: N minutes from last loss exit_time.
     threshold = timedelta(minutes=settings.CONSECUTIVE_LOSS_TIER1_MINUTES)
