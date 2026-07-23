@@ -7,7 +7,10 @@ GET    /api/watchlist                  list all rows (symbol + bound strategies)
 POST   /api/watchlist                  add (or replace strategies of) a ticker
 PUT    /api/watchlist/{symbol}         replace the strategy set for a ticker
 DELETE /api/watchlist/{symbol}         remove a ticker and its bindings
-GET    /api/strategies                 list available entry strategy names
+
+The available entry-strategy names are defined statically in
+frontend/constants/entries.ts (picker) and backend/schemas/api_schemas.py
+(request validation) — same pattern as exit strategies. No API for the list.
 
 The 22_WatchlistStreamer reads the resulting tables at startup; users restart
 the streamer to pick up changes (per the agreed refresh model).
@@ -21,7 +24,6 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from dependencies import get_db_conn
 from schemas.api_schemas import (
-    StrategiesResponse,
     WatchlistCreateRequest,
     WatchlistRow,
     WatchlistStrategiesRequest,
@@ -34,18 +36,6 @@ router = APIRouter(
     prefix="/api",
     tags=["Watchlist"],
 )
-
-
-# ---------------------------------------------------------------------------
-# Strategy list (for the UI's multi-select)
-# ---------------------------------------------------------------------------
-
-@router.get("/strategies", response_model=StrategiesResponse)
-async def list_strategies():
-    """Names of entry strategies the user can bind to a ticker."""
-    return StrategiesResponse(
-        strategies=watchlist_service.get_available_entry_strategies()
-    )
 
 
 # ---------------------------------------------------------------------------

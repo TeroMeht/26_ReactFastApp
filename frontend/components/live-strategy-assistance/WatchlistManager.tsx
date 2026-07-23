@@ -8,8 +8,11 @@
  * /api/watchlist. The 22_WatchlistStreamer reads those tables at startup; the
  * user restarts the streamer (Start button) to pick up changes.
  *
+ * The entry-strategy list is sourced from frontend/constants/entries.ts,
+ * mirroring the exits.ts pattern. To add a strategy, edit that file (and keep
+ * ENTRY_STRATEGY_NAMES in backend/schemas/api_schemas.py in sync).
+ *
  * Endpoints used:
- *   GET    /api/strategies          available entry strategy names
  *   GET    /api/watchlist           list current rows
  *   POST   /api/watchlist           add a new symbol with strategies (409 on dup)
  *   PUT    /api/watchlist/{symbol}  replace strategies for an existing symbol
@@ -18,6 +21,7 @@
 
 import * as React from 'react';
 import { API_PREFIX } from '@/lib/api_prefix';
+import { ENTRY_STRATEGY_OPTIONS } from '@/constants/entries';
 
 type WatchlistRow = {
   id: number;
@@ -26,22 +30,13 @@ type WatchlistRow = {
   created_at: string;
 };
 
-type StrategiesResponse = {
-  strategies: string[];
-};
-
-// Strategies we never want users to bind per-ticker, regardless of what the
-// backend might return. Belt-and-braces filter: the API in
-// schemas/api_schemas.py also omits these from GET /api/strategies, but this
-// guarantees they don't appear in the UI even if a stale backend is running.
-const HIDDEN_STRATEGIES = new Set<string>([
-  'upside_extension',
-  'downside_extension',
-]);
-
 const WatchlistManager: React.FC = () => {
+  const strategiesAvailable = React.useMemo(
+    () => ENTRY_STRATEGY_OPTIONS.map((o) => o.value),
+    [],
+  );
+
   const [rows, setRows] = React.useState<WatchlistRow[]>([]);
-  const [strategiesAvailable, setStrategiesAvailable] = React.useState<string[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -68,18 +63,9 @@ const WatchlistManager: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [stratRes, listRes] = await Promise.all([
-        fetch(`${API_PREFIX}/strategies`),
-        fetch(`${API_PREFIX}/watchlist`),
-      ]);
-      if (!stratRes.ok) throw new Error('Failed to fetch strategies');
+      const listRes = await fetch(`${API_PREFIX}/watchlist`);
       if (!listRes.ok) throw new Error('Failed to fetch watchlist');
-      const strat: StrategiesResponse = await stratRes.json();
       const list: WatchlistRow[] = await listRes.json();
-      // Filter out HIDDEN_STRATEGIES defensively (see comment on the constant).
-      setStrategiesAvailable(
-        (strat.strategies || []).filter((s) => !HIDDEN_STRATEGIES.has(s)),
-      );
       setRows(list || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -281,9 +267,6 @@ const WatchlistManager: React.FC = () => {
         )}
 
         <div className="grid grid-cols-1 gap-1">
-          {strategiesAvailable.length === 0 && (
-            <p className="text-xs text-gray-500">Loading strategies…</p>
-          )}
           {strategiesAvailable.map((s) => (
             <label key={s} className="flex items-center gap-2 text-xs cursor-pointer">
               <input

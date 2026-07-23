@@ -12,7 +12,6 @@ from typing import Dict, Iterable, List
 import asyncpg
 
 from db import watchlist as watchlist_db
-from schemas.api_schemas import ENTRY_STRATEGY_NAMES
 
 
 async def list_watchlist(db_conn: asyncpg.Connection) -> List[Dict]:
@@ -45,11 +44,3 @@ async def delete_watchlist_entry(
     db_conn: asyncpg.Connection, symbol: str
 ) -> Dict | None:
     return await watchlist_db.delete_watchlist_entry(db_conn, symbol)
-
-
-def get_available_entry_strategies() -> List[str]:
-    """
-    Names the UI's strategy picker should show. Kept in schemas.api_schemas so
-    request validation and this getter agree on the same source of truth.
-    """
-    return list(ENTRY_STRATEGY_NAMES)

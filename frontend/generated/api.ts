@@ -4,26 +4,6 @@
  */
 
 export interface paths {
-    "/api/strategies": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Strategies
-         * @description Names of entry strategies the user can bind to a ticker.
-         */
-        get: operations["list_strategies_api_strategies_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/watchlist": {
         parameters: {
             query?: never;
@@ -95,14 +75,80 @@ export interface paths {
         };
         /**
          * Streamer Status
-         * @description Health probe for the 22_WatchlistStreamer process. Returns:
-         *         {"status": "running" | "offline" | "error", ...}
-         *
-         *     The UI polls this to render the green/grey/red dot next to "Live Strategy
-         *     Assistance". A 200 with status=error means the backend itself can't
-         *     determine the state (psutil missing, script path bad, etc).
+         * @description One-shot status probe used as the seed for the SSE stream. The
+         *     response now reflects the heartbeat-driven state in
+         *     StreamerStatusStore rather than a psutil scan, so the frontend can
+         *     paint the dot immediately and switch over to /streamer-status/stream
+         *     for ongoing updates.
          */
         get: operations["streamer_status_api_streamer_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/streamer-status/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Streamer Status Start
+         * @description Streamer launch signal. Stores the streamer's PID so the backend
+         *     watchdog can detect a hard close (e.g. user closing the cmd window).
+         *     Flips the dot green. Idempotent.
+         */
+        post: operations["streamer_status_start_api_streamer_status_start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/streamer-status/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Streamer Status Stop
+         * @description Fast-path shutdown signal for clean exits. Not relied on — the
+         *     backend watchdog also detects death via psutil.pid_exists.
+         */
+        post: operations["streamer_status_stop_api_streamer_status_stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/streamer-status/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream Streamer Status
+         * @description SSE stream of status transitions. We send the current snapshot on
+         *     connect so a fresh client paints the dot immediately, then push one
+         *     event per state change. Each connection has its own subscription
+         *     queue so multiple clients (sidebar, watchlist panel, other tabs)
+         *     all see every transition.
+         */
+        get: operations["stream_streamer_status_api_streamer_status_stream_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -169,7 +215,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Latest */
+        /**
+         * Get Latest
+         * @description Current snapshot of the latest row for every symbol. The frontend
+         *     polls this endpoint on an interval (see RelatrTable.tsx) instead of
+         *     subscribing to a push stream.
+         */
         get: operations["get_latest_api_livestream_latest_get"];
         put?: never;
         post?: never;
@@ -298,6 +349,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/portfolio/lockout-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Lockout Status */
+        get: operations["get_lockout_status_api_portfolio_lockout_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/portfolio/entry-request": {
         parameters: {
             query?: never;
@@ -408,6 +476,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/portfolio/trade-log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Trade Log
+         * @description Per-symbol realized PnL for today via IB's reqPnLSingle subscriptions.
+         *     Fill count and last-fill time come from today's executions. Works for
+         *     positions opened on any prior day, since IB owns the cost basis.
+         *     In-memory only — no DB writes.
+         */
+        get: operations["get_trade_log_api_portfolio_trade_log_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/portfolio/order-log": {
         parameters: {
             query?: never;
@@ -418,7 +509,8 @@ export interface paths {
         /**
          * Get Order Log
          * @description Chronological audit log of every status transition and error attached
-         *     to any order since the backend started. Newest events first.
+         *     to any order, read from the persistent `order_log` table. Survives
+         *     application restarts. Newest events first.
          */
         get: operations["get_order_log_api_portfolio_order_log_get"];
         put?: never;
@@ -487,7 +579,7 @@ export interface paths {
          * Get Entry Attempts
          * @description Per-symbol entry-attempt stats for today plus the daily total. Only
          *     symbols with at least one entry attempt today are returned (ordered
-         *     alphabetically). Used by the Risk Levels UI to surface how close each
+         *     alphabetically). Used by the Trade Manager UI to surface how close each
          *     symbol is to MAX_ATTEMPTS_PER_SYMBOL_PER_DAY and how close the day is
          *     to MAX_TOTAL_ENTRIES_PER_DAY.
          */
@@ -605,6 +697,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/exits/custom/{symbol}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Custom Exits */
+        get: operations["get_custom_exits_api_exits_custom__symbol__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/exits/custom": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Custom Exit */
+        post: operations["create_custom_exit_api_exits_custom_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/exits/custom/{perm_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Cancel Custom Exit Endpoint
+         * @description Cancel a custom exit by its IB permId. The frontend reads permId off
+         *     the rows returned by GET /api/exits/custom/{symbol}.
+         */
+        delete: operations["cancel_custom_exit_endpoint_api_exits_custom__perm_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/exits": {
         parameters: {
             query?: never;
@@ -634,6 +781,29 @@ export interface paths {
         get: operations["read_exits_for_symbol_api_exits__symbol__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/exits/reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reconcile Exits
+         * @description Drop any armed exit_requests whose symbol is no longer held in the IB
+         *     portfolio. Meant to be called when the DB drifts out of sync — e.g.
+         *     a position was closed outside the normal exit flow and left an armed
+         *     row behind.
+         */
+        post: operations["reconcile_exits_api_exits_reconcile_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -683,6 +853,69 @@ export interface paths {
         };
         /** Get Symbol News */
         get: operations["get_symbol_news_api_scanner_news__symbol__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/scanner/daily-summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Daily Summary
+         * @description Return the most recent snapshot. 404 if no summary has ever been run.
+         */
+        get: operations["read_daily_summary_api_scanner_daily_summary_get"];
+        put?: never;
+        /**
+         * Run Daily Summary
+         * @description Run both gap scans, distill per-ticker news via Claude into a few-word
+         *     reason + 1-10 catalyst rating, and persist. Rerunning on the same date
+         *     overwrites that day's rows.
+         */
+        post: operations["run_daily_summary_api_scanner_daily_summary_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/scanner/daily-summary/by-date/{run_date}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Daily Summary By Date */
+        get: operations["read_daily_summary_by_date_api_scanner_daily_summary_by_date__run_date__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/scanner/daily-summary/symbol/{symbol}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Symbol History
+         * @description Every catalyst entry ever recorded for `symbol`, newest first.
+         */
+        get: operations["read_symbol_history_api_scanner_daily_summary_symbol__symbol__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -759,6 +992,10 @@ export interface components {
             place_result?: unknown | null;
             /** Modified Stp Qty */
             modified_stp_qty?: number | null;
+            /** Reason */
+            reason?: string | null;
+            /** Cooldown Until */
+            cooldown_until?: string | null;
         };
         /** AlarmResponse */
         AlarmResponse: {
@@ -835,6 +1072,141 @@ export interface components {
             /** Relatr */
             Relatr: string;
         };
+        /** CreateCustomExitRequest */
+        CreateCustomExitRequest: {
+            /** Symbol */
+            symbol: string;
+            /**
+             * Target Price
+             * @description Limit price at which IB will execute the exit.
+             */
+            target_price: number | string;
+            /**
+             * Trim Percentage
+             * @description Fraction of the position to exit. Allowed: 0.25, 0.5, 0.75, 1.
+             * @default 1
+             */
+            trim_percentage: number | string;
+        };
+        /** CustomExitResponse */
+        CustomExitResponse: {
+            /** Symbol */
+            symbol: string;
+            /**
+             * Contract Type
+             * @default
+             */
+            contract_type: string;
+            /** Order Id */
+            order_id: number;
+            /** Perm Id */
+            perm_id?: number | null;
+            /** Target Price */
+            target_price: string;
+            /** Trim Percentage */
+            trim_percentage?: string | null;
+            /** Action */
+            action: string;
+            /** Quantity */
+            quantity: number;
+            /** Status */
+            status: string;
+        };
+        /** DailySummaryResponse */
+        DailySummaryResponse: {
+            /**
+             * Run Date
+             * Format: date
+             */
+            run_date: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Rows
+             * @default []
+             */
+            rows: components["schemas"]["DailySummaryRow"][];
+        };
+        /**
+         * DailySummaryRow
+         * @description One ticker's row in the daily premarket snapshot.
+         *
+         *     The catalyst evaluation follows the Catalyst Value Equation rubric in
+         *     docs/CATALYST_EVALUATION.md: Magnitude × Speed → Grade → daily-risk cap.
+         *     The four CVE text fields use a constrained vocabulary, but we don't
+         *     enforce it via Enum here — the LLM occasionally returns a near-miss
+         *     ("ABSOLUTE" / "absolute"), and we'd rather store it than fail the row.
+         *     The frontend normalises on display.
+         *
+         *     Defaults match the rubric's "every trade starts at D" bias: if the LLM
+         *     couldn't produce a clean reading, the row collapses to D / 0% sizing so
+         *     a partial response is never silently treated as a tradeable signal.
+         */
+        DailySummaryRow: {
+            /**
+             * Run Date
+             * Format: date
+             */
+            run_date: string;
+            /** Side */
+            side: string;
+            /** Rank */
+            rank: number;
+            /** Symbol */
+            symbol: string;
+            /** Change */
+            change?: number | null;
+            /** Rvol */
+            rvol?: number | null;
+            /**
+             * Catalyst Type
+             * @default none
+             */
+            catalyst_type: string;
+            /**
+             * Magnitude
+             * @default No
+             */
+            magnitude: string;
+            /**
+             * Speed
+             * @default No
+             */
+            speed: string;
+            /**
+             * Grade
+             * @default D
+             */
+            grade: string;
+            /**
+             * Sizing Pct
+             * @default 0
+             */
+            sizing_pct: number;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Notes
+             * @default
+             */
+            notes: string;
+            /**
+             * Headline
+             * @default
+             */
+            headline: string;
+            /**
+             * News Url
+             * @default
+             */
+            news_url: string;
+        };
         /** EntryAttemptsResponse */
         EntryAttemptsResponse: {
             /** Rows */
@@ -857,13 +1229,6 @@ export interface components {
             /** Remaining */
             remaining: number;
         };
-        /** EntryExitLeg */
-        EntryExitLeg: {
-            /** Strategy */
-            strategy: string;
-            /** Trim Percentage */
-            trim_percentage: number | string;
-        };
         /** EntryRequest */
         EntryRequest: {
             /** Symbol */
@@ -876,12 +1241,6 @@ export interface components {
             stop_price: number;
             /** Position Size */
             position_size: number;
-            /**
-             * Exit Plan
-             * @description Composite exit plan. List of (strategy, trim_percentage)
-             *   legs. Each strategy must be unique. Trim percentages must sum to 1.0.
-             */
-            exit_plan: components["schemas"]["EntryExitLeg"][];
         };
         /** EntryRequestResponse */
         EntryRequestResponse: {
@@ -999,6 +1358,25 @@ export interface components {
              * @default 0
              */
             submitted_at: number;
+        };
+        /** LockoutStatusResponse */
+        LockoutStatusResponse: {
+            /** Locked */
+            locked: boolean;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /** Cooldown Until */
+            cooldown_until?: string | null;
+            /**
+             * Streak
+             * @default 0
+             */
+            streak: number;
         };
         /** NewsItem */
         NewsItem: {
@@ -1138,13 +1516,67 @@ export interface components {
             /** Change */
             change: number;
         };
-        /**
-         * StrategiesResponse
-         * @description Body returned by GET /api/strategies — drives the UI's multi-select.
-         */
-        StrategiesResponse: {
-            /** Strategies */
-            strategies: string[];
+        /** StreamerStartPayload */
+        StreamerStartPayload: {
+            /** Pid */
+            pid?: number | null;
+        };
+        /** TradeLogResponse */
+        TradeLogResponse: {
+            /** Rows */
+            rows: components["schemas"]["TradeLogRow"][];
+            /**
+             * Realized Pnl
+             * @default 0
+             */
+            realized_pnl: number;
+            /**
+             * Total Commission
+             * @default 0
+             */
+            total_commission: number;
+            /**
+             * Net Pnl
+             * @default 0
+             */
+            net_pnl: number;
+            /**
+             * Symbol Count
+             * @default 0
+             */
+            symbol_count: number;
+        };
+        /** TradeLogRow */
+        TradeLogRow: {
+            /** Symbol */
+            symbol: string;
+            /**
+             * Realized Pnl
+             * @default 0
+             */
+            realized_pnl: number;
+            /**
+             * Commission
+             * @default 0
+             */
+            commission: number;
+            /**
+             * Net Pnl
+             * @default 0
+             */
+            net_pnl: number;
+            /**
+             * Fills
+             * @default 0
+             */
+            fills: number;
+            /** Last Fill Time */
+            last_fill_time?: string | null;
+            /**
+             * Is Loss
+             * @default false
+             */
+            is_loss: boolean;
         };
         /** UpdateExitRequest */
         UpdateExitRequest: {
@@ -1173,10 +1605,6 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
-            /** Input */
-            input?: unknown;
-            /** Context */
-            ctx?: Record<string, never>;
         };
         /**
          * WatchlistCreateRequest
@@ -1228,26 +1656,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    list_strategies_api_strategies_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["StrategiesResponse"];
-                };
-            };
-        };
-    };
     read_watchlist_api_watchlist_get: {
         parameters: {
             query?: never;
@@ -1388,6 +1796,79 @@ export interface operations {
         };
     };
     streamer_status_api_streamer_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    streamer_status_start_api_streamer_status_start_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StreamerStartPayload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    streamer_status_stop_api_streamer_status_stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    stream_streamer_status_api_streamer_status_stream_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -1662,6 +2143,26 @@ export interface operations {
             };
         };
     };
+    get_lockout_status_api_portfolio_lockout_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LockoutStatusResponse"];
+                };
+            };
+        };
+    };
     entry_request_api_portfolio_entry_request_post: {
         parameters: {
             query?: never;
@@ -1843,7 +2344,7 @@ export interface operations {
             };
         };
     };
-    get_order_log_api_portfolio_order_log_get: {
+    get_trade_log_api_portfolio_trade_log_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -1858,7 +2359,39 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
+                    "application/json": components["schemas"]["TradeLogResponse"];
+                };
+            };
+        };
+    };
+    get_order_log_api_portfolio_order_log_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                symbol?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
                     "application/json": components["schemas"]["OrderLogEntry"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -2067,6 +2600,103 @@ export interface operations {
             };
         };
     };
+    get_custom_exits_api_exits_custom__symbol__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                symbol: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomExitResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_custom_exit_api_exits_custom_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCustomExitRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CustomExitResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_custom_exit_endpoint_api_exits_custom__perm_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                perm_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     read_exits_api_exits_get: {
         parameters: {
             query?: never;
@@ -2149,6 +2779,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reconcile_exits_api_exits_reconcile_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
@@ -2236,6 +2888,110 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["NewsItem"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_daily_summary_api_scanner_daily_summary_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DailySummaryResponse"];
+                };
+            };
+        };
+    };
+    run_daily_summary_api_scanner_daily_summary_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DailySummaryResponse"];
+                };
+            };
+        };
+    };
+    read_daily_summary_by_date_api_scanner_daily_summary_by_date__run_date__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_date: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DailySummaryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_symbol_history_api_scanner_daily_summary_symbol__symbol__get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                symbol: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DailySummaryRow"][];
                 };
             };
             /** @description Validation Error */

@@ -13,16 +13,7 @@ from core.config import settings
 # in two DB tables (watchlist + watchlist_strategies); the streamer reads it at
 # startup and only fires the strategies a user has bound to a given ticker.
 
-# Hardcoded list of entry strategy names exposed by GET /api/strategies.
-# Must stay in sync with the entry strategies in
-# 22_WatchlistStreamer/src/strategies.py (_ENTRY_STRATEGY_NAMES).
-# Exit strategies are intentionally NOT exposed here — they always run.
-ENTRY_STRATEGY_NAMES: List[str] = [
-    "reversal_long",
-    "reversal_short",
-    "vwap_continuation_long",
-    "vwap_continuation_short",
-]
+
 
 
 class WatchlistCreateRequest(BaseModel):
@@ -77,11 +68,6 @@ class WatchlistRow(BaseModel):
     symbol: str
     strategies: List[str]
     created_at: datetime
-
-
-class StrategiesResponse(BaseModel):
-    """Body returned by GET /api/strategies -- drives the UI's multi-select."""
-    strategies: List[str]
 
 
 # Live order tracker -- single row in the SSE feed / snapshot
