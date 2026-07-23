@@ -24,32 +24,6 @@ class WatchlistCreateRequest(BaseModel):
         description="Entry strategy names to bind to this ticker.",
     )
 
-    @field_validator("symbol")
-    @classmethod
-    def _uppercase_symbol(cls, v: str) -> str:
-        v = v.strip().upper()
-        if not v:
-            raise ValueError("symbol cannot be empty")
-        return v
-
-    @field_validator("strategies")
-    @classmethod
-    def _validate_strategies(cls, v: List[str]) -> List[str]:
-        allowed = set(ENTRY_STRATEGY_NAMES)
-        cleaned: List[str] = []
-        seen: set[str] = set()
-        for s in v or []:
-            s = (s or "").strip()
-            if not s:
-                continue
-            if s not in allowed:
-                raise ValueError(
-                    f"Unknown strategy '{s}'. Allowed: {sorted(allowed)}"
-                )
-            if s not in seen:
-                seen.add(s)
-                cleaned.append(s)
-        return cleaned
 
 
 class WatchlistStrategiesRequest(BaseModel):
