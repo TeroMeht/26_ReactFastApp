@@ -30,8 +30,7 @@ class Settings(BaseSettings):
     MAX_ADD_FREQUENCY_MINUTES: int
     MAX_ENTRY_FREQUENCY_MINUTES: int
     MAX_ATTEMPTS_PER_SYMBOL_PER_DAY: int
-    # Hard cap on total entries across all tickers in one day.
-    MAX_TOTAL_ENTRIES_PER_DAY: int
+    MAX_TOTAL_ENTRIES_PER_DAY: int # Hard cap on total entries across all tickers in one day.
 
     # No entries allowed before this time of day (Helsinki).
     FIRST_ENTRY_HOUR: int
@@ -42,16 +41,10 @@ class Settings(BaseSettings):
     MAX_DAILY_LOSS: int
 
     # --- Consecutive-loss escalating lockout ---
-    # Tier 1: after this many losses in a row, block new entries for
-    # CONSECUTIVE_LOSS_TIER1_MINUTES from the last loss's exit_time.
-    # Tier 2: after this many losses in a row, block new entries for
-    # CONSECUTIVE_LOSS_TIER2_MINUTES from the last loss's exit_time.
-    # Both tiers reuse the existing loss_cooldown response shape so the
-    # frontend cooldown banner picks them up without changes.
-    CONSECUTIVE_LOSS_TIER1_COUNT: int = 2
-    CONSECUTIVE_LOSS_TIER1_MINUTES: int = 60
-    CONSECUTIVE_LOSS_TIER2_COUNT: int = 3
-    CONSECUTIVE_LOSS_TIER2_MINUTES: int = 120
+    CONSECUTIVE_LOSS_TIER1_COUNT: int
+    CONSECUTIVE_LOSS_TIER1_MINUTES: int
+    CONSECUTIVE_LOSS_TIER2_COUNT: int
+    CONSECUTIVE_LOSS_TIER2_MINUTES: int
 
 
     # --- Alpaca API Config ---
@@ -60,11 +53,7 @@ class Settings(BaseSettings):
     ALPACA_BASE_URL: str
 
     # --- Anthropic (news summarization for daily premarket summary) ---
-    # Optional so the rest of the backend boots even before the user wires the
-    # key. The daily-summary endpoint surfaces a clear 503 if it's missing.
     ANTHROPIC_API_KEY: str
-    # Lightweight, cheap, fast model is fine for "summarize this news in a few
-    # words". Override via env if you want a bigger model.
     ANTHROPIC_MODEL: str
 
 

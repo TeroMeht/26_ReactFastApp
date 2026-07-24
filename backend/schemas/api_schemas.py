@@ -30,11 +30,6 @@ class WatchlistStrategiesRequest(BaseModel):
     """Body for PUT /api/watchlist/{symbol}/strategies (replaces strategy set)."""
     strategies: List[str] = Field(default_factory=list)
 
-    @field_validator("strategies")
-    @classmethod
-    def _validate_strategies(cls, v: List[str]) -> List[str]:
-        return WatchlistCreateRequest._validate_strategies(v)
-
 
 class WatchlistRow(BaseModel):
     """One row returned by GET /api/watchlist."""
