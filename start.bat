@@ -5,12 +5,21 @@ set ROOT=%~dp0
 echo Starting FastAPI Backend...
 start "Backend" cmd /k "cd /d %ROOT%backend && python -m uvicorn main:app"
 
-timeout /t 3 /nobreak >nul
-
 echo Starting Next.js Frontend...
-start "Frontend" cmd /k "cd /d %ROOT%frontend && npm run build && npm start -- -p 3000"
+REM frontend_start.bat skips `npm run build` when nothing under
+REM app/components/constants/lib/generated/public/ (or any watched root
+REM config file) has changed since the last successful build.
+start "Frontend" cmd /k "%ROOT%scripts\frontend_start.bat"
 
-timeout /t 5 /nobreak >nul
+echo Waiting for backend and frontend to respond...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\wait_for_services.ps1"
+if errorlevel 1 (
+  echo.
+  echo Services did not start cleanly. NOT opening the browser.
+  echo Check the Backend and Frontend windows for errors, then start the browser manually if desired.
+  pause
+  exit /b 1
+)
 
 echo Opening Browser...
 start "" http://localhost:3000
