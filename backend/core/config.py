@@ -1,6 +1,7 @@
 from typing import List
 from pathlib import Path
 from pydantic import field_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -17,9 +18,9 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: str
 
 
-    # --- Folder Paths ---
-    SCRIPT_DIR: Path
-    TARGET_SCRIPT: str
+    # --- Script Path ---
+    TARGET_SCRIPT_PATH: Path
+
 
 
     # --- Alpaca API Config ---
@@ -30,6 +31,17 @@ class Settings(BaseSettings):
     # --- Anthropic (news summarization for daily premarket summary) ---
     ANTHROPIC_API_KEY: str
     ANTHROPIC_MODEL: str
+
+    @field_validator("TARGET_SCRIPT_PATH")
+    @classmethod
+    def validate_target_script_path(cls, v: Path) -> Path:
+        if not v.exists():
+            raise ValueError(f"TARGET_SCRIPT_PATH does not exist: {v}")
+
+        if not v.is_file():
+            raise ValueError(f"TARGET_SCRIPT_PATH is not a file: {v}")
+
+        return v.resolve()
 
 
     @field_validator("ALLOWED_ORIGINS")
