@@ -24,7 +24,7 @@ from services.portfolio.trades_snapshot import (
     TradesSnapshot,
     build_today_snapshot,
 )
-from core.config import settings
+from core.risk_manager_config import risk_settings
 from schemas.api_schemas import AddRequest, AddRequestResponse
 
 HELSINKI = pytz.timezone("Europe/Helsinki")
@@ -109,7 +109,7 @@ def check_add_cooldown(
     opened_at = snapshot.position_opened_at(symbol)
     if opened_at is None:
         return True, "", None
-    threshold = timedelta(minutes=settings.MAX_ADD_FREQUENCY_MINUTES)
+    threshold = timedelta(minutes=risk_settings.MAX_ADD_FREQUENCY_MINUTES)
     cooldown_until = opened_at + threshold
     elapsed = now - opened_at
     if elapsed <= threshold:

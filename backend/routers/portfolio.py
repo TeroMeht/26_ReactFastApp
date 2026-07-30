@@ -22,7 +22,7 @@ from db.order_log import fetch_order_log
 
 
 from dependencies import get_ib, get_db_conn, get_order_tracker
-from core.config import settings
+from core.risk_manager_config import risk_settings
 
 from schemas.api_schemas import (
     AddRequest,
@@ -379,8 +379,9 @@ async def get_entry_attempts(ib=Depends(get_ib)):
     try:
         client = IbClient(ib)
         counts = await count_entry_attempts_today_all(client)
-        max_attempts = settings.MAX_ATTEMPTS_PER_SYMBOL_PER_DAY
-        max_total = settings.MAX_TOTAL_ENTRIES_PER_DAY
+        risk = risk_settings
+        max_attempts = risk.MAX_ATTEMPTS_PER_SYMBOL_PER_DAY
+        max_total = risk.MAX_TOTAL_ENTRIES_PER_DAY
 
         rows = [
             EntryAttemptsRow(

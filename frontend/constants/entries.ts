@@ -17,4 +17,6 @@ export const ENTRY_STRATEGY_OPTIONS: EntryStrategyOption[] = [
   { value: "vwap_continuation_long", label: "vwap_continuation_long" },
   { value: "vwap_continuation_short", label: "vwap_continuation_short" },
   { value: "orb_breakout_long", label: "orb_breakout_long" },
+  { value: "reversal_long_breakout", label: "reversal_long_breakout" }
+
 ];

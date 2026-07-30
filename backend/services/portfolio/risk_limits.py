@@ -3,7 +3,7 @@ import subprocess
 
 from services.portfolio.ib_client import IbClient
 from services.portfolio.trades_snapshot import TradesSnapshot, build_today_snapshot
-from core.config import settings
+from core.risk_manager_config import risk_settings
 
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ def check_daily_loss(snapshot: TradesSnapshot) -> tuple[bool, str]:
     switch is invoked separately via enforce_daily_loss_circuit_breaker.
     """
     net_pnl = snapshot.realized_pnl.get("net_pnl", 0.0)
-    limit = -settings.MAX_DAILY_LOSS
+    limit = -risk_settings.MAX_DAILY_LOSS
 
     if net_pnl < limit:
         message = (

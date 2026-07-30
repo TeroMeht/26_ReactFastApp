@@ -18,33 +18,8 @@ class Settings(BaseSettings):
 
 
     # --- Folder Paths ---
-    # INPUT_TICKERS_PATH removed: the watchlist now lives in the `watchlist` /
-    # `watchlist_strategies` tables (livestreaming DB), written by the new
-    # /api/watchlist endpoints. The legacy ticker .txt flow is gone.
     SCRIPT_DIR: Path
     TARGET_SCRIPT: str
-
-    # --- Strategy parameters ---
-    RISK: int
-
-    MAX_ADD_FREQUENCY_MINUTES: int
-    MAX_ENTRY_FREQUENCY_MINUTES: int
-    MAX_ATTEMPTS_PER_SYMBOL_PER_DAY: int
-    MAX_TOTAL_ENTRIES_PER_DAY: int # Hard cap on total entries across all tickers in one day.
-
-    # No entries allowed before this time of day (Helsinki).
-    FIRST_ENTRY_HOUR: int
-    FIRST_ENTRY_MINUTE: int
-
-
-    # Daily loss limit
-    MAX_DAILY_LOSS: int
-
-    # --- Consecutive-loss escalating lockout ---
-    CONSECUTIVE_LOSS_TIER1_COUNT: int
-    CONSECUTIVE_LOSS_TIER1_MINUTES: int
-    CONSECUTIVE_LOSS_TIER2_COUNT: int
-    CONSECUTIVE_LOSS_TIER2_MINUTES: int
 
 
     # --- Alpaca API Config ---

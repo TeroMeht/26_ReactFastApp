@@ -7,6 +7,7 @@ from services.portfolio.ib_client import IbClient
 from schemas.api_schemas import PendingOrder
 
 from core.config import settings
+from core.risk_manager_config import risk_settings
 import asyncio
 
 
@@ -195,7 +196,7 @@ async def process_open_orders(db_conn,ib) -> List[PendingOrder]:
                 position_size = calculate_position_size(
                     ask,
                     order["stop_price"],
-                    settings.RISK
+                    risk_settings.RISK
                 )
                 
                 size = position_size * ask

@@ -9,6 +9,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from core.config import settings
+# Import triggers RiskManagerSettings() at module load, which validates the
+# risk env file, snapshots its SHA-256 for tamper detection, and freezes
+# the values for the life of the process. Importing here (rather than
+# lazily) means an invalid or missing risk env aborts app startup.
+from core.risk_manager_config import risk_settings
 from ib_async import IB
 import uvicorn
 import asyncpg
@@ -42,6 +47,14 @@ async def lifespan(app: FastAPI):
     db_pool = None
 
     try:
+        logger.info(
+            "Risk manager frozen | MAX_DAILY_LOSS=%s RISK=%s "
+            "MAX_TOTAL_ENTRIES_PER_DAY=%s",
+            risk_settings.MAX_DAILY_LOSS,
+            risk_settings.RISK,
+            risk_settings.MAX_TOTAL_ENTRIES_PER_DAY,
+        )
+
         # --- IBKR startup ---
         logger.info(
             "Connecting to IBKR | host=%s port=%s clientId=%s",

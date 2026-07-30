@@ -24,7 +24,7 @@ from services.portfolio.trades_snapshot import (
 )
 from services.portfolio import lockout_cache
 
-from core.config import settings
+from core.risk_manager_config import risk_settings
 from schemas.api_schemas import EntryRequest, EntryRequestResponse
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,8 @@ def _parse_helsinki(value) -> datetime | None:
 
 
 def check_block_window(now: datetime) -> tuple[bool, str]:
-    first_entry = time(settings.FIRST_ENTRY_HOUR, settings.FIRST_ENTRY_MINUTE)
+    risk = risk_settings
+    first_entry = time(risk.FIRST_ENTRY_HOUR, risk.FIRST_ENTRY_MINUTE)
     if now.time() < first_entry:
         msg = (
             f"Entry blocked before {first_entry.strftime('%H:%M')} "
@@ -71,7 +72,7 @@ def check_block_window(now: datetime) -> tuple[bool, str]:
 
 def check_attempts(snapshot: TradesSnapshot, symbol: str) -> tuple[bool, str]:
     attempts = snapshot.attempts_for(symbol)
-    max_attempts = settings.MAX_ATTEMPTS_PER_SYMBOL_PER_DAY
+    max_attempts = risk_settings.MAX_ATTEMPTS_PER_SYMBOL_PER_DAY
     if attempts >= max_attempts:
         msg = (
             f"Max entry attempts reached for {symbol} today "
@@ -84,7 +85,7 @@ def check_attempts(snapshot: TradesSnapshot, symbol: str) -> tuple[bool, str]:
 
 def check_total_attempts(snapshot: TradesSnapshot) -> tuple[bool, str]:
     total = snapshot.total_attempts()
-    max_total = settings.MAX_TOTAL_ENTRIES_PER_DAY
+    max_total = risk_settings.MAX_TOTAL_ENTRIES_PER_DAY
     if total >= max_total:
         msg = (
             f"Max total entries reached for today ({total}/{max_total}). "
@@ -102,7 +103,7 @@ def check_loss_cooldown(snapshot: TradesSnapshot, now: datetime):
     exit_time = _parse_helsinki(last_loss.get("exit_time"))
     if exit_time is None:
         return True, "", None
-    threshold = timedelta(minutes=settings.MAX_ENTRY_FREQUENCY_MINUTES)
+    threshold = timedelta(minutes=risk_settings.MAX_ENTRY_FREQUENCY_MINUTES)
     cooldown_until = exit_time + threshold
     elapsed = now - exit_time
     if elapsed <= threshold:
@@ -139,8 +140,9 @@ def check_consecutive_losses(snapshot: TradesSnapshot, now: datetime):
     the window elapses.
     """
     streak = snapshot.consecutive_losses()
-    tier1 = settings.CONSECUTIVE_LOSS_TIER1_COUNT
-    tier2 = settings.CONSECUTIVE_LOSS_TIER2_COUNT
+    risk = risk_settings
+    tier1 = risk.CONSECUTIVE_LOSS_TIER1_COUNT
+    tier2 = risk.CONSECUTIVE_LOSS_TIER2_COUNT
 
     if streak < tier1:
         # No streak -- drop any stale fallback anchors so the next streak
@@ -154,7 +156,7 @@ def check_consecutive_losses(snapshot: TradesSnapshot, now: datetime):
 
     # Tier 2: N minutes from last loss exit_time.
     if streak >= tier2:
-        threshold = timedelta(minutes=settings.CONSECUTIVE_LOSS_TIER2_MINUTES)
+        threshold = timedelta(minutes=risk.CONSECUTIVE_LOSS_TIER2_MINUTES)
         if exit_time is not None:
             cooldown_until = exit_time + threshold
             lockout_cache.clear(_TIER2_CACHE_KEY)
@@ -176,7 +178,7 @@ def check_consecutive_losses(snapshot: TradesSnapshot, now: datetime):
         return False, msg, cooldown_until
 
     # Tier 1: N minutes from last loss exit_time.
-    threshold = timedelta(minutes=settings.CONSECUTIVE_LOSS_TIER1_MINUTES)
+    threshold = timedelta(minutes=risk.CONSECUTIVE_LOSS_TIER1_MINUTES)
     if exit_time is not None:
         # Stable anchor -- exit_time is the same across every refresh.
         cooldown_until = exit_time + threshold
@@ -245,7 +247,7 @@ def check_frequency(snapshot: TradesSnapshot, symbol: str, now: datetime) -> tup
     if trade_time is None:
         return True, ""
     elapsed = now - trade_time
-    threshold = timedelta(minutes=settings.MAX_ENTRY_FREQUENCY_MINUTES)
+    threshold = timedelta(minutes=risk_settings.MAX_ENTRY_FREQUENCY_MINUTES)
     if elapsed > threshold:
         logger.info(f"Last execution was {elapsed}. Entry allowed.")
         return True, ""
@@ -307,7 +309,7 @@ async def process_entry_request(
         position_size = calculate_position_size(
             entry_price=entry_price,
             stop_price=stop_price,
-            risk=settings.RISK,
+            risk=risk_settings.RISK,
         )
         logger.info(
             f"Calculated position size: {position_size} for {symbol} at entry {entry_price}"
