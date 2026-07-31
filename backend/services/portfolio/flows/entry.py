@@ -25,11 +25,12 @@ from services.portfolio.trades_snapshot import (
 from services.portfolio import lockout_cache
 
 from core.risk_manager_config import risk_settings
+from core.config import settings
 from schemas.api_schemas import EntryRequest, EntryRequestResponse
 
 logger = logging.getLogger(__name__)
 
-HELSINKI = pytz.timezone("Europe/Helsinki")
+
 
 
 async def count_entry_attempts_today_all(client: IbClient) -> dict[str, int]:
@@ -42,19 +43,6 @@ async def count_entry_attempts_today_all(client: IbClient) -> dict[str, int]:
         return {}
 
 
-def _parse_helsinki(value) -> datetime | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        dt = value
-    else:
-        try:
-            dt = datetime.fromisoformat(str(value))
-        except ValueError:
-            return None
-    if dt.tzinfo is None:
-        dt = HELSINKI.localize(dt)
-    return dt
 
 
 def check_block_window(now: datetime) -> tuple[bool, str]:
@@ -100,7 +88,7 @@ def check_loss_cooldown(snapshot: TradesSnapshot, now: datetime):
     last_loss = snapshot.last_loss()
     if not last_loss:
         return True, "", None
-    exit_time = _parse_helsinki(last_loss.get("exit_time"))
+    exit_time = last_loss.get("exit_time")
     if exit_time is None:
         return True, "", None
     threshold = timedelta(minutes=risk_settings.MAX_ENTRY_FREQUENCY_MINUTES)
@@ -152,8 +140,7 @@ def check_consecutive_losses(snapshot: TradesSnapshot, now: datetime):
         return True, "", None
 
     last_loss = snapshot.last_loss()
-    exit_time = _parse_helsinki(last_loss.get("exit_time")) if last_loss else None
-
+    exit_time = last_loss.get("exit_time")
     # Tier 2: N minutes from last loss exit_time.
     if streak >= tier2:
         threshold = timedelta(minutes=risk.CONSECUTIVE_LOSS_TIER2_MINUTES)
@@ -207,7 +194,7 @@ def check_consecutive_losses(snapshot: TradesSnapshot, now: datetime):
     return False, msg, cooldown_until
 
 
-def compute_lockout_state(snapshot: TradesSnapshot, now: datetime) -> dict:
+def compute_lockout_state(snapshot: TradesSnapshot, current_time: datetime) -> dict:
     """
     Pure read-only status of the loss-cooldown lockouts. Used by the
     /portfolio/lockout-status endpoint so the UI can show a countdown
@@ -218,8 +205,8 @@ def compute_lockout_state(snapshot: TradesSnapshot, now: datetime) -> dict:
     streak = snapshot.consecutive_losses()
 
     for cd_ok, cd_msg, cd_until in (
-        check_consecutive_losses(snapshot, now),
-        check_loss_cooldown(snapshot, now),
+        check_consecutive_losses(snapshot, current_time),
+        check_loss_cooldown(snapshot, current_time),
     ):
         if not cd_ok:
             return {
@@ -238,15 +225,15 @@ def compute_lockout_state(snapshot: TradesSnapshot, now: datetime) -> dict:
     }
 
 
-def check_frequency(snapshot: TradesSnapshot, symbol: str, now: datetime) -> tuple[bool, str]:
+def check_frequency(snapshot: TradesSnapshot, symbol: str, current_time: datetime) -> tuple[bool, str]:
     latest = snapshot.latest_fill_for_symbol(symbol)
     if not latest:
         logger.info("No executions found. Entry allowed.")
         return True, ""
-    trade_time = _parse_helsinki(latest.get("time"))
+    trade_time = (latest.get("time"))
     if trade_time is None:
         return True, ""
-    elapsed = now - trade_time
+    elapsed = current_time - trade_time
     threshold = timedelta(minutes=risk_settings.MAX_ENTRY_FREQUENCY_MINUTES)
     if elapsed > threshold:
         logger.info(f"Last execution was {elapsed}. Entry allowed.")
@@ -257,10 +244,7 @@ def check_frequency(snapshot: TradesSnapshot, symbol: str, now: datetime) -> tup
     return False, msg
 
 
-async def process_entry_request(
-    client: IbClient,
-    payload: EntryRequest,
-) -> EntryRequestResponse:
+async def process_entry_request(client: IbClient, payload: EntryRequest) -> EntryRequestResponse:
     """
     Validate guards and place a bracket order. No exit arming happens
     here -- exits are managed separately on the trade-manager page.
@@ -268,9 +252,15 @@ async def process_entry_request(
     symbol = payload.symbol
     stop_price = payload.stop_price
 
+
+    TIMEZONE = pytz.timezone(settings.TIMEZONE)
+    current_time = datetime.now(TIMEZONE)
+
+    logger.info(f"=== ENTRY REQUEST START === Symbol: {symbol}, Requested Stop: {stop_price}")
+
     try:
         snapshot = await build_today_snapshot(client)
-        now = datetime.now(HELSINKI)
+
 
         ok, message = check_daily_loss(snapshot)
         if not ok:
@@ -278,10 +268,10 @@ async def process_entry_request(
             return EntryRequestResponse(allowed=False, message=message, symbol=symbol)
 
         for ok, message in (
-            check_block_window(now),
+            check_block_window(current_time),
             check_total_attempts(snapshot),
             check_attempts(snapshot, symbol),
-            check_frequency(snapshot, symbol, now),
+            check_frequency(snapshot, symbol, current_time),
         ):
             if not ok:
                 return EntryRequestResponse(allowed=False, message=message, symbol=symbol)
@@ -290,8 +280,8 @@ async def process_entry_request(
         # restrictive of the two and they share the loss_cooldown response
         # shape, so the frontend banner handles either tier transparently.
         for cd_ok, cd_msg, cd_until in (
-            check_consecutive_losses(snapshot, now),
-            check_loss_cooldown(snapshot, now),
+            check_consecutive_losses(snapshot, current_time),
+            check_loss_cooldown(snapshot, current_time),
         ):
             if not cd_ok:
                 return EntryRequestResponse(

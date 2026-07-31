@@ -5,14 +5,13 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import List
-
+import pytz
 from services.portfolio.ib_client import IbClient
 from services.portfolio.order_tracker import OrderTracker
 from services.portfolio.flows.entry import (
     process_entry_request,
     count_entry_attempts_today_all,
-    compute_lockout_state,
-    HELSINKI,
+    compute_lockout_state
 )
 from services.portfolio.trades_snapshot import build_today_snapshot
 from services.portfolio.flows.add import process_add_request
@@ -23,6 +22,7 @@ from db.order_log import fetch_order_log
 
 from dependencies import get_ib, get_db_conn, get_order_tracker
 from core.risk_manager_config import risk_settings
+from core.config import settings
 
 from schemas.api_schemas import (
     AddRequest,
@@ -127,7 +127,8 @@ async def get_lockout_status(
     try:
         client = IbClient(ib, tracker=tracker)
         snapshot = await build_today_snapshot(client)
-        now = _datetime.now(HELSINKI)
+        TIMEZONE = pytz.timezone(settings.TIMEZONE)
+        now = _datetime.now(TIMEZONE)
         return compute_lockout_state(snapshot, now)
     except Exception as e:
         logger.exception("lockout-status failed")

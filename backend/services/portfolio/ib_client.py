@@ -7,7 +7,7 @@ from collections import defaultdict
 from typing import Optional
 import pytz
 from ib_async import IB, Stock, CFD, LimitOrder, StopOrder, MarketOrder
-
+from core.config import settings
 from services.orders import Order
 from services.portfolio.order_tracker import OrderTracker, TERMINAL_STATUSES
 
@@ -122,23 +122,15 @@ class IbClient:
         Uses event-driven reqExecutions to ensure all data is populated before processing.
         Converts execution time to Helsinki timezone and returns a list of dicts.
         """
-        try:
-            helsinki_tz = pytz.timezone("Europe/Helsinki")
+        TIMEZONE = pytz.timezone(settings.TIMEZONE)
 
-            # Request fresh executions and wait for IB to signal completion.
-            # reqExecutions triggers execDetailsEnd when executions are
-            # delivered, but commissionReports stream in separately AFTER
-            # that — IB sends one commissionReport per execution as its own
-            # message. The Fill objects are mutated in place when those
-            # reports arrive, so we need to wait a beat (and ideally poll
-            # until every Fill has a populated report) before reading
-            # commission / realizedPNL.
+        try:
+            
+
             trades = await asyncio.wait_for(
                 self.ib.reqExecutionsAsync(),
                 timeout=10.0
             )
-
-
 
             executed = []
 
@@ -148,20 +140,29 @@ class IbClient:
                     continue
 
                 time_utc = fill.execution.time
-                time_helsinki = time_utc.astimezone(helsinki_tz)
+                time_helsinki = time_utc.astimezone(TIMEZONE)
+
                 executed.append({
                     "tradeid":     fill.execution.permId,
-                    "symbol":      fill.contract.symbol    if fill.contract   else None,
-                    "conid":       fill.contract.conId     if fill.contract   else None,
-                    "sectype":     fill.contract.secType   if fill.contract   else None,
+                    "symbol":      fill.contract.symbol,
+                    "conid":       fill.contract.conId,
+                    "sectype":     fill.contract.secType,
                     "action":      fill.execution.side,
                     "quantity":    fill.execution.shares,
                     "price":       fill.execution.price,
-                    "time":        time_helsinki.isoformat(),
+                    "time":        time_helsinki,
                     "exchange":    fill.execution.exchange,
                 })
 
-            logging.debug(f"Fetched executed trades: {executed}")
+            for trade in executed:
+                logging.info(
+                    "Trade: %s %s %.0f @ %.2f at %s",
+                    trade["symbol"],
+                    trade["action"],
+                    trade["quantity"],
+                    trade["price"],
+                    trade["time"],
+                )
             return executed
 
         except asyncio.TimeoutError:
@@ -397,110 +398,7 @@ class IbClient:
             logging.exception("get_realized_pnl_by_symbol_today failed")
             return {}
 
-    async def get_realized_pnl_today(self) -> dict:
-        """
-        Calculate total realized PnL for today across all symbols.
-        """
-        try:
 
-            trades = await self.get_trades()
-            today = date.today()
-
-            today_trades = [
-                t for t in trades
-                if t["time"] and date.fromisoformat(t["time"][:10]) == today
-            ]
-
-            if not today_trades:
-                return {"realized_pnl": 0.0, "total_commission": 0.0, "net_pnl": 0.0, "fills": 0}
-
-            fills_by_symbol = defaultdict(list)
-            for fill in today_trades:
-                fills_by_symbol[fill["symbol"]].append(fill)
-
-            total_realized = 0.0
-            total_commission = 0.0
-          #  log_lines = ["", "─" * 60, f"  PnL BREAKDOWN — {today}", "─" * 60]
-
-            for symbol, fills in fills_by_symbol.items():
-                fills.sort(key=lambda x: x["time"])
-                buy_queue: list[tuple[float, float]] = []
-                symbol_realized = 0.0
-                symbol_commission = 0.0
-                # log_lines.append(f"\n  {symbol}")
-                # log_lines.append(f"  {'Time':<10} {'Action':<6} {'Qty':>6} {'Price':>8}  {'Matched':>6} {'Fill PnL':>10}")
-                # log_lines.append(f"  {'─'*10} {'─'*6} {'─'*6} {'─'*8}  {'─'*6} {'─'*10}")
-
-                for fill in fills:
-                    qty        = float(fill["quantity"]   or 0)
-                    price      = float(fill["price"]      or 0)
-                    commission = float(fill["commission"] or 0)
-                    action     = (fill["action"] or "").upper()
-                    time_str   = fill["time"][11:16]  # HH:MM
-
-                    symbol_commission += commission
-
-                    if action in ("BUY", "BOT"):
-                        buy_queue.append((qty, price))
-                        # log_lines.append(
-                        #     f"  {time_str:<10} {'BOT':<6} {qty:>6.0f} {price:>8.4f}  {'—':>6} {'—':>10}"
-                        # )
-
-                    elif action in ("SELL", "SLD"):
-                        remaining = qty
-                        fill_pnl = 0.0
-
-                        while remaining > 0 and buy_queue:
-                            buy_qty, buy_price = buy_queue[0]
-                            matched = min(remaining, buy_qty)
-                            leg_pnl = matched * (price - buy_price)
-                            fill_pnl += leg_pnl
-                            symbol_realized += leg_pnl
-                            remaining -= matched
-                            if matched == buy_qty:
-                                buy_queue.pop(0)
-                            else:
-                                buy_queue[0] = (buy_qty - matched, buy_price)
-
-                        # log_lines.append(
-                        #     f"  {time_str:<10} {'SLD':<6} {qty:>6.0f} {price:>8.4f}  "
-                        #     f"{qty - remaining:>6.0f} {fill_pnl:>+10.4f}"
-                        # )
-
-                symbol_net = symbol_realized - symbol_commission
-                total_realized += symbol_realized
-                total_commission += symbol_commission
-
-                # log_lines.append(f"  {'─'*52}")
-                # log_lines.append(f"  {'Gross PnL:':>36} {symbol_realized:>+10.4f}")
-                # log_lines.append(f"  {'Commission:':>36} {-symbol_commission:>+10.4f}")
-                # log_lines.append(f"  {'Net PnL:':>36} {symbol_net:>+10.4f}")
-                if buy_queue:
-                    open_qty = sum(q for q, _ in buy_queue)
-            #         log_lines.append(f"  {'Open lots (unrealized):':>36} {open_qty:>10.0f} shares")
-
-            # log_lines += [
-            #     "",
-            #     "─" * 60,
-            #     f"  {'TOTAL GROSS PnL:':>36} {total_realized:>+10.4f}",
-            #     f"  {'TOTAL COMMISSION:':>36} {-total_commission:>+10.4f}",
-            #     f"  {'TOTAL NET PnL:':>36} {(total_realized - total_commission):>+10.4f}",
-            #     f"  {'FILLS:':>36} {len(today_trades):>10}",
-            #     "─" * 60,
-            # ]
-
-           # logging.info("\n".join(log_lines))
-
-            return {
-                "realized_pnl":     round(total_realized, 4),
-                "total_commission": round(total_commission, 4),
-                "net_pnl":          round(total_realized - total_commission, 4),
-                "fills":            len(today_trades),
-            }
-
-        except Exception as e:
-            logging.error(f"Error calculating today's realized PnL: {e}")
-            return {"realized_pnl": 0.0, "total_commission": 0.0, "net_pnl": 0.0, "fills": 0}
 
     async def get_trades_with_pnl(self) -> list[dict]:
         """

@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str
     ANTHROPIC_MODEL: str
 
+    # --- Timezone ---
+    TIMEZONE:str
+
+
     @field_validator("TARGET_SCRIPT_PATH")
     @classmethod
     def validate_target_script_path(cls, v: Path) -> Path:

@@ -20,33 +20,20 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Iterable
-
+from core.config import settings
 import pytz
-
 from services.portfolio.ib_client import IbClient
 
 logger = logging.getLogger(__name__)
 
-HELSINKI = pytz.timezone("Europe/Helsinki")
 
+TIMEZONE = pytz.timezone(settings.TIMEZONE)
 
 # ----------------------------------------------------------------------
 # Pure helpers
 # ----------------------------------------------------------------------
-def _parse_time(value) -> datetime | None:
-    """Parse an IB-formatted time field into a tz-aware datetime."""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        dt = value
-    else:
-        try:
-            dt = datetime.fromisoformat(str(value))
-        except ValueError:
-            return None
-    if dt.tzinfo is None:
-        dt = HELSINKI.localize(dt)
-    return dt
+
+
 
 
 def _signed_qty(action: str, qty: float) -> int:
@@ -236,27 +223,25 @@ class TradesSnapshot:
         return max(fills, key=lambda f: f.get("time") or "")
 
     def position_opened_at(self, symbol: str) -> datetime | None:
-        """
-        Time of the most recent fill that took net position from flat to
-        non-flat for this symbol (i.e. when the currently-open position
-        was opened). Returns None if the position was opened before today
-        or there are no fills for this symbol today.
-        """
         fills = self.fills_by_symbol.get(symbol.upper())
+
         if not fills:
             return None
+
         net = 0
-        open_time: datetime | None = None
+        open_time = None
+
         for fill in fills:
             signed = _signed_qty(
                 fill.get("action") or "", float(fill.get("quantity") or 0)
             )
             if signed == 0:
-                continue
+                continue            
             if net == 0:
-                open_time = _parse_time(fill.get("time"))
+                open_time = fill["time"]
+
             net += signed
-        # Only return a time if the position is still open from that fill.
+
         return open_time if net != 0 else None
 
     def last_loss(self) -> dict | None:
@@ -299,29 +284,28 @@ async def build_today_snapshot(client: IbClient) -> TradesSnapshot:
     trades = await client.get_trades()
     today = date.today()
 
+
     today_fills = [
-        t for t in trades
-        if t.get("time") and date.fromisoformat(t["time"][:10]) == today
+        trade
+        for trade in trades
+        if trade.get("time")
+        and trade["time"].date() == today
     ]
-    logger.info(
-        f"Fetched {len(trades)} fills from IB; {len(today_fills)} are from today ({today.isoformat()})"
-    )
 
     if not today_fills:
         logger.info("No fills for today — returning empty snapshot")
         return TradesSnapshot()
 
     fills_by_symbol: dict[str, list[dict]] = defaultdict(list)
+
     for fill in today_fills:
         sym = (fill.get("symbol") or "").upper()
         if sym:
             fills_by_symbol[sym].append(fill)
     for sym in fills_by_symbol:
         fills_by_symbol[sym].sort(key=lambda x: x["time"])
-    logger.info(
-        f"Grouped today's fills across {len(fills_by_symbol)} symbol(s): "
-        f"{ {s: len(f) for s, f in fills_by_symbol.items()} }"
-    )
+
+
 
     entry_counts: dict[str, int] = {}
     for sym, fills in fills_by_symbol.items():
@@ -334,7 +318,7 @@ async def build_today_snapshot(client: IbClient) -> TradesSnapshot:
     realized = sum_realized_pnl(completed, len(today_fills))
     losses = sum(1 for t in completed if t.get("is_loss"))
     logger.info(
-        f"Completed round-trips: {len(completed)} (losses: {losses}); "
+        f"Trade snapshot: {len(completed)} (losses: {losses}); "
         f"realized PnL: gross={realized['realized_pnl']:.4f}, "
         f"commission={realized['total_commission']:.4f}, "
         f"net={realized['net_pnl']:.4f}"
