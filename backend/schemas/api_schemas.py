@@ -352,7 +352,7 @@ class TradeLogRow(BaseModel):
     commission: float = 0.0
     net_pnl: float = 0.0
     fills: int = 0
-    last_fill_time: Optional[str] = None
+    last_fill_time: Optional[datetime] = None
     is_loss: bool = False
 
 

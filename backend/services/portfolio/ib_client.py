@@ -343,7 +343,9 @@ class IbClient:
             # We need the conId for reqPnLSingle, which is contract-keyed.
             by_symbol: dict[str, int] = {}
             for t in trades:
-                if not (t.get("time") or "").startswith(today_iso):
+                ts = t.get("time")
+
+                if ts is None or ts.date() != date.today():
                     continue
                 sym = t.get("symbol")
                 conid = t.get("conid")

@@ -240,7 +240,8 @@ async def get_trade_log(
                  "has_commission": False}
     )
     for f in trades:
-        if not (f.get("time") or "").startswith(today.isoformat()):
+        t = f.get("time")
+        if t is None or t.date() != today:
             continue
         sym = (f.get("symbol") or "").upper()
         if not sym:
