@@ -2,9 +2,13 @@
 Entry flow.
 
 One IB executions fetch per request (via TradesSnapshot), pure guards over
-the snapshot, then the actual order placement. Public surface preserved:
-    process_entry_request          - the orchestrator
-    count_entry_attempts_today_all - used by routers/portfolio.py
+the snapshot, then the actual order placement. Public surface:
+    process_entry_request  - the orchestrator
+    check_* (local)        - block-window / attempts / frequency guards
+
+The loss-cooldown lockouts (check_consecutive_losses, check_loss_cooldown)
+and the /lockout-status view live in services.portfolio.risk_limits --
+they're total-lockout monitoring, not entry-flow-specific.
 """
 
 import logging
@@ -15,32 +19,21 @@ import pytz
 from services.orders import build_order, calculate_position_size, calculate_entry_price
 from services.portfolio.ib_client import IbClient
 from services.portfolio.risk_limits import (
+    check_consecutive_losses,
     check_daily_loss,
+    check_loss_cooldown,
     enforce_daily_loss_circuit_breaker,
 )
-from services.portfolio.trades_snapshot import (
+from services.portfolio.trades.trades_snapshot import (
     TradesSnapshot,
     build_today_snapshot,
 )
-from services.portfolio import lockout_cache
 
 from core.risk_manager_config import risk_settings
 from core.config import settings
 from schemas.api_schemas import EntryRequest, EntryRequestResponse
 
 logger = logging.getLogger(__name__)
-
-
-
-
-async def count_entry_attempts_today_all(client: IbClient) -> dict[str, int]:
-    """Per-symbol entry-attempt counts for today."""
-    try:
-        snapshot = await build_today_snapshot(client)
-        return dict(snapshot.entry_counts)
-    except Exception as e:
-        logger.error(f"Error counting entry attempts (all symbols): {e}")
-        return {}
 
 
 
@@ -84,153 +77,12 @@ def check_total_attempts(snapshot: TradesSnapshot) -> tuple[bool, str]:
     return True, ""
 
 
-def check_loss_cooldown(snapshot: TradesSnapshot, now: datetime):
-    last_loss = snapshot.last_loss()
-    if not last_loss:
-        return True, "", None
-    exit_time = last_loss.get("exit_time")
-    if exit_time is None:
-        return True, "", None
-    threshold = timedelta(minutes=risk_settings.MAX_ENTRY_FREQUENCY_MINUTES)
-    cooldown_until = exit_time + threshold
-    elapsed = now - exit_time
-    if elapsed <= threshold:
-        elapsed_str = str(elapsed).split(".")[0]
-        msg = (
-            f"Loss cooldown active. Last loss was {elapsed_str} ago "
-            f"(PnL: {last_loss.get('net_pnl')})."
-        )
-        logger.info(msg)
-        return False, msg, cooldown_until
-    return True, "", None
-
-
-_TIER1_CACHE_KEY = "consecutive_losses:tier1_floating"
-_TIER2_CACHE_KEY = "consecutive_losses:tier2_floating"
-
-
-def check_consecutive_losses(snapshot: TradesSnapshot, now: datetime):
-    """
-    Escalating lockout based on the current losing streak:
-      - tier 2 (>= CONSECUTIVE_LOSS_TIER2_COUNT): locked for
-        CONSECUTIVE_LOSS_TIER2_MINUTES from the last loss's exit_time.
-      - tier 1 (>= CONSECUTIVE_LOSS_TIER1_COUNT): locked for
-        CONSECUTIVE_LOSS_TIER1_MINUTES from the last loss's exit_time.
-    Returns the same (ok, msg, cooldown_until) shape as check_loss_cooldown
-    so the existing EntryRequestResponse(reason="loss_cooldown", ...)
-    surface is reused and the frontend banner picks it up unchanged.
-
-    Refresh safety: both cooldowns are normally anchored to a real loss
-    fill's exit_time, which is stable across requests. When no fill is
-    available to anchor on (test overrides; future code paths) we cache
-    the first cooldown_until we compute so subsequent polls don't slide
-    the timer forward. The cache is cleared once the streak breaks or
-    the window elapses.
-    """
-    streak = snapshot.consecutive_losses()
-    risk = risk_settings
-    tier1 = risk.CONSECUTIVE_LOSS_TIER1_COUNT
-    tier2 = risk.CONSECUTIVE_LOSS_TIER2_COUNT
-
-    if streak < tier1:
-        # No streak -- drop any stale fallback anchors so the next streak
-        # starts fresh instead of inheriting yesterday's expired window.
-        lockout_cache.clear(_TIER1_CACHE_KEY)
-        lockout_cache.clear(_TIER2_CACHE_KEY)
-        return True, "", None
-
-    last_loss = snapshot.last_loss()
-    exit_time = last_loss.get("exit_time")
-    # Tier 2: N minutes from last loss exit_time.
-    if streak >= tier2:
-        threshold = timedelta(minutes=risk.CONSECUTIVE_LOSS_TIER2_MINUTES)
-        if exit_time is not None:
-            cooldown_until = exit_time + threshold
-            lockout_cache.clear(_TIER2_CACHE_KEY)
-        else:
-            candidate = now + threshold
-            cooldown_until = lockout_cache.remember(_TIER2_CACHE_KEY, candidate)
-
-        if now >= cooldown_until:
-            lockout_cache.clear(_TIER2_CACHE_KEY)
-            return True, "", None
-
-        remaining = cooldown_until - now
-        remaining_str = str(remaining).split(".")[0]
-        msg = (
-            f"Consecutive-loss lockout (tier 2): {streak} losses in a row. "
-            f"No new entries for {remaining_str} more."
-        )
-        logger.warning(msg)
-        return False, msg, cooldown_until
-
-    # Tier 1: N minutes from last loss exit_time.
-    threshold = timedelta(minutes=risk.CONSECUTIVE_LOSS_TIER1_MINUTES)
-    if exit_time is not None:
-        # Stable anchor -- exit_time is the same across every refresh.
-        cooldown_until = exit_time + threshold
-        # If we had a fallback cache from before the fill materialized,
-        # clear it -- the real anchor takes over from here.
-        lockout_cache.clear(_TIER1_CACHE_KEY)
-    else:
-        # No fill-derived anchor -- cache the first cooldown_until we
-        # compute. Subsequent calls return the same value, so refreshing
-        # the page cannot reset the timer.
-        candidate = now + threshold
-        cooldown_until = lockout_cache.remember(_TIER1_CACHE_KEY, candidate)
-
-    if now >= cooldown_until:
-        # Window elapsed -- drop the cache and allow entries again.
-        lockout_cache.clear(_TIER1_CACHE_KEY)
-        return True, "", None
-
-    remaining = cooldown_until - now
-    remaining_str = str(remaining).split(".")[0]
-    msg = (
-        f"Consecutive-loss lockout (tier 1): {streak} losses in a row. "
-        f"No new entries for {remaining_str} more."
-    )
-    logger.warning(msg)
-    return False, msg, cooldown_until
-
-
-def compute_lockout_state(snapshot: TradesSnapshot, current_time: datetime) -> dict:
-    """
-    Pure read-only status of the loss-cooldown lockouts. Used by the
-    /portfolio/lockout-status endpoint so the UI can show a countdown
-    *before* the user attempts an entry. Mirrors the order in which
-    process_entry_request runs the checks (consecutive first), so the
-    decision the UI shows matches what an entry attempt would receive.
-    """
-    streak = snapshot.consecutive_losses()
-
-    for cd_ok, cd_msg, cd_until in (
-        check_consecutive_losses(snapshot, current_time),
-        check_loss_cooldown(snapshot, current_time),
-    ):
-        if not cd_ok:
-            return {
-                "locked": True,
-                "reason": "loss_cooldown",
-                "message": cd_msg,
-                "cooldown_until": cd_until.isoformat() if cd_until else None,
-                "streak": streak,
-            }
-    return {
-        "locked": False,
-        "reason": None,
-        "message": "",
-        "cooldown_until": None,
-        "streak": streak,
-    }
-
-
 def check_frequency(snapshot: TradesSnapshot, symbol: str, current_time: datetime) -> tuple[bool, str]:
     latest = snapshot.latest_fill_for_symbol(symbol)
     if not latest:
         logger.info("No executions found. Entry allowed.")
         return True, ""
-    trade_time = (latest.get("time"))
+    trade_time = latest.time
     if trade_time is None:
         return True, ""
     elapsed = current_time - trade_time

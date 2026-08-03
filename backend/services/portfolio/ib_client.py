@@ -1,9 +1,8 @@
 import asyncio
 import logging
 import math
-import datetime
-from datetime import datetime,date
-from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 import pytz
 from ib_async import IB, Stock, CFD, LimitOrder, StopOrder, MarketOrder
@@ -13,6 +12,36 @@ from services.portfolio.order_tracker import OrderTracker, TERMINAL_STATUSES
 
 logger = logging.getLogger(__name__)
 
+
+@dataclass(frozen=True)
+class Fill:
+    """
+    One executed trade from IB (single execution report). `time` is
+    already converted to the configured display timezone by get_trades.
+"""
+    tradeid: int
+    symbol: str
+    conid: int
+    sectype: str
+    action: str            # "BOT" | "SLD"
+    quantity: float
+    price: float
+    time: datetime
+    exchange: str
+    
+
+
+class OrderNotFoundError(Exception):
+    """
+    Raised when a cancel targets an order that isn't in IB's open-orders
+    list and isn't in a known terminal state on the tracker. Lets the
+    router translate to HTTP 404 without inspecting a status string, and
+    lets internal callers (exit_manual, cancel_all_unfilled) treat the
+    race case explicitly.
+    """
+    def __init__(self, order_id: int, message: str | None = None):
+        self.order_id = order_id
+        super().__init__(message or f"No open order found with permId={order_id}")
 
 
 def _build_contract(symbol: str, contract_type: str):
@@ -89,7 +118,7 @@ class IbClient:
                     "lmtprice": getattr(t.order, "lmtPrice", None) if t.order else None,
                     "auxprice": getattr(t.order, "auxPrice", None) if t.order else None,
                     # orderRef is where we stash exit metadata
-                    # (e.g. "EXIT:0.25"); exit_common.py filters on it.
+                    # (e.g. "EXIT:0.25"); exit_manual.py filters on it.
                     "orderref": getattr(t.order, "orderRef", None) if t.order else None,
                     "status": t.orderStatus.status if t.orderStatus else None,
                     "filled": t.orderStatus.filled if t.orderStatus else None,
@@ -116,52 +145,40 @@ class IbClient:
             logging.error(f"Error fetching account summary: {e}")
             return {}
 
-    async def get_trades(self) -> list[dict]:
-        """
-        Fetch all executed trades (completed fills) asynchronously from IB.
-        Uses event-driven reqExecutions to ensure all data is populated before processing.
-        Converts execution time to Helsinki timezone and returns a list of dicts.
-        """
+    async def get_trades(self) -> list[Fill]:
+
         TIMEZONE = pytz.timezone(settings.TIMEZONE)
 
         try:
-            
-
             trades = await asyncio.wait_for(
                 self.ib.reqExecutionsAsync(),
                 timeout=10.0
             )
-
-            executed = []
+            executed: list[Fill] = []
 
             for fill in trades:
-                # reqExecutionsAsync returns Fill objects directly
+                # reqExecutionsAsync returns Fill objects directly.
                 if not fill.execution:
                     continue
 
-                time_utc = fill.execution.time
-                time_helsinki = time_utc.astimezone(TIMEZONE)
+                time_helsinki = fill.execution.time.astimezone(TIMEZONE)
+                executed.append(Fill(
+                    tradeid=fill.execution.permId,
+                    symbol=fill.contract.symbol,
+                    conid=fill.contract.conId,
+                    sectype=fill.contract.secType,
+                    action=fill.execution.side,
+                    quantity=fill.execution.shares,
+                    price=fill.execution.price,
+                    time=time_helsinki,
+                    exchange=fill.execution.exchange,
 
-                executed.append({
-                    "tradeid":     fill.execution.permId,
-                    "symbol":      fill.contract.symbol,
-                    "conid":       fill.contract.conId,
-                    "sectype":     fill.contract.secType,
-                    "action":      fill.execution.side,
-                    "quantity":    fill.execution.shares,
-                    "price":       fill.execution.price,
-                    "time":        time_helsinki,
-                    "exchange":    fill.execution.exchange,
-                })
+                ))
 
-            for trade in executed:
+            for t in executed:
                 logging.info(
                     "Trade: %s %s %.0f @ %.2f at %s",
-                    trade["symbol"],
-                    trade["action"],
-                    trade["quantity"],
-                    trade["price"],
-                    trade["time"],
+                    t.symbol, t.action, t.quantity, t.price, t.time,
                 )
             return executed
 
@@ -278,208 +295,7 @@ class IbClient:
             logging.error(f"Error fetching position for {symbol}: {e}")
             return None
 
-    async def get_trades_by_symbol(self, symbol: str) -> dict | None:
-        try:
-            trades = await self.get_trades()
-            if not trades:
-                logging.debug(f"No executed trades found at all for {symbol}")
-                return None
 
-            symbol_trades = [
-                t for t in trades
-                if t.get("symbol") and t["symbol"].upper() == symbol.upper()
-            ]
-
-            if not symbol_trades:
-                logging.debug(f"No executed trades found for {symbol}")
-                return None
-
-            def parse_time(trade):
-                trade_time = trade.get("time")
-                if isinstance(trade_time, str):
-                    return datetime.fromisoformat(trade_time)
-                return trade_time
-
-            latest_trade = max(symbol_trades, key=parse_time)
-            logging.debug(f"Latest executed trade for {symbol}: {latest_trade}")
-            return latest_trade
-
-        except Exception as e:
-            logging.error(f"Error fetching latest executed trade for {symbol}: {e}")
-            return None
-
-    async def get_realized_pnl_by_symbol_today(self) -> dict[str, dict]:
-        """
-        Per-symbol realized PnL for today via streaming reqPnLSingle
-        subscriptions. Works for both currently-open positions and
-        positions that were closed earlier today, because IB's daily
-        accounting includes all activity since session start.
-
-        Why this exists: relying on CommissionReport.realizedPNL from
-        reqExecutions is unreliable — IB streams those reports live as
-        each fill happens, and they are NOT replayed when a client
-        reconnects after the fact. Subscribing via reqPnLSingle queries
-        IB's accounting layer directly, which has the data.
-
-        Returns a dict keyed by symbol:
-            { "AAPL": {"realized_pnl": 123.45, "unrealized_pnl": 0.0}, ... }
-        """
-        try:
-            # Resolve the account code. ib_async exposes accounts after
-            # the connection completes the managed-accounts handshake.
-            accounts = list(self.ib.managedAccounts() or [])
-            account = accounts[0] if accounts else None
-            if not account:
-                logging.warning(
-                    "get_realized_pnl_by_symbol_today: no managed account "
-                    "available; returning empty"
-                )
-                return {}
-
-            trades = await self.get_trades()
-            today_iso = date.today().isoformat()
-
-            # Collect a unique (symbol -> conId) map from today's fills.
-            # We need the conId for reqPnLSingle, which is contract-keyed.
-            by_symbol: dict[str, int] = {}
-            for t in trades:
-                ts = t.get("time")
-
-                if ts is None or ts.date() != date.today():
-                    continue
-                sym = t.get("symbol")
-                conid = t.get("conid")
-                if sym and conid:
-                    by_symbol[sym] = int(conid)
-
-            if not by_symbol:
-                return {}
-
-            result: dict[str, dict] = {}
-
-            async def _fetch(symbol: str, conid: int) -> None:
-                pnl = self.ib.reqPnLSingle(account, "", conid)
-                try:
-                    # Wait up to ~2.5s for IB to push the first value.
-                    # PnLSingle is updated in place by the streaming
-                    # pnlSingleEvent.
-                    for _ in range(25):
-                        await asyncio.sleep(0.1)
-                        rp = getattr(pnl, "realizedPnL", None)
-                        # IB uses DBL_MAX (~1.7e308) as the "N/A" sentinel
-                        # before the first real tick lands. Wait it out.
-                        if rp is not None and abs(rp) < 1e15:
-                            result[symbol] = {
-                                "realized_pnl": float(rp),
-                                "unrealized_pnl": float(
-                                    getattr(pnl, "unrealizedPnL", 0.0) or 0.0
-                                ) if abs(getattr(pnl, "unrealizedPnL", 0.0) or 0.0) < 1e15 else 0.0,
-                            }
-                            return
-                    logging.warning(
-                        "reqPnLSingle never produced a valid realizedPnL "
-                        "for %s (conId=%s)", symbol, conid,
-                    )
-                finally:
-                    try:
-                        self.ib.cancelPnLSingle(account, "", conid)
-                    except Exception:
-                        logging.exception(
-                            "cancelPnLSingle failed for %s", symbol
-                        )
-
-            # Subscribe to all symbols in parallel; each one independently
-            # waits for its first tick and unsubscribes.
-            await asyncio.gather(*[
-                _fetch(sym, cid) for sym, cid in by_symbol.items()
-            ])
-
-            return result
-
-        except Exception:
-            logging.exception("get_realized_pnl_by_symbol_today failed")
-            return {}
-
-
-
-    async def get_trades_with_pnl(self) -> list[dict]:
-        """
-        Returns a list of completed trades (round-trips) with PnL, sorted by time.
-        Each dict represents one closed trade (BOT + matched SLD).
-        """
-        try:
-            trades = await self.get_trades()
-            today = date.today()
-
-            today_trades = [
-                t for t in trades
-                if t["time"] and date.fromisoformat(t["time"][:10]) == today
-            ]
-
-            if not today_trades:
-                return []
-
-            fills_by_symbol = defaultdict(list)
-            for fill in today_trades:
-                fills_by_symbol[fill["symbol"]].append(fill)
-
-            completed_trades = []
-
-            for symbol, fills in fills_by_symbol.items():
-                fills.sort(key=lambda x: x["time"])
-                buy_queue: list[tuple[float, float, str]] = []  # (qty, price, time)
-
-                for fill in fills:
-                    qty        = float(fill["quantity"]   or 0)
-                    price      = float(fill["price"]      or 0)
-                    commission = float(fill["commission"] or 0)
-                    action     = (fill["action"] or "").upper()
-                    time_str   = fill["time"]
-
-                    if action in ("BUY", "BOT"):
-                        buy_queue.append((qty, price, time_str, commission))
-
-                    elif action in ("SELL", "SLD"):
-                        remaining = qty
-                        sell_commission = commission
-
-                        while remaining > 0 and buy_queue:
-                            buy_qty, buy_price, buy_time, buy_commission = buy_queue[0]
-                            matched = min(remaining, buy_qty)
-                            gross_pnl = matched * (price - buy_price)
-
-                            # Prorate commission based on matched qty
-                            prorated_buy_commission = buy_commission * (matched / buy_qty)
-                            prorated_sell_commission = sell_commission * (matched / qty)
-                            total_commission = prorated_buy_commission + prorated_sell_commission
-                            net_pnl = gross_pnl - total_commission
-
-                            completed_trades.append({
-                                "symbol":           symbol,
-                                "entry_time":       buy_time,
-                                "exit_time":        time_str,
-                                "entry_price":      buy_price,
-                                "exit_price":       price,
-                                "quantity":         matched,
-                                "gross_pnl":        round(gross_pnl, 4),
-                                "commission":       round(total_commission, 4),
-                                "net_pnl":          round(net_pnl, 4),
-                                "is_loss":          net_pnl < 0,
-                            })
-
-                            remaining -= matched
-                            if matched == buy_qty:
-                                buy_queue.pop(0)
-                            else:
-                                buy_queue[0] = (buy_qty - matched, buy_price, buy_time, buy_commission - prorated_buy_commission)
-
-            # Sort all completed trades by exit time
-            completed_trades.sort(key=lambda x: x["exit_time"])
-            return completed_trades
-
-        except Exception as e:
-            logging.error(f"Error calculating trade-by-trade PnL: {e}")
-            return []
 
     # ------------------------------------------------------------------
     # Writes — order placement
@@ -582,7 +398,7 @@ class IbClient:
         """
         Place a market order. `order_ref` is forwarded to IB's `orderRef`
         field so the OrderTracker fill bridge can recognise our exits on
-        fill (see services.portfolio.exit_common.handle_exit_fill).
+        fill (see services.portfolio.exit_manual.handle_exit_fill).
         """
         try:
             contract = _build_contract(order.symbol,order.contract_type)
@@ -820,13 +636,11 @@ class IbClient:
                             "remaining": state.get("remaining", 0),
                         }
                 logger.warning(f"No open order found with permId={order_id}")
-                return {
-                    "status": "not_found",
-                    "order_id": order_id,
-                    "symbol": None,
-                    "filled": 0,
-                    "remaining": 0,
-                }
+                # Signal via exception rather than a status string so
+                # callers don't have to inspect the returned dict. The
+                # router translates this to HTTP 404; internal callers
+                # (exit_manual, cancel_all_unfilled) catch it explicitly.
+                raise OrderNotFoundError(order_id)
 
             symbol = target.contract.symbol if target.contract else None
 
@@ -875,6 +689,10 @@ class IbClient:
                 "message": f"Cancel did not complete within {timeout}s",
             }
 
+        except OrderNotFoundError:
+            # Pass through -- callers translate this to 404 / silent skip
+            # depending on context. Would otherwise get swallowed below.
+            raise
         except Exception as e:
             logger.error(f"Error cancelling order {order_id}: {e}")
             return {
@@ -902,9 +720,19 @@ class IbClient:
                 filled = float(t.orderStatus.filled or 0)
                 if status in TERMINAL_STATUSES or filled > 0:
                     continue
-                res = await self.cancel_order_by_id(
-                    t.order.permId, timeout=timeout_each
-                )
+                try:
+                    res = await self.cancel_order_by_id(
+                        t.order.permId, timeout=timeout_each
+                    )
+                except OrderNotFoundError:
+                    # Order became terminal between reqAllOpenOrdersAsync
+                    # and the cancel call -- rare race, effectively already
+                    # done. Skip; don't fail the whole batch.
+                    logger.info(
+                        "Order %s vanished between fetch and cancel; skipping",
+                        t.order.permId,
+                    )
+                    continue
                 results.append(res)
             logger.info(
                 f"cancel_all_unfilled processed {len(results)} unfilled orders"

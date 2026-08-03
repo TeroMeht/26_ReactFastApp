@@ -19,7 +19,7 @@ No move-to-breakeven, no DB lookup; the tag itself encodes the trim.
 import logging
 from typing import Optional
 
-from services.portfolio.ib_client import IbClient
+from services.portfolio.ib_client import IbClient, OrderNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -77,11 +77,19 @@ async def handle_exit_fill(
                 symbol,
             )
         else:
-            await client.cancel_order_by_id(existing_stp_order["orderid"])
-            logger.info(
-                "Cancelled STP after full exit | symbol=%s order_id=%s",
-                symbol, existing_stp_order["orderid"],
-            )
+            try:
+                await client.cancel_order_by_id(existing_stp_order["orderid"])
+                logger.info(
+                    "Cancelled STP after full exit | symbol=%s order_id=%s",
+                    symbol, existing_stp_order["orderid"],
+                )
+            except OrderNotFoundError:
+                # STP became terminal between our lookup and the cancel
+                # (rare race). Nothing to do; log and move on.
+                logger.info(
+                    "STP already gone by cancel time | symbol=%s order_id=%s",
+                    symbol, existing_stp_order["orderid"],
+                )
         return
 
     # Partial
@@ -108,7 +116,14 @@ async def handle_exit_fill(
             "symbol=%s",
             symbol,
         )
-        await client.cancel_order_by_id(existing_stp_order["orderid"])
+        try:
+            await client.cancel_order_by_id(existing_stp_order["orderid"])
+        except OrderNotFoundError:
+            # STP already terminal by the time we tried to cancel; harmless.
+            logger.info(
+                "STP already gone by cancel time | symbol=%s order_id=%s",
+                symbol, existing_stp_order["orderid"],
+            )
         return
 
     stp_order_id = existing_stp_order["orderid"]

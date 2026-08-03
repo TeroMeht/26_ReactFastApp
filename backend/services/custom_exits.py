@@ -3,11 +3,11 @@ Custom price-target exit service — IB-only, no DB.
 
 A custom exit is a real IB LIMIT order placed on the user's behalf at a
 target price for a fraction of their open position. We tag every such
-order with `orderRef = "EXIT:<trim>"` (see exit_common.build_exit_ref)
+order with `orderRef = "EXIT:<trim>"` (see exit_manual.build_exit_ref)
 so we can:
   - enumerate them straight from IB's open orders (no DB scan),
   - identify them on fill (the OrderTracker fill bridge runs
-    exit_common.handle_exit_fill, shared with strategy-based exits),
+    exit_manual.handle_exit_fill, shared with strategy-based exits),
   - cancel by permId without needing any local bookkeeping.
 """
 
@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 
 from services.orders import Order
 from services.portfolio.ib_client import IbClient
-from services.portfolio.exit_common import build_exit_ref, parse_exit_ref
+from services.portfolio.flows.exit_manual import build_exit_ref, parse_exit_ref
 
 logger = logging.getLogger(__name__)
 
@@ -205,5 +205,5 @@ async def cancel_custom_exit_by_perm_id(
         return {"status": "error", "perm_id": perm_id, "message": str(e)}
 
 
-# Fill-time STP adjustment lives in services.portfolio.exit_common; the
+# Fill-time STP adjustment lives in services.portfolio.flows.exit_manual; the
 # OrderTracker fill bridge in main.py routes EXIT-tagged fills to it.

@@ -343,14 +343,11 @@ class AddRequestResponse(BaseModel):
     cooldown_until: Optional[str] = None
 
 
-# Trade log row -- realized PnL today for one symbol. Aggregated from IB
-# CommissionReport.realizedPNL across today's fills. No DB persistence; the
-# cost basis comes from IB so positions opened on any prior day count.
+# Trade log row -- realized PnL today for one symbol, derived from today's
+# closed flat-to-flat cycles. No DB persistence.
 class TradeLogRow(BaseModel):
     symbol: str
     realized_pnl: float = 0.0
-    commission: float = 0.0
-    net_pnl: float = 0.0
     fills: int = 0
     last_fill_time: Optional[datetime] = None
     is_loss: bool = False
@@ -359,8 +356,6 @@ class TradeLogRow(BaseModel):
 class TradeLogResponse(BaseModel):
     rows: List[TradeLogRow]
     realized_pnl: float = 0.0
-    total_commission: float = 0.0
-    net_pnl: float = 0.0
     symbol_count: int = 0
 
 

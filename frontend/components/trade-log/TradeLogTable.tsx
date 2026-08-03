@@ -14,12 +14,10 @@ import {
 } from "@/components/ui/table";
 
 // Mirrors backend schemas TradeLogRow / TradeLogResponse. Each row is one
-// symbol with realized PnL today, aggregated from IB's per-fill realizedPNL.
+// symbol with realized PnL today, derived from closed flat-to-flat cycles.
 type TradeLogRow = {
   symbol: string;
   realized_pnl: number;
-  commission: number;
-  net_pnl: number;
   fills: number;
   last_fill_time: string | null;
   is_loss: boolean;
@@ -28,8 +26,6 @@ type TradeLogRow = {
 type TradeLogResponse = {
   rows: TradeLogRow[];
   realized_pnl: number;
-  total_commission: number;
-  net_pnl: number;
   symbol_count: number;
 };
 
@@ -101,15 +97,13 @@ const TradeLogTable = ({ refreshSignal = 0, onLoadingChange }: Props) => {
     return rows.filter((r) => {
       if (sym && (r.symbol ?? "").toUpperCase() !== sym) return false;
       if (filter === "All") return true;
-      if (filter === "Winners") return r.net_pnl > 0;
-      if (filter === "Losers") return r.net_pnl < 0;
+      if (filter === "Winners") return r.realized_pnl > 0;
+      if (filter === "Losers") return r.realized_pnl < 0;
       return true;
     });
   }, [rows, filter, symbolFilter]);
 
   const realizedSum = filtered.reduce((acc, r) => acc + r.realized_pnl, 0);
-  const commSum = filtered.reduce((acc, r) => acc + r.commission, 0);
-  const netSum = filtered.reduce((acc, r) => acc + r.net_pnl, 0);
 
   return (
     <div className="py-4">
@@ -152,8 +146,6 @@ const TradeLogTable = ({ refreshSignal = 0, onLoadingChange }: Props) => {
           <TableRow>
             <TableHead>Symbol</TableHead>
             <TableHead className="text-right">Realized PnL</TableHead>
-            <TableHead className="text-right">Commission</TableHead>
-            <TableHead className="text-right">Net PnL</TableHead>
             <TableHead className="text-right">Fills</TableHead>
             <TableHead>Last fill</TableHead>
           </TableRow>
@@ -162,7 +154,7 @@ const TradeLogTable = ({ refreshSignal = 0, onLoadingChange }: Props) => {
         <TableBody>
           {filtered.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={6} className="text-gray-500">
+              <TableCell colSpan={4} className="text-gray-500">
                 No realized PnL today.
               </TableCell>
             </TableRow>
@@ -172,12 +164,6 @@ const TradeLogTable = ({ refreshSignal = 0, onLoadingChange }: Props) => {
                 <TableCell className="font-medium">{r.symbol}</TableCell>
                 <TableCell className={`text-right ${pnlClass(r.realized_pnl)}`}>
                   {fmtMoney(r.realized_pnl)}
-                </TableCell>
-                <TableCell className="text-right">
-                  {fmtMoney(r.commission)}
-                </TableCell>
-                <TableCell className={`text-right ${pnlClass(r.net_pnl)}`}>
-                  {fmtMoney(r.net_pnl)}
                 </TableCell>
                 <TableCell className="text-right">{r.fills}</TableCell>
                 <TableCell className="font-mono text-xs whitespace-nowrap">
@@ -194,12 +180,6 @@ const TradeLogTable = ({ refreshSignal = 0, onLoadingChange }: Props) => {
               <TableCell className="font-semibold">Totals</TableCell>
               <TableCell className={`text-right ${pnlClass(realizedSum)}`}>
                 {fmtMoney(realizedSum)}
-              </TableCell>
-              <TableCell className="text-right font-semibold">
-                {fmtMoney(commSum)}
-              </TableCell>
-              <TableCell className={`text-right ${pnlClass(netSum)}`}>
-                {fmtMoney(netSum)}
               </TableCell>
               <TableCell colSpan={2} />
             </TableRow>

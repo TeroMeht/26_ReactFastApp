@@ -26,7 +26,7 @@ from services.portfolio.risk_limits import (
     check_daily_loss,
     enforce_daily_loss_circuit_breaker,
 )
-from services.portfolio.trades_snapshot import (
+from services.portfolio.trades.trades_snapshot import (
     TradesSnapshot,
     build_today_snapshot,
 )

@@ -10,7 +10,7 @@ from fastapi import FastAPI
 
 from services.portfolio.order_tracker import OrderTracker
 from services.portfolio.ib_client import IbClient
-from services.portfolio.exit_common import handle_exit_fill, parse_exit_ref
+from services.portfolio.flows.exit_manual import handle_exit_fill, parse_exit_ref
 
 logger = logging.getLogger(__name__)
 

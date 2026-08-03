@@ -5,15 +5,12 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import List
-import pytz
-from services.portfolio.ib_client import IbClient
+from services.portfolio.ib_client import IbClient, OrderNotFoundError
 from services.portfolio.order_tracker import OrderTracker
-from services.portfolio.flows.entry import (
-    process_entry_request,
-    count_entry_attempts_today_all,
-    compute_lockout_state
-)
-from services.portfolio.trades_snapshot import build_today_snapshot
+from services.portfolio.flows.entry import process_entry_request
+from services.portfolio.trades.trade_log import build_trade_log
+from services.portfolio.entry_attempts import build_entry_attempts
+from services.portfolio.risk_limits import build_lockout_status
 from services.portfolio.flows.add import process_add_request
 from services.portfolio.flows.exit import process_exit_request
 from services.portfolio.flows.open_risk import process_openrisktable
@@ -21,8 +18,6 @@ from db.order_log import fetch_order_log
 
 
 from dependencies import get_ib, get_db_conn, get_order_tracker
-from core.risk_manager_config import risk_settings
-from core.config import settings
 
 from schemas.api_schemas import (
     AddRequest,
@@ -32,17 +27,14 @@ from schemas.api_schemas import (
     ExitRequestResponseIB,
     OpenPosition,
     AddRequestResponse,
-    EntryAttemptsRow,
     EntryAttemptsResponse,
     LiveOrder,
     CancelOrderResult,
     OrderLogEntry,
-    TradeLogRow,
     TradeLogResponse,
     LockoutStatusResponse,
 )
-from collections import defaultdict
-from datetime import date as _date, datetime as _datetime
+from dataclasses import asdict
 
 
 logger = logging.getLogger(__name__)
@@ -92,17 +84,6 @@ async def get_trades(ib=Depends(get_ib)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/pnl")
-async def get_pnl(ib=Depends(get_ib)):
-    try:
-        client = IbClient(ib)
-        return await client.get_trades_with_pnl()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-
-
 @router.get("/price/{symbol}")
 async def get_bid_ask_price(symbol: str, ib=Depends(get_ib)):
     try:
@@ -114,22 +95,14 @@ async def get_bid_ask_price(symbol: str, ib=Depends(get_ib)):
 
 # ----------------------------------------------------------------------
 # Workflow endpoints - call the function-style handlers in services.portfolio
-# ----------------------------------------------------------------------
-# Proactive lockout status — polled by the global LockoutBanner so the UI
-# can show a countdown without waiting for the user to attempt an entry.
-# Same decision logic as process_entry_request runs through; locked=True
-# here means an entry attempt right now would return reason=loss_cooldown.
+
 @router.get("/lockout-status", response_model=LockoutStatusResponse)
-async def get_lockout_status(
-    ib=Depends(get_ib),
-    tracker: OrderTracker = Depends(get_order_tracker),
-):
+async def get_lockout_status(ib=Depends(get_ib)):
+    # Same aligned handler shape as /trade-log and /entry-attempts:
+    # thin call into the service layer, asdict + Pydantic wrap.
     try:
-        client = IbClient(ib, tracker=tracker)
-        snapshot = await build_today_snapshot(client)
-        TIMEZONE = pytz.timezone(settings.TIMEZONE)
-        now = _datetime.now(TIMEZONE)
-        return compute_lockout_state(snapshot, now)
+        client = IbClient(ib)
+        return LockoutStatusResponse(**asdict(await build_lockout_status(client)))
     except Exception as e:
         logger.exception("lockout-status failed")
         raise HTTPException(status_code=500, detail=str(e))
@@ -192,19 +165,13 @@ async def cancel_order(
     try:
         client = IbClient(ib, tracker=tracker)
         result = await client.cancel_order_by_id(order_id)
-
-        if result.get("status") == "not_found":
-            raise HTTPException(
-                status_code=404,
-                detail=f"No open order found with permId={order_id}",
-            )
-
         return CancelOrderResult(**result)
-
-    except HTTPException:
-        raise
+    except OrderNotFoundError as e:
+        # Domain error from the service layer; translate to 404.
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to cancel order: {str(e)}")
+        logger.exception("cancel-order failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ----------------------------------------------------------------------
@@ -213,80 +180,24 @@ async def cancel_order(
 @router.get("/order-status", response_model=List[LiveOrder])
 async def get_order_status(tracker: OrderTracker = Depends(get_order_tracker)):
     """Current snapshot of every order the tracker knows about."""
-    return [LiveOrder(**row) for row in tracker.snapshot()]
+    try:
+        return [LiveOrder(**row) for row in tracker.snapshot()]
+    except Exception as e:
+        logger.exception("order-status failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/trade-log", response_model=TradeLogResponse)
-async def get_trade_log(
-    ib=Depends(get_ib),
-    tracker: OrderTracker = Depends(get_order_tracker),
-):
-    """
-    Per-symbol realized PnL for today via IB's reqPnLSingle subscriptions.
-    Fill count and last-fill time come from today's executions. Works for
-    positions opened on any prior day, since IB owns the cost basis.
-    In-memory only — no DB writes.
-    """
-    client = IbClient(ib, tracker=tracker)
+async def get_trade_log(ib=Depends(get_ib)):
 
-    # Two parallel reads: IB's accounting layer (per-symbol realizedPnL)
-    # and today's fills (for fill counts + timestamps).
-    pnl_by_symbol = await client.get_realized_pnl_by_symbol_today()
-    trades = await client.get_trades()
-    today = _date.today()
-
-    fill_stats: dict[str, dict] = defaultdict(
-        lambda: {"fills": 0, "last_fill_time": None, "commission": 0.0,
-                 "has_commission": False}
-    )
-    for f in trades:
-        t = f.get("time")
-        if t is None or t.date() != today:
-            continue
-        sym = (f.get("symbol") or "").upper()
-        if not sym:
-            continue
-        stats = fill_stats[sym]
-        stats["fills"] += 1
-        t = f.get("time")
-        if t and (stats["last_fill_time"] is None or t > stats["last_fill_time"]):
-            stats["last_fill_time"] = t
-        c = f.get("commission")
-        if c is not None:
-            stats["commission"] += float(c)
-            stats["has_commission"] = True
-
-    rows: list[TradeLogRow] = []
-    for sym, pnl in pnl_by_symbol.items():
-        sym_upper = sym.upper()
-        rp = float(pnl.get("realized_pnl", 0.0) or 0.0)
-        # Show every symbol IB reports activity for today, even at zero —
-        # the user wants to see what was active.
-        stats = fill_stats.get(sym_upper, {})
-        # Only attribute commission when CommissionReport actually fired.
-        commission = stats.get("commission", 0.0) if stats.get("has_commission") else 0.0
-        rows.append(TradeLogRow(
-            symbol=sym_upper,
-            realized_pnl=round(rp, 4),
-            commission=round(commission, 4),
-            net_pnl=round(rp - commission, 4),
-            fills=stats.get("fills", 0),
-            last_fill_time=stats.get("last_fill_time"),
-            is_loss=rp < 0,
-        ))
-
-    # Newest activity first; symbols without a fill time fall to the bottom.
-    rows.sort(key=lambda r: r.last_fill_time or "", reverse=True)
-
-    total_realized = round(sum(r.realized_pnl for r in rows), 4)
-    total_commission = round(sum(r.commission for r in rows), 4)
-    return TradeLogResponse(
-        rows=rows,
-        realized_pnl=total_realized,
-        total_commission=total_commission,
-        net_pnl=round(total_realized - total_commission, 4),
-        symbol_count=len(rows),
-    )
+    try:
+        client = IbClient(ib)
+        # asdict() recurses into TradeLogEntry rows so Pydantic can
+        # construct the response model from the resulting nested dict.
+        return TradeLogResponse(**asdict(await build_trade_log(client)))
+    except Exception as e:
+        logger.exception("trade-log failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/order-log", response_model=List[OrderLogEntry])
@@ -295,13 +206,12 @@ async def get_order_log(
     symbol: str | None = None,
     db_conn=Depends(get_db_conn),
 ):
-    """
-    Chronological audit log of every status transition and error attached
-    to any order, read from the persistent `order_log` table. Survives
-    application restarts. Newest events first.
-    """
-    rows = await fetch_order_log(db_conn, limit=limit, symbol=symbol)
-    return [OrderLogEntry(**row) for row in rows]
+    try:
+        rows = await fetch_order_log(db_conn, limit=limit, symbol=symbol)
+        return [OrderLogEntry(**row) for row in rows]
+    except Exception as e:
+        logger.exception("order-log failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/order-status/stream")
@@ -373,42 +283,17 @@ async def cancel_all_unfilled(
 async def get_entry_attempts(ib=Depends(get_ib)):
     """
     Per-symbol entry-attempt stats for today plus the daily total. Only
-    symbols with at least one entry attempt today are returned (ordered
+    symbols with at least one attempt today are returned (ordered
     alphabetically). Used by the Trade Manager UI to surface how close each
     symbol is to MAX_ATTEMPTS_PER_SYMBOL_PER_DAY and how close the day is
     to MAX_TOTAL_ENTRIES_PER_DAY.
     """
     try:
         client = IbClient(ib)
-        counts = await count_entry_attempts_today_all(client)
-        risk = risk_settings
-        max_attempts = risk.MAX_ATTEMPTS_PER_SYMBOL_PER_DAY
-        max_total = risk.MAX_TOTAL_ENTRIES_PER_DAY
-
-        rows = [
-            EntryAttemptsRow(
-                symbol=symbol,
-                attempts=count,
-                max_attempts=max_attempts,
-                remaining=max(0, max_attempts - count),
-            )
-            for symbol, count in sorted(counts.items())
-        ]
-
-        total_attempts = sum(counts.values())
-
-        return EntryAttemptsResponse(
-            rows=rows,
-            total_attempts=total_attempts,
-            max_total=max_total,
-            total_remaining=max(0, max_total - total_attempts),
-        )
-
+        return EntryAttemptsResponse(**asdict(await build_entry_attempts(client)))
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch entry attempts: {str(e)}",
-        )
+        logger.exception("entry-attempts failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/open-risk-table", response_model=List[OpenPosition])

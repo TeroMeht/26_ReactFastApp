@@ -1531,16 +1531,6 @@ export interface components {
              */
             realized_pnl: number;
             /**
-             * Total Commission
-             * @default 0
-             */
-            total_commission: number;
-            /**
-             * Net Pnl
-             * @default 0
-             */
-            net_pnl: number;
-            /**
              * Symbol Count
              * @default 0
              */
@@ -1555,16 +1545,6 @@ export interface components {
              * @default 0
              */
             realized_pnl: number;
-            /**
-             * Commission
-             * @default 0
-             */
-            commission: number;
-            /**
-             * Net Pnl
-             * @default 0
-             */
-            net_pnl: number;
             /**
              * Fills
              * @default 0

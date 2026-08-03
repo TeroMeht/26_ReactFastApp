@@ -2,7 +2,7 @@ import logging
 from typing import List, Dict
 from services.orders import Order
 from services.portfolio.ib_client import IbClient
-from services.portfolio.exit_common import build_exit_ref
+from services.portfolio.flows.exit_manual import build_exit_ref
 from db.exits import (
     fetch_exits_by_symbol,
     delete_exit_request,
@@ -65,7 +65,7 @@ def _find_matching_exit(exits_for_this_symbol: List[Dict], alarm: str) -> Dict:
 #
 # Both partial and full strategy exits place a tagged MKT order and stop
 # there. STP adjustment (resize on partial, cancel on full) is handled
-# off the fill event in services.portfolio.exit_common.handle_exit_fill,
+# off the fill event in services.portfolio.flows.exit_manual.handle_exit_fill,
 # wired up by main.py's OrderTracker fill bridge — same flow as
 # user-placed custom exits.
 async def _handle_exit(client, position, trim_percentage) -> ExitRequestResponseIB:
