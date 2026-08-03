@@ -70,7 +70,11 @@ async def get_orders(ib=Depends(get_ib)):
 async def get_account_summary(ib=Depends(get_ib)):
     try:
         client = IbClient(ib)
-        return await client.get_account_summary()
+        summary = await client.get_account_summary()
+        # Preserve the historical wire shape: `{tag: value}` flat dict, not
+        # the wrapping AccountSummary dataclass. Consumers of the endpoint
+        # still expect to key by IB tag name.
+        return summary.tags
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

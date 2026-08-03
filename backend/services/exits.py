@@ -105,7 +105,7 @@ async def reconcile_exit_requests_with_positions(client, db_conn) -> Dict:
     """
     positions = await client.get_positions()
     open_symbols = [
-        (p.get("symbol") or "").upper() for p in positions if p.get("symbol")
+        (p.symbol or "").upper() for p in positions if p.symbol
     ]
     deleted = await delete_orphan_exit_requests(db_conn, open_symbols)
     logger.info(

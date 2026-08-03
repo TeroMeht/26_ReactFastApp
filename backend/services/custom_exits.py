@@ -53,12 +53,12 @@ async def place_custom_exit(
     returns, so the frontend can use them interchangeably).
     """
     position = await client.get_position_by_symbol(symbol)
-    if not position or not position.get("position"):
+    if not position or not position.position:
         raise ValueError(f"No open position for {symbol}; cannot arm custom exit.")
 
-    pos_size = position["position"]
+    pos_size = position.position
     pos_abs = abs(int(pos_size))
-    contract_type = position.get("sectype") or "STK"
+    contract_type = position.sectype or "STK"
     action = _exit_action(pos_size)
 
     trim_f = float(trim_percentage)
@@ -79,13 +79,13 @@ async def place_custom_exit(
         open_orders = await client.get_orders()
         symbol_u = symbol.upper()
         for o in open_orders:
-            if (o.get("symbol") or "").upper() != symbol_u:
+            if (o.symbol or "").upper() != symbol_u:
                 continue
-            if (o.get("ordertype") or "").upper() != "LMT":
+            if (o.ordertype or "").upper() != "LMT":
                 continue
-            if (o.get("action") or "").upper() != action:
+            if (o.action or "").upper() != action:
                 continue
-            existing_exit_qty += int(o.get("totalqty") or 0)
+            existing_exit_qty += int(o.totalqty or 0)
     except Exception:
         logger.exception(
             "place_custom_exit: failed to read open orders for over-trim check"
@@ -158,17 +158,17 @@ async def list_custom_exits(client: IbClient, symbol: str) -> List[Dict]:
     except Exception:
         logger.exception("list_custom_exits: failed to read position for %s", symbol_u)
 
-    pos_size = abs(float(position.get("position") or 0)) if position else 0.0
+    pos_size = abs(float(position.position)) if position else 0.0
 
     rows: List[Dict] = []
     for o in orders:
-        if (o.get("symbol") or "").upper() != symbol_u:
+        if (o.symbol or "").upper() != symbol_u:
             continue
-        if (o.get("ordertype") or "").upper() != "LMT":
+        if (o.ordertype or "").upper() != "LMT":
             continue
 
-        tagged_trim = parse_exit_ref(o.get("orderref"))
-        qty = int(o.get("totalqty") or 0)
+        tagged_trim = parse_exit_ref(o.orderref)
+        qty = int(o.totalqty or 0)
         if tagged_trim is not None:
             trim_val: Optional[float] = tagged_trim
         elif pos_size > 0 and qty > 0:
@@ -182,13 +182,13 @@ async def list_custom_exits(client: IbClient, symbol: str) -> List[Dict]:
         rows.append({
             "symbol": symbol_u,
             "contract_type": "",  # not returned by IbClient.get_orders()
-            "order_id": o.get("orderid") or 0,
-            "perm_id": o.get("orderid"),
-            "target_price": float(o.get("lmtprice") or 0.0),
+            "order_id": o.orderid or 0,
+            "perm_id": o.orderid,
+            "target_price": float(o.lmtprice or 0.0),
             "trim_percentage": trim_val,
-            "action": o.get("action") or "",
+            "action": o.action or "",
             "quantity": qty,
-            "status": (o.get("status") or "armed").lower(),
+            "status": (o.status or "armed").lower(),
         })
     return rows
 

@@ -78,17 +78,17 @@ async def handle_exit_fill(
             )
         else:
             try:
-                await client.cancel_order_by_id(existing_stp_order["orderid"])
+                await client.cancel_order_by_id(existing_stp_order.orderid)
                 logger.info(
                     "Cancelled STP after full exit | symbol=%s order_id=%s",
-                    symbol, existing_stp_order["orderid"],
+                    symbol, existing_stp_order.orderid,
                 )
             except OrderNotFoundError:
                 # STP became terminal between our lookup and the cancel
                 # (rare race). Nothing to do; log and move on.
                 logger.info(
                     "STP already gone by cancel time | symbol=%s order_id=%s",
-                    symbol, existing_stp_order["orderid"],
+                    symbol, existing_stp_order.orderid,
                 )
         return
 
@@ -101,7 +101,7 @@ async def handle_exit_fill(
         return
 
     position = await client.get_position_by_symbol(symbol)
-    if not position or position.get("position") is None:
+    if not position or position.position is None:
         logger.info(
             "No position found after partial exit; leaving STP as-is | "
             "symbol=%s",
@@ -109,7 +109,7 @@ async def handle_exit_fill(
         )
         return
 
-    remaining_qty = abs(int(position["position"]))
+    remaining_qty = abs(int(position.position))
     if remaining_qty <= 0:
         logger.info(
             "Position is zero after partial exit; cancelling STP | "
@@ -117,16 +117,16 @@ async def handle_exit_fill(
             symbol,
         )
         try:
-            await client.cancel_order_by_id(existing_stp_order["orderid"])
+            await client.cancel_order_by_id(existing_stp_order.orderid)
         except OrderNotFoundError:
             # STP already terminal by the time we tried to cancel; harmless.
             logger.info(
                 "STP already gone by cancel time | symbol=%s order_id=%s",
-                symbol, existing_stp_order["orderid"],
+                symbol, existing_stp_order.orderid,
             )
         return
 
-    stp_order_id = existing_stp_order["orderid"]
+    stp_order_id = existing_stp_order.orderid
     await client.modify_stp_order_by_id(stp_order_id, remaining_qty)
     logger.info(
         "Resized STP after partial exit | symbol=%s remaining=%s "

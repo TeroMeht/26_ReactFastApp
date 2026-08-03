@@ -173,7 +173,8 @@ async def build_today_snapshot(client: IbClient) -> TradesSnapshot:
     Single round trip to IB for today's fills, then derive everything.
     Returns an empty snapshot if IB returns no data.
     """
-    logger.info("Building today's trade snapshot")
+    logger.info("\n")
+    logger.info("============ Building today's trade snapshot ============")
 
     today_fills = await client.get_trades()
 
@@ -183,20 +184,20 @@ async def build_today_snapshot(client: IbClient) -> TradesSnapshot:
 
     fills_by_symbol = _group_fills_by_symbol(today_fills)
     entry_counts = _count_entries_per_symbol(fills_by_symbol)
-    completed = build_completed_trades(fills_by_symbol)
-    realized, realized_pnl_by_symbol = aggregate_realized_pnl(completed)
+    completed_trades = build_completed_trades(fills_by_symbol)
+    realized, realized_pnl_by_symbol = aggregate_realized_pnl(completed_trades)
 
-    losses = sum(1 for t in completed if t.get("is_loss"))
+    losses = sum(1 for t in completed_trades if t.get("is_loss"))
     logger.info(f"Entry counts today: {entry_counts}")
     logger.info(
-        f"Trade snapshot: {len(completed)} (losses: {losses}); "
+        f"Trade snapshot: {len(completed_trades)} (losses: {losses}); "
         f"realized PnL: {realized:.4f}"
     )
 
     return TradesSnapshot(
         today_fills=today_fills,
         fills_by_symbol=fills_by_symbol,
-        completed_trades=completed,
+        completed_trades=completed_trades,
         entry_counts=entry_counts,
         realized_pnl_by_symbol=realized_pnl_by_symbol,
         realized_pnl=realized,

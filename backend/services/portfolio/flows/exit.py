@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 # helper functions
 def _decide_exit_mtk_order_action(position) -> str:
 
-    if position["position"] > 0:
+    if position.position > 0:
         action = "SELL"
-    elif position["position"] < 0:
+    elif position.position < 0:
         action = "BUY"
     else:
         # If the position is exactly 0, we raise an error
@@ -31,7 +31,7 @@ def _decide_exit_mtk_order_action(position) -> str:
 
 def _calculate_exit_mkt_order_size(position, trim_percentage) -> int:
 
-    current_position_size = abs(position["position"])
+    current_position_size = abs(position.position)
     exit_qty = int(round(float(current_position_size) * float(trim_percentage)))  # paljonko pitää myydä/ostaa
 
     return exit_qty
@@ -73,16 +73,16 @@ async def _handle_exit(client, position, trim_percentage) -> ExitRequestResponse
     exit_qty = _calculate_exit_mkt_order_size(position, trim_percentage)
 
     order = Order(
-        symbol=position["symbol"],
+        symbol=position.symbol,
         action=action,
         position_size=exit_qty,
-        contract_type=position["sectype"],
+        contract_type=position.sectype,
     )
 
     await client.place_market_order(order, order_ref=build_exit_ref(trim_percentage))
 
     return ExitRequestResponseIB(
-        symbol=position["symbol"],
+        symbol=position.symbol,
         message="Exit MKT placed; STP will be adjusted on fill",
     )
 
@@ -98,7 +98,7 @@ async def _dispatch_exit(client, db_conn, position, matched_exit) -> ExitRequest
                      so leftover strategies don't fire on a re-entered position
     """
     trim = matched_exit["trim_percentage"]
-    symbol = position["symbol"]
+    symbol = position.symbol
 
     if trim < 1.0:
         response = await _handle_exit(client, position, trim)

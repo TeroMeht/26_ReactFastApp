@@ -1,17 +1,14 @@
 """
 Add flow.
 
-Pyramid into an existing winning position. One-shot fetch of position +
-open STP + quote into an AddContext, pure guards over that context, then
-sizing math and order placement extracted into helpers. Orchestrator
-reads top-to-bottom like a checklist, matching entry.py's structure.
+Pyramid into an existing winning position. Orchestrator fetches position
++ open STP + quote once, then walks the guard checklist inline.
 
 Public surface preserved:
     process_add_request - the orchestrator
 """
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import pytz
@@ -21,7 +18,7 @@ from services.orders import (
     calculate_position_size,
     calculate_entry_price,
 )
-from services.portfolio.ib_client import IbClient
+from services.portfolio.ib_client import IbClient, OpenOrder, Position
 from services.portfolio.risk_limits import (
     check_daily_loss,
     enforce_daily_loss_circuit_breaker,
@@ -39,56 +36,14 @@ logger = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------------
-# Context — one-shot snapshot everything the add guards need
+# Guards — pure functions
 # ----------------------------------------------------------------------
-@dataclass(frozen=True)
-class AddContext:
-    """Frozen picture of position + open STP + current quote for one symbol,
-    fetched once per request. Guards below are pure over this."""
-    symbol: str
-    position: dict
-    stp_order: dict
-    bid_ask: dict
-
-
-async def build_add_context(
-    client: IbClient, symbol: str
-) -> tuple[bool, str, AddContext | None]:
-    """Fetch position, STP order, and quote in sequence (fail-fast).
-    Returns (True, "", ctx) or (False, message, None) on the first
-    missing piece so the orchestrator can short-circuit."""
-    position = await client.get_position_by_symbol(symbol)
-    if not position or not position.get("position"):
-        msg = f"No existing position for {symbol} to add to."
-        logger.info(msg)
-        return False, msg, None
-
-    stp_order = await client.get_stp_order_by_symbol(symbol)
-    if not stp_order:
-        msg = f"No open STP order for {symbol}; cannot determine stop price."
-        logger.info(msg)
-        return False, msg, None
-
-    bid_ask = await client.get_bid_ask_price(symbol)
-    if not bid_ask:
-        msg = f"No bid/ask quote available for {symbol}."
-        logger.info(msg)
-        return False, msg, None
-
-    return True, "", AddContext(
-        symbol=symbol, position=position, stp_order=stp_order, bid_ask=bid_ask,
-    )
-
-
-# ----------------------------------------------------------------------
-# Guards — pure functions over AddContext / TradesSnapshot
-# ----------------------------------------------------------------------
-def check_not_losing(ctx: AddContext) -> tuple[bool, str]:
+def check_not_losing(position: Position, bid_ask: dict) -> tuple[bool, str]:
     """Refuse to add to a losing position."""
-    pos_size = ctx.position.get("position")
-    avg_cost = ctx.position.get("avgcost")
-    bid = ctx.bid_ask.get("bid")
-    ask = ctx.bid_ask.get("ask")
+    pos_size = position.position
+    avg_cost = position.avgcost
+    bid = bid_ask.get("bid")
+    ask = bid_ask.get("ask")
 
     if pos_size > 0:
         if ask > avg_cost:
@@ -101,9 +56,9 @@ def check_not_losing(ctx: AddContext) -> tuple[bool, str]:
     return False, "No existing position to add to."
 
 
-def check_not_at_target_size(ctx: AddContext, total_size: int) -> tuple[bool, str]:
+def check_not_at_target_size(position: Position, total_size: int) -> tuple[bool, str]:
     """Refuse to place a 0- or negative-quantity add for both longs and shorts."""
-    current = abs(ctx.position.get("position", 0))
+    current = abs(position.position)
     if current >= total_size:
         msg = "Wanted position size is already in portfolio"
         logger.info(msg)
@@ -134,70 +89,6 @@ def check_add_cooldown(
         logger.info(msg)
         return False, msg, cooldown_until
     return True, "", None
-
-
-# ----------------------------------------------------------------------
-# Sizing — pure math over AddContext + requested total risk
-# ----------------------------------------------------------------------
-def size_add(ctx: AddContext, total_risk: float) -> tuple[float, int, int]:
-    """Compute (add_price, size_to_be_added, total_size) for an add,
-    accounting for the risk already tied up in the existing position.
-
-    We subtract the current open-risk from total_risk so the caller
-    specifies desired *total* exposure, not incremental exposure."""
-    stp_aux_price = ctx.stp_order["auxprice"]
-    existing_position = ctx.position["position"]
-    existing_avg_cost = ctx.position["avgcost"]
-
-    add_price = calculate_entry_price(ctx.bid_ask, stp_aux_price)
-
-    current_open_risk = round(
-        abs(existing_position * (stp_aux_price - existing_avg_cost)), 2
-    )
-    risk_to_be_added = total_risk - current_open_risk
-
-    logger.info(
-        f"Sizing add: entry={add_price} stop={stp_aux_price} "
-        f"total_risk={total_risk} current_open_risk={current_open_risk} "
-        f"risk_to_add={risk_to_be_added}"
-    )
-
-    size_to_be_added = calculate_position_size(
-        entry_price=add_price,
-        stop_price=stp_aux_price,
-        risk=risk_to_be_added,
-    )
-    total_size = abs(existing_position) + size_to_be_added
-    return add_price, size_to_be_added, total_size
-
-
-# ----------------------------------------------------------------------
-# Placement — place the add order and resize the existing STP
-# ----------------------------------------------------------------------
-async def place_add_and_resize_stp(
-    client: IbClient,
-    ctx: AddContext,
-    add_price: float,
-    new_qty: int,
-    total_size: int,
-    contract_type: str,
-) -> tuple[dict, dict, dict]:
-    """Place the limit add order and resize the existing STP to cover the
-    new total position. Returns (new_order, place_result, modify_result)."""
-    stp_aux_price = ctx.stp_order["auxprice"]
-    stp_order_id = ctx.stp_order["orderid"]
-
-    new_order = build_order({
-        "symbol":        ctx.symbol,
-        "entry_price":   add_price,
-        "stop_price":    stp_aux_price,
-        "position_size": new_qty,
-        "contract_type": contract_type,
-    })
-
-    place_result = await client.place_limit_order(new_order)
-    modify_result = await client.modify_stp_order_by_id(stp_order_id, total_size)
-    return new_order, place_result, modify_result
 
 
 # ----------------------------------------------------------------------
@@ -239,39 +130,68 @@ async def process_add_request(
                 cooldown_until=cd_until.isoformat() if cd_until else None,
             )
 
-        # One-shot fetch of everything the remaining guards + sizing need.
-        ok, message, ctx = await build_add_context(client, symbol)
+        # Fetch position, STP order, and quote in sequence (fail-fast).
+        position = await client.get_position_by_symbol(symbol)
+        if not position or not position.position:
+            msg = f"No existing position for {symbol} to add to."
+            logger.info(msg)
+            return AddRequestResponse(allowed=False, message=msg, symbol=symbol)
+
+        stp_order = await client.get_stp_order_by_symbol(symbol)
+        if not stp_order:
+            msg = f"No open STP order for {symbol}; cannot determine stop price."
+            logger.info(msg)
+            return AddRequestResponse(allowed=False, message=msg, symbol=symbol)
+
+        bid_ask = await client.get_bid_ask_price(symbol)
+        if not bid_ask:
+            msg = f"No bid/ask quote available for {symbol}."
+            logger.info(msg)
+            return AddRequestResponse(allowed=False, message=msg, symbol=symbol)
+
+        # Pure guards over the fetched data.
+        ok, message = check_not_losing(position, bid_ask)
         if not ok:
             return AddRequestResponse(allowed=False, message=message, symbol=symbol)
 
-        # Pure guards over the context.
-        for ok, message in (
-            check_not_losing(ctx),
-        ):
-            if not ok:
-                return AddRequestResponse(allowed=False, message=message, symbol=symbol)
-
-        # Sizing math (pure).
-        add_price, size_to_add, total_size = size_add(ctx, total_risk)
-
-        # Guard that needs the computed size.
-        ok, message = check_not_at_target_size(ctx, total_size)
-        if not ok:
-            return AddRequestResponse(allowed=False, message=message, symbol=symbol)
-
-        # target − current works for both long and short because total_size
-        # is always positive and we compare against |existing_position|.
-        existing_position = ctx.position["position"]
-        new_qty = total_size - abs(existing_position)
+        # Sizing — subtract risk already tied up in the existing position so
+        # `total_risk` specifies desired total exposure, not incremental.
+        stp_aux_price = stp_order.auxprice
+        existing_position = position.position
+        add_price = calculate_entry_price(bid_ask, stp_aux_price)
+        current_open_risk = round(
+            abs(existing_position * (stp_aux_price - position.avgcost)), 2
+        )
+        risk_to_add = total_risk - current_open_risk
+        new_qty = calculate_position_size(
+            entry_price=add_price,
+            stop_price=stp_aux_price,
+            risk=risk_to_add,
+        )
+        total_size = abs(existing_position) + new_qty
 
         logger.info(
-            f"Add {symbol}: target={total_size} existing={existing_position} "
-            f"adding={new_qty} at={add_price} stop={ctx.stp_order['auxprice']}"
+            f"Sizing add {symbol}: entry={add_price} stop={stp_aux_price} "
+            f"total_risk={total_risk} current_open_risk={current_open_risk} "
+            f"risk_to_add={risk_to_add} adding={new_qty} target={total_size}"
         )
 
-        # Place the order and resize the STP.
-        new_order, place_result, modify_result = await place_add_and_resize_stp(
-            client, ctx, add_price, new_qty, total_size, payload.contract_type,
+        # Guard that needs the computed size.
+        ok, message = check_not_at_target_size(position, total_size)
+        if not ok:
+            return AddRequestResponse(allowed=False, message=message, symbol=symbol)
+
+        # Place the add order and resize the existing STP to cover the new total.
+        new_order = build_order({
+            "symbol":        symbol,
+            "entry_price":   add_price,
+            "stop_price":    stp_aux_price,
+            "position_size": new_qty,
+            "contract_type": payload.contract_type,
+        })
+        place_result = await client.place_limit_order(new_order)
+        modify_result = await client.modify_stp_order_by_id(
+            stp_order.orderid, total_size
         )
 
         return AddRequestResponse(

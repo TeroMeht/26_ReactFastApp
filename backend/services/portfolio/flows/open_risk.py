@@ -12,19 +12,19 @@ import asyncio
 import logging
 from typing import List
 
-from services.portfolio.ib_client import IbClient
+from services.portfolio.ib_client import IbClient, OpenOrder
 from db.exits import fetch_exits_by_symbol
 from schemas.api_schemas import OpenPosition
 
 logger = logging.getLogger(__name__)
 
 
-def _index_stp_orders_by_symbol(orders: list[dict]) -> dict[str, dict]:
+def _index_stp_orders_by_symbol(orders: list[OpenOrder]) -> dict[str, OpenOrder]:
     """Build {SYMBOL: order} for every open STP / STP LMT order."""
-    index: dict[str, dict] = {}
+    index: dict[str, OpenOrder] = {}
     for o in orders:
-        sym = o.get("symbol")
-        otype = (o.get("ordertype") or "").upper()
+        sym = o.symbol
+        otype = (o.ordertype or "").upper()
         if not sym or otype not in ("STP", "STP LMT"):
             continue
         # First STP per symbol wins, matching get_stp_order_by_symbol semantics.
@@ -51,17 +51,17 @@ async def process_openrisktable(client: IbClient, db_conn) -> List[OpenPosition]
     if not positions:
         return []
 
-    netliq = float(account_summary.get("NetLiquidation", 0))
+    netliq = account_summary.net_liquidation
     stp_by_symbol = _index_stp_orders_by_symbol(all_orders or [])
 
     portfolio_positions: List[OpenPosition] = []
 
     for pos in positions:
-        symbol = pos.get("symbol")
+        symbol = pos.symbol
         try:
-            contract_type = pos.get("sectype")
-            position = float(pos.get("position", 0))
-            avgcost = float(pos.get("avgcost", 0))
+            contract_type = pos.sectype
+            position = float(pos.position)
+            avgcost = float(pos.avgcost)
 
             size = round(abs(position * avgcost), 2)
             allocation = (
@@ -75,8 +75,8 @@ async def process_openrisktable(client: IbClient, db_conn) -> List[OpenPosition]
             exit_rows = await fetch_exits_by_symbol(db_conn, symbol)
             exit_strategies = [r["strategy"] for r in exit_rows]
 
-            if stop_order and stop_order.get("auxprice") is not None:
-                aux_price = float(stop_order.get("auxprice"))
+            if stop_order and stop_order.auxprice is not None:
+                aux_price = float(stop_order.auxprice)
                 open_risk = round(abs(position * (aux_price - avgcost)), 2)
             else:
                 aux_price = 0.0
