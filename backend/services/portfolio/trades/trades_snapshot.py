@@ -18,7 +18,9 @@ Public surface:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time as _time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -37,6 +39,13 @@ logger = logging.getLogger(__name__)
 
 
 TIMEZONE = pytz.timezone(settings.TIMEZONE)
+
+# TTL for the snapshot cache. Short enough that fills that just landed are
+# visible almost immediately (SSE tick + one poll cycle), long enough to
+# collapse Trade Manager page loads — which fan out to trade-log,
+# entry-attempts, lockout-status, and open-risk-table concurrently — into
+# one reqExecutionsAsync round trip.
+SNAPSHOT_TTL_SECONDS = 5
 
 
 def _latest_fill_time(fills: Iterable[Fill]) -> datetime | None:
@@ -168,7 +177,71 @@ def _count_entries_per_symbol(fills_by_symbol: dict[str, list[Fill]]) -> dict[st
     return counts
 
 
+# ----------------------------------------------------------------------
+# Cache — one snapshot per underlying IB connection, TTL'd.
+#
+# Trade Manager page load can fan out to 3-4 endpoints (trade-log,
+# entry-attempts, lockout-status, open-risk-table) plus an entry or add
+# flow, each of which independently calls build_today_snapshot. Without
+# a cache each call fires its own reqExecutionsAsync — order of magnitude
+# more IB traffic than needed. The cache keys by the underlying IB object
+# so per-request IbClient() wrappers all share one slot in production; in
+# tests, stubs without an .ib attribute key by themselves (each stub
+# distinct, no cross-test pollution).
+#
+# Single-flight: concurrent misses share one in-flight fetch via a Future
+# so a page load's 4 endpoints never race four parallel round trips.
+# ----------------------------------------------------------------------
+_snapshot_cache: dict[int, tuple["TradesSnapshot", float]] = {}
+_snapshot_in_flight: dict[int, asyncio.Future] = {}
+
+
+def _cache_key(client: IbClient) -> int:
+    return id(getattr(client, "ib", client))
+
+
+def invalidate_snapshot_cache(client: IbClient | None = None) -> None:
+    """Drop cached snapshot(s). Pass None to clear everything."""
+    if client is None:
+        _snapshot_cache.clear()
+    else:
+        _snapshot_cache.pop(_cache_key(client), None)
+
+
 async def build_today_snapshot(client: IbClient) -> TradesSnapshot:
+    """
+    Build today's snapshot, cached for SNAPSHOT_TTL_SECONDS. Concurrent
+    callers with a cache miss share one in-flight IB fetch (single-flight),
+    so a Trade Manager page load's fanout collapses to one round trip.
+    """
+    key = _cache_key(client)
+    cached = _snapshot_cache.get(key)
+    if cached is not None and _time.monotonic() < cached[1]:
+        return cached[0]
+
+    # Another coroutine is already fetching -- ride along on its future.
+    in_flight = _snapshot_in_flight.get(key)
+    if in_flight is not None:
+        return await in_flight
+
+    # We're the fetcher. Publish the future before awaiting so late arrivals
+    # find it and dedupe onto us.
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+    _snapshot_in_flight[key] = fut
+    try:
+        snapshot = await _build_today_snapshot_uncached(client)
+        _snapshot_cache[key] = (snapshot, _time.monotonic() + SNAPSHOT_TTL_SECONDS)
+        fut.set_result(snapshot)
+        return snapshot
+    except Exception as e:
+        fut.set_exception(e)
+        raise
+    finally:
+        _snapshot_in_flight.pop(key, None)
+
+
+async def _build_today_snapshot_uncached(client: IbClient) -> TradesSnapshot:
     """
     Single round trip to IB for today's fills, then derive everything.
     Returns an empty snapshot if IB returns no data.

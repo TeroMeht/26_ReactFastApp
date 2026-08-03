@@ -56,6 +56,35 @@ async def fetch_exits_by_symbol(db_conn: asyncpg.Connection, symbol: str) -> Lis
     return [dict(row) for row in rows]
 
 
+async def fetch_strategies_grouped_by_symbols(
+    db_conn: asyncpg.Connection, symbols: List[str]
+) -> Dict[str, List[str]]:
+    """
+    One-shot fetch of armed strategies for a batch of symbols. Returns
+    {SYMBOL: [strategy, ...]} — one DB round trip regardless of how many
+    symbols are asked about. Missing symbols get an empty list.
+
+    Replaces the per-position fetch_exits_by_symbol loop in the open-risk
+    view (was O(positions) round trips; now O(1)).
+    """
+    normalized = [s.upper() for s in symbols if s]
+    if not normalized:
+        return {}
+    rows = await db_conn.fetch(
+        """
+        SELECT symbol, strategy
+        FROM exit_requests
+        WHERE symbol = ANY($1::text[])
+        ORDER BY symbol ASC, strategy ASC
+        """,
+        normalized,
+    )
+    grouped: Dict[str, List[str]] = {sym: [] for sym in normalized}
+    for row in rows:
+        grouped[row["symbol"]].append(row["strategy"])
+    return grouped
+
+
 async def fetch_exit_by_symbol_and_strategy(
     db_conn: asyncpg.Connection, symbol: str, strategy: str
 ) -> Dict | None:

@@ -35,9 +35,11 @@ import pytz  # noqa: E402
 from services.portfolio.ib_client import Fill  # noqa: E402
 from services.portfolio.trades.trades_snapshot import (  # noqa: E402
     _latest_fill_time,
+    SNAPSHOT_TTL_SECONDS,
     SymbolTradeStats,
     TradesSnapshot,
     build_today_snapshot,
+    invalidate_snapshot_cache,
 )
 from services.portfolio.trades.trade_builder import (  # noqa: E402
     _signed_qty,
@@ -80,11 +82,20 @@ def fill(symbol, action, qty, price, minutes_ago=60, conid=None):
 
 
 class StubIbClient:
-    """Minimal IbClient stand-in: just returns the fills you pass in."""
-    def __init__(self, fills):
+    """Minimal IbClient stand-in: just returns the fills you pass in.
+
+    Tracks how many times get_trades() was called so cache tests can
+    verify single-flight and TTL behaviour.
+    """
+    def __init__(self, fills, delay: float = 0.0):
         self._fills = fills
+        self._delay = delay
+        self.trades_calls = 0
 
     async def get_trades(self):
+        self.trades_calls += 1
+        if self._delay:
+            await asyncio.sleep(self._delay)
         return list(self._fills)
 
 
@@ -96,6 +107,11 @@ class Runner:
         self.failed = 0
 
     def check(self, name, fn):
+        # Snapshot cache lives at module level and keys by id(). Python
+        # recycles ids after GC, so a stub created in test N can collide
+        # with a cache entry from test N-1. Production is safe (one IB
+        # singleton for the whole process); tests need a clean slate.
+        invalidate_snapshot_cache()
         try:
             fn()
         except AssertionError as e:
@@ -492,6 +508,80 @@ def test_build_entry_attempts(r: Runner):
     r.check("empty fills -> empty rows", check_only_symbols_with_attempts)
 
 
+def test_snapshot_cache(r: Runner):
+    section("build_today_snapshot: TTL cache + single-flight")
+
+    def check_ttl_reuse():
+        stub = StubIbClient([fill("AAPL", "BOT", 100, 10.0, minutes_ago=60)])
+        invalidate_snapshot_cache(stub)
+
+        async def run():
+            s1 = await build_today_snapshot(stub)
+            s2 = await build_today_snapshot(stub)
+            return s1, s2
+
+        s1, s2 = asyncio.run(run())
+        # Same snapshot object (cache returns the cached reference verbatim).
+        assert s1 is s2, "second call within TTL must reuse cached snapshot"
+        eq(stub.trades_calls, 1)
+    r.check("second call within TTL reuses cached snapshot", check_ttl_reuse)
+
+    def check_expiry_refetches():
+        stub = StubIbClient([fill("AAPL", "BOT", 100, 10.0, minutes_ago=60)])
+        invalidate_snapshot_cache(stub)
+
+        async def run():
+            await build_today_snapshot(stub)
+            # Force cache expiry without waiting the full TTL.
+            invalidate_snapshot_cache(stub)
+            await build_today_snapshot(stub)
+
+        asyncio.run(run())
+        eq(stub.trades_calls, 2, hint="second call after invalidate must refetch")
+    r.check("post-invalidate call refetches", check_expiry_refetches)
+
+    def check_single_flight():
+        # Four concurrent callers with a slow get_trades. Only ONE fetch
+        # should actually hit IB; the other three ride the in-flight future.
+        stub = StubIbClient(
+            [fill("AAPL", "BOT", 100, 10.0, minutes_ago=60)],
+            delay=0.1,  # ensure all four block on the same in-flight fetch
+        )
+        invalidate_snapshot_cache(stub)
+
+        async def run():
+            results = await asyncio.gather(*(
+                build_today_snapshot(stub) for _ in range(4)
+            ))
+            return results
+
+        results = asyncio.run(run())
+        eq(stub.trades_calls, 1, hint="single-flight: one fetch for four concurrent callers")
+        # All callers get the same snapshot instance.
+        assert all(s is results[0] for s in results), "all callers share the cached result"
+    r.check("concurrent callers share one in-flight fetch", check_single_flight)
+
+    def check_distinct_clients_dont_collide():
+        # Two stubs with different fills — cache is keyed per underlying
+        # connection (per stub in tests), so each gets its own snapshot.
+        stub_a = StubIbClient([fill("AAPL", "BOT", 100, 10.0, minutes_ago=60)])
+        stub_b = StubIbClient([fill("MSFT", "BOT", 10, 300.0, minutes_ago=60)])
+        invalidate_snapshot_cache()
+
+        async def run():
+            sa = await build_today_snapshot(stub_a)
+            sb = await build_today_snapshot(stub_b)
+            return sa, sb
+
+        sa, sb = asyncio.run(run())
+        eq(stub_a.trades_calls, 1)
+        eq(stub_b.trades_calls, 1)
+        assert "AAPL" in sa.fills_by_symbol
+        assert "MSFT" in sb.fills_by_symbol
+        assert sa is not sb
+    r.check("distinct clients don't collide on the cache", check_distinct_clients_dont_collide)
+
+
 # ---- Main -----------------------------------------------------------
 
 def main():
@@ -507,6 +597,7 @@ def main():
     test_snapshot_queries(r)
     test_build_trade_log(r)
     test_build_entry_attempts(r)
+    test_snapshot_cache(r)
 
     print()
     print("=" * 50)

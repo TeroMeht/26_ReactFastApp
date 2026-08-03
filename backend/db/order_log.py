@@ -78,62 +78,20 @@ def _ts_to_datetime(ts) -> datetime:
 
 async def insert_order_log_event(
     db_conn: asyncpg.Connection, entry: Dict
-) -> bool:
+) -> None:
     """
-    Write one event row. Accepts the same dict shape OrderTracker builds for
-    its in-memory log (unix-epoch float `ts`).
+    Persist one event row. Accepts the same dict shape OrderTracker builds
+    for its in-memory log (unix-epoch float `ts`).
 
-    Dedup: if the most recent row for the same order (matched by perm_id
-    when available, otherwise order_id) already has the same status,
-    last_error and last_error_code, the insert is skipped. This prevents
-    duplicate rows when the tracker re-seeds open orders at startup or
-    when ib_async fires repeat callbacks for the same state.
-
-    Returns True if a row was inserted, False if it was deduped.
+    Dedup lives at the caller: OrderTracker._log_event guards on its
+    in-memory `_last_logged_status` before scheduling the write, so we
+    never see two consecutive rows with identical status for the same
+    order under normal operation. Doing a defensive SELECT here would
+    double the DB round trips per event (a real cost under active
+    trading) to catch a couple of edge cases (startup re-seed, repeated
+    error callbacks) that at worst leave a few duplicate rows in an
+    audit table. That trade isn't worth it.
     """
-    perm_id = int(entry.get("perm_id") or 0)
-    order_id = int(entry.get("order_id") or 0)
-    status = entry.get("status")
-    last_error = entry.get("last_error")
-    last_error_code = entry.get("last_error_code")
-
-    # Find the most recent persisted row for this order.
-    if perm_id:
-        last = await db_conn.fetchrow(
-            """
-            SELECT status, last_error, last_error_code
-            FROM order_log
-            WHERE perm_id = $1
-            ORDER BY ts DESC, id DESC
-            LIMIT 1;
-            """,
-            perm_id,
-        )
-    elif order_id:
-        # Pre-acknowledgement rows have perm_id = 0; match on order_id only
-        # within that subset so we don't collide with unrelated orders that
-        # happen to share an orderId after a restart.
-        last = await db_conn.fetchrow(
-            """
-            SELECT status, last_error, last_error_code
-            FROM order_log
-            WHERE perm_id = 0 AND order_id = $1
-            ORDER BY ts DESC, id DESC
-            LIMIT 1;
-            """,
-            order_id,
-        )
-    else:
-        last = None
-
-    if (
-        last is not None
-        and last["status"] == status
-        and last["last_error"] == last_error
-        and last["last_error_code"] == last_error_code
-    ):
-        return False  # duplicate -- skip insert
-
     await db_conn.execute(
         """
         INSERT INTO order_log (
@@ -150,22 +108,21 @@ async def insert_order_log_event(
         );
         """,
         _ts_to_datetime(entry.get("ts")),
-        perm_id,
-        order_id,
+        int(entry.get("perm_id") or 0),
+        int(entry.get("order_id") or 0),
         entry.get("symbol"),
         entry.get("action"),
         entry.get("order_type"),
         float(entry.get("total_qty") or 0),
         entry.get("lmt_price"),
         entry.get("aux_price"),
-        status,
+        entry.get("status"),
         float(entry.get("filled") or 0),
         float(entry.get("remaining") or 0),
         float(entry.get("avg_fill_price") or 0),
-        last_error,
-        last_error_code,
+        entry.get("last_error"),
+        entry.get("last_error_code"),
     )
-    return True
 
 
 # ---------------------------------------------------------------------------
