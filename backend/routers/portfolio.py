@@ -14,10 +14,11 @@ from services.portfolio.risk_limits import build_lockout_status
 from services.portfolio.flows.add import process_add_request
 from services.portfolio.flows.exit import process_exit_request
 from services.portfolio.flows.open_risk import process_openrisktable
+from services.portfolio.openrisk_hub import OpenRiskHub
 from db.order_log import fetch_order_log
 
 
-from dependencies import get_ib, get_db_conn, get_order_tracker
+from dependencies import get_ib, get_db_conn, get_order_tracker, get_openrisk_hub
 
 from schemas.api_schemas import (
     AddRequest,
@@ -314,3 +315,51 @@ async def get_open_risk_table(ib=Depends(get_ib), db_conn=Depends(get_db_conn)):
             status_code=500,
             detail=f"Failed to fetch open risk table: {str(e)}",
         )
+
+
+@router.get("/open-risk-table/stream")
+async def stream_open_risk_table(
+    hub: OpenRiskHub = Depends(get_openrisk_hub),
+):
+    """
+    Server-Sent Events stream of the open-risk table. On connect we send
+    the current snapshot, then push a new snapshot whenever anything that
+    could change the table happens (fills, order updates, NetLiq shifts,
+    exit-request arm/disarm). See services.portfolio.openrisk_hub for the
+    trigger wiring and debounce logic.
+
+    Event shapes:
+      data: {"type": "snapshot", "rows": [OpenPosition, ...]}
+      data: {"type": "ping"}                                      (every 15s)
+    """
+    q = hub.subscribe()
+
+    async def event_gen():
+        try:
+            # Initial snapshot so the client paints immediately without
+            # waiting for the next event.
+            initial = await hub.snapshot_now()
+            yield "data: " + json.dumps(initial, default=str) + "\n\n"
+
+            while True:
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=15.0)
+                    yield "data: " + json.dumps(msg, default=str) + "\n\n"
+                except asyncio.TimeoutError:
+                    # Keepalive so proxies don't drop the connection.
+                    yield "data: " + json.dumps({"type": "ping"}) + "\n\n"
+        except asyncio.CancelledError:
+            logger.debug("Open-risk SSE client disconnected")
+            raise
+        finally:
+            hub.unsubscribe(q)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

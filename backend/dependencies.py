@@ -4,6 +4,7 @@ from ib_async import IB
 import asyncpg
 
 from services.portfolio.order_tracker import OrderTracker
+from services.portfolio.openrisk_hub import OpenRiskHub
 
 
 # --- IBKR dependency ---
@@ -16,6 +17,12 @@ def get_ib(request: Request) -> IB:
 def get_order_tracker(request: Request) -> OrderTracker:
     tracker: OrderTracker = request.app.state.order_tracker
     return tracker
+
+
+# --- Open-risk hub dependency ---
+def get_openrisk_hub(request: Request) -> OpenRiskHub:
+    hub: OpenRiskHub = request.app.state.openrisk_hub
+    return hub
 
 
 # --- Database dependency ---

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { API_PREFIX } from "@/lib/api_prefix";
 import { paths } from "@/generated/api";
@@ -24,27 +24,13 @@ type ReconcileResult = {
 
 const PortfolioTable = () => {
   const [positions, setPositions] = useState<OpenPosition[]>([]);
+  const [connected, setConnected] = useState(false);
   const router = useRouter();
-  const [loading, setLoading] = useState(false);
   // "Reconcile exits" button state. Message auto-fades so the section
   // header doesn't stay cluttered.
   const [reconciling, setReconciling] = useState(false);
   const [reconcileMsg, setReconcileMsg] = useState<string | null>(null);
-
-  const fetchPortfolio = useCallback(async () => {
-    try {
-      setLoading(true);
-      const res = await fetch(`${API_PREFIX}/portfolio/open-risk-table`);
-      const json = await res.json();
-      console.log(json);
-      setPositions(json as OpenPosition[]);
-    } catch (err) {
-      console.error("Fetch error:", err);
-      setPositions([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const esRef = useRef<EventSource | null>(null);
 
   const handleReconcile = useCallback(async () => {
     setReconciling(true);
@@ -59,6 +45,7 @@ const PortfolioTable = () => {
       setReconcileMsg(
         n === 0 ? "Nothing to clear" : `Cleared ${n} orphan exit${n === 1 ? "" : "s"}`,
       );
+      // Server will notify() the openrisk hub which pushes a fresh snapshot.
     } catch (err) {
       setReconcileMsg(
         `Failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -69,9 +56,53 @@ const PortfolioTable = () => {
     }
   }, []);
 
+  // ----------------------------------------------------------------------
+  // SSE wiring — the backend pushes a fresh snapshot whenever a fill lands,
+  // an order changes, NetLiq shifts, or an exit_request is armed/disarmed.
+  // No polling, no Refresh button; reconnects with backoff on network drop.
+  // ----------------------------------------------------------------------
   useEffect(() => {
-    fetchPortfolio();
-  }, [fetchPortfolio]);
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const connect = () => {
+      if (cancelled) return;
+      const es = new EventSource(
+        `${API_PREFIX}/portfolio/open-risk-table/stream`,
+      );
+      esRef.current = es;
+
+      es.onopen = () => setConnected(true);
+
+      es.onmessage = (ev) => {
+        try {
+          const payload = JSON.parse(ev.data);
+          if (payload.type === "snapshot") {
+            setPositions((payload.rows ?? []) as OpenPosition[]);
+          }
+          // ping → ignore
+        } catch (err) {
+          console.error("Portfolio SSE parse error:", err);
+        }
+      };
+
+      es.onerror = () => {
+        setConnected(false);
+        es.close();
+        if (cancelled) return;
+        retryTimer = setTimeout(connect, 2000);
+      };
+    };
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      esRef.current?.close();
+      esRef.current = null;
+    };
+  }, []);
 
   const handleManage = (position: OpenPosition) => {
     // Serialize the object as base64
@@ -85,23 +116,24 @@ const PortfolioTable = () => {
   
   return (
     <div className="py-4">
-      <h2 className="text-xl font-bold mb-4">Portfolio</h2>
+      <h2 className="text-xl font-bold mb-4">
+        Portfolio
+        <span
+          className={`ml-3 inline-block px-2 py-0.5 text-xs rounded-full border ${
+            connected
+              ? "bg-green-100 text-green-800 border-green-300"
+              : "bg-red-100 text-red-800 border-red-300"
+          }`}
+        >
+          {connected ? "live" : "disconnected"}
+        </span>
+      </h2>
 
           <div className="flex items-center gap-2">
-            {/*  Refresh Button */}
-            <Button
-              variant="outline"
-              onClick={fetchPortfolio}
-              disabled={loading}
-            >
-              {loading ? "Refreshing..." : "Refresh"}
-            </Button>
-
             {/*  Clear-exits Button — drops armed exit_requests for symbols
-                 the portfolio no longer holds. Kept next to Refresh so the
-                 user can sync DB and IB from one place. Amber styling so
-                 it visually reads as a maintenance action, distinct from
-                 the blue Refresh. Border matches text color. */}
+                 the portfolio no longer holds. Amber styling reads as a
+                 maintenance action. The table auto-refreshes over SSE, so
+                 no manual Refresh button is needed. */}
             <Button
               onClick={handleReconcile}
               disabled={reconciling}

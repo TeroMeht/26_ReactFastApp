@@ -8,8 +8,9 @@ from services.exits import (
     reconcile_exit_requests_with_positions,
 )
 from services.portfolio.ib_client import IbClient
+from services.portfolio.openrisk_hub import OpenRiskHub
 
-from dependencies import get_db_conn, get_ib
+from dependencies import get_db_conn, get_ib, get_openrisk_hub
 from schemas.api_schemas import UpdateExitRequest, ExitRequestResponse
 
 router = APIRouter(
@@ -46,7 +47,11 @@ async def read_exits_for_symbol(symbol: str, db_conn=Depends(get_db_conn)):
 
 
 @router.post("/exits", response_model=dict)
-async def update_exit(request: UpdateExitRequest, db_conn=Depends(get_db_conn)):
+async def update_exit(
+    request: UpdateExitRequest,
+    db_conn=Depends(get_db_conn),
+    hub: OpenRiskHub = Depends(get_openrisk_hub),
+):
 
     try:
         # Upsert by (symbol, strategy). No 'requested' flag — every row in
@@ -57,6 +62,8 @@ async def update_exit(request: UpdateExitRequest, db_conn=Depends(get_db_conn)):
             strategy=request.strategy,
             trim_percentage=float(request.trim_percentage),
         )
+        # Exit-strategies column on the open-risk table just changed.
+        hub.notify()
         return result
 
     except Exception as e:
@@ -70,6 +77,7 @@ async def update_exit(request: UpdateExitRequest, db_conn=Depends(get_db_conn)):
 async def reconcile_exits(
     ib=Depends(get_ib),
     db_conn=Depends(get_db_conn),
+    hub: OpenRiskHub = Depends(get_openrisk_hub),
 ):
     """
     Drop any armed exit_requests whose symbol is no longer held in the IB
@@ -79,7 +87,9 @@ async def reconcile_exits(
     """
     try:
         client = IbClient(ib)
-        return await reconcile_exit_requests_with_positions(client, db_conn)
+        result = await reconcile_exit_requests_with_positions(client, db_conn)
+        hub.notify()
+        return result
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -90,7 +100,10 @@ async def reconcile_exits(
 # DELETE a single (symbol, strategy) exit request row.
 @router.delete("/exits/{symbol}/{strategy}", response_model=dict)
 async def delete_exit(
-    symbol: str, strategy: str, db_conn=Depends(get_db_conn)
+    symbol: str,
+    strategy: str,
+    db_conn=Depends(get_db_conn),
+    hub: OpenRiskHub = Depends(get_openrisk_hub),
 ):
     try:
         result = await delete_exit_requests(db_conn, symbol, strategy)
@@ -102,6 +115,7 @@ async def delete_exit(
                     f"strategy='{strategy}'."
                 ),
             )
+        hub.notify()
         return result
     except HTTPException:
         raise

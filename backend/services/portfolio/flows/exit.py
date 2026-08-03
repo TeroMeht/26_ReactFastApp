@@ -1,7 +1,20 @@
+"""
+Strategy-based exit flow.
+
+Companion to services.portfolio.flows.exit_manual, which handles the
+POST-fill side of the same lifecycle. This module handles the PRE-fill
+side: a strategy alarm arrives → look up its armed exit_request row →
+place a tagged MKT order → disarm the strategy (delete the DB row).
+The STP adjustment fires off the fill via exit_manual.handle_exit_fill.
+
+Public surface:
+    process_exit_request  - orchestrator, called by the router
+"""
+
 import logging
-from typing import List, Dict
+
 from services.orders import Order
-from services.portfolio.ib_client import IbClient
+from services.portfolio.ib_client import IbClient, Position
 from services.portfolio.flows.exit_manual import build_exit_ref
 from db.exits import (
     fetch_exits_by_symbol,
@@ -16,139 +29,120 @@ from schemas.api_schemas import (
 logger = logging.getLogger(__name__)
 
 
-# helper functions
-def _decide_exit_mtk_order_action(position) -> str:
-
+# ----------------------------------------------------------------------
+# Pure helpers
+# ----------------------------------------------------------------------
+def _exit_action(position: Position) -> str:
+    """SELL for a long, BUY for a short. Raises on zero position."""
     if position.position > 0:
-        action = "SELL"
-    elif position.position < 0:
-        action = "BUY"
-    else:
-        # If the position is exactly 0, we raise an error
-        raise ValueError("Invalid position value: Position cannot be zero for an exit order.")
-
-    return action
-
-def _calculate_exit_mkt_order_size(position, trim_percentage) -> int:
-
-    current_position_size = abs(position.position)
-    exit_qty = int(round(float(current_position_size) * float(trim_percentage)))  # paljonko pitää myydä/ostaa
-
-    return exit_qty
-
-def _find_matching_exit(exits_for_this_symbol: List[Dict], alarm: str) -> Dict:
-
-    matched_exit = None
-
-    for exit_request in exits_for_this_symbol:
-        if exit_request["strategy"] == alarm:  # Matching strategy to alarm
-            matched_exit = exit_request
-            break
-
-    if matched_exit:
-        # We found a matching strategy and alarm
-        logger.info("Found matching exit strategy: %s", matched_exit)
-
-        # Prepare the result with relevant information
-        result = {
-            "matched_exit": matched_exit
-        }
-
-        return result
-    else:
-        # No matching strategy found for the given alarm
-        logger.warning("No matching exit strategy found for alarm: %s", alarm)
-        return None
+        return "SELL"
+    if position.position < 0:
+        return "BUY"
+    raise ValueError("Cannot place exit: position is zero")
 
 
-# handlers to deal with ib client and db together, called by the router
-#
-# Both partial and full strategy exits place a tagged MKT order and stop
-# there. STP adjustment (resize on partial, cancel on full) is handled
-# off the fill event in services.portfolio.flows.exit_manual.handle_exit_fill,
-# wired up by main.py's OrderTracker fill bridge — same flow as
-# user-placed custom exits.
-async def _handle_exit(client, position, trim_percentage) -> ExitRequestResponseIB:
-    action = _decide_exit_mtk_order_action(position)
-    exit_qty = _calculate_exit_mkt_order_size(position, trim_percentage)
-
-    order = Order(
-        symbol=position.symbol,
-        action=action,
-        position_size=exit_qty,
-        contract_type=position.sectype,
-    )
-
-    await client.place_market_order(order, order_ref=build_exit_ref(trim_percentage))
-
-    return ExitRequestResponseIB(
-        symbol=position.symbol,
-        message="Exit MKT placed; STP will be adjusted on fill",
-    )
+def _exit_qty(position: Position, trim_percentage: float) -> int:
+    """Round(|position| * trim) — how many contracts the exit should touch."""
+    return int(round(abs(position.position) * float(trim_percentage)))
 
 
-# wrapper
-async def _dispatch_exit(client, db_conn, position, matched_exit) -> ExitRequestResponseIB:
+# ----------------------------------------------------------------------
+# Orchestrator
+# ----------------------------------------------------------------------
+async def process_exit_request(
+    client: IbClient, db_conn, payload: ExitRequest,
+) -> ExitRequestResponseIB:
     """
-    Pick partial vs full exit based on trim_percentage, execute it, and
-    clean up the corresponding exit_request row(s) so the strategy disarms.
+    Process a strategy-triggered exit. Top-to-bottom checklist:
+      1. Bail if an exit MKT is already out for this symbol.
+      2. Bail if there's no position to exit.
+      3. Bail if no exit_request rows exist for this symbol.
+      4. Bail if no armed strategy matches the incoming alarm.
+      5. Place a tagged MKT for the matched trim, then disarm:
+           - trim >= 1.0 -> full exit, delete every row for this symbol
+             so leftover strategies don't fire on a re-entered position
+           - trim <  1.0 -> partial exit, delete only the fired row
 
-    - trim < 1.0  -> partial exit, delete only this (symbol, strategy) row
-    - trim == 1.0 -> full exit, delete every exit_request row for the symbol
-                     so leftover strategies don't fire on a re-entered position
+    STP adjustment (cancel on full, resize on partial) is handled off
+    the fill event in exit_manual.handle_exit_fill.
     """
-    trim = matched_exit["trim_percentage"]
-    symbol = position.symbol
+    symbol = payload.symbol   # uppercased + validated by ExitRequest schema
+    alarm = payload.alarm     # validated against EXIT_TRIGGERS by schema
 
-    if trim < 1.0:
-        response = await _handle_exit(client, position, trim)
-        await delete_exit_request(db_conn, symbol, matched_exit["strategy"])
-    elif trim == 1.0:
-        response = await _handle_exit(client, position, trim)
-        await delete_exit_requests_by_symbol(db_conn, symbol)
-    else:
-        raise ValueError(f"Unexpected trim_percentage: {trim}")
-
-    return response
-
-
-# main flow
-async def process_exit_request(client: IbClient, db_conn, payload: ExitRequest) -> ExitRequestResponseIB:
-
-
-    symbol = payload.symbol  # already uppercased + validated by ExitRequest schema
-    alarm = payload.alarm    # already validated against EXIT_TRIGGERS by schema
-
-    logger.info("Received exit request | symbol = %s alarm = %s time = %s", symbol, alarm, payload.time)
+    logger.info(
+        "Received exit request | symbol=%s alarm=%s time=%s",
+        symbol, alarm, payload.time,
+    )
 
     try:
-        existing_mkt_order = await client.get_mkt_order_by_symbol(symbol)  # jos mkt order tälle symbolille on jo niin ei tarvi mennä pidemmälle
-        if existing_mkt_order:
-            logger.info("Market order for this exit exists already")
-            return ExitRequestResponseIB(symbol=symbol, message="Market order for this exit exists already")
+        existing_mkt = await client.get_mkt_order_by_symbol(symbol)
+        if existing_mkt:
+            msg = "MKT order for this exit already exists"
+            logger.info("%s | symbol=%s", msg, symbol)
+            return ExitRequestResponseIB(symbol=symbol, message=msg)
 
         position = await client.get_position_by_symbol(symbol)
-        if not position:  # Jos ei ole positiota
-            logger.info("No position found for symbol: %s", symbol)
-            return ExitRequestResponseIB(symbol=symbol, message="No position found")
+        if not position:
+            msg = "No position to exit"
+            logger.info("%s | symbol=%s", msg, symbol)
+            return ExitRequestResponseIB(symbol=symbol, message=msg)
 
-        exits_for_this_symbol = await fetch_exits_by_symbol(db_conn, symbol)  # katso exit requestit onko sille
-        if not exits_for_this_symbol:  # ei exit requestiä positiolle
-            logger.info("No active exit request for symbol: %s", symbol)
-            return ExitRequestResponseIB(symbol=symbol, message="No active exit request for this symbol")
+        exits_for_symbol = await fetch_exits_by_symbol(db_conn, symbol)
+        if not exits_for_symbol:
+            msg = "No active exit request for this symbol"
+            logger.info("%s | symbol=%s", msg, symbol)
+            return ExitRequestResponseIB(symbol=symbol, message=msg)
 
-        matching_exit_row = _find_matching_exit(exits_for_this_symbol, alarm)
-        if not matching_exit_row:
-            logger.warning("No exit strategy found for alarm: %s", alarm)
-            return ExitRequestResponseIB(symbol=symbol, message="There is no matching exit request")
+        matched = next(
+            (r for r in exits_for_symbol if r["strategy"] == alarm),
+            None,
+        )
+        if not matched:
+            msg = "No matching exit strategy for alarm"
+            logger.warning("%s | symbol=%s alarm=%s", msg, symbol, alarm)
+            return ExitRequestResponseIB(symbol=symbol, message=msg)
 
-        return await _dispatch_exit(client, db_conn, position, matching_exit_row["matched_exit"])
+        trim = float(matched["trim_percentage"])
+        if not 0.0 < trim <= 1.0:
+            raise ValueError(f"Unexpected trim_percentage: {trim}")
+
+        # Place the tagged MKT. Fill bridge picks up the tag and adjusts STP.
+        action = _exit_action(position)
+        qty = _exit_qty(position, trim)
+        order = Order(
+            symbol=position.symbol,
+            action=action,
+            position_size=qty,
+            contract_type=position.sectype,
+        )
+        await client.place_market_order(
+            order, order_ref=build_exit_ref(trim),
+        )
+        logger.info(
+            "Exit MKT placed | symbol=%s action=%s qty=%s trim=%s",
+            symbol, action, qty, trim,
+        )
+
+        # Disarm — full exit clears every strategy for the symbol so
+        # leftover rows don't fire on a re-entered position.
+        if trim >= 1.0:
+            await delete_exit_requests_by_symbol(db_conn, symbol)
+        else:
+            await delete_exit_request(db_conn, symbol, matched["strategy"])
+
+        return ExitRequestResponseIB(
+            symbol=symbol,
+            message="Exit MKT placed; STP will be adjusted on fill",
+        )
 
     except Exception:
-        # Anything unexpected mid-flight: log loudly and return an error response
-        # so the caller doesn't get None back.
+        # Any unexpected failure: log loudly, return a shaped error so the
+        # caller doesn't see None. Same pattern as the entry/add flows.
         logger.exception(
             "Unhandled exception during exit handling | symbol=%s alarm=%s",
             symbol, alarm,
         )
-        return ExitRequestResponseIB(symbol=symbol, message="Unhandled error during exit handling")
+        return ExitRequestResponseIB(
+            symbol=symbol,
+            message="Unhandled error during exit handling",
+        )
