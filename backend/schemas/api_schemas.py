@@ -2,7 +2,7 @@
 from pydantic import BaseModel, field_validator,Field
 from datetime import date, time
 from datetime import datetime
-from typing import Optional,Any,List
+from typing import Optional,Any,List,Literal
 from decimal import Decimal
 
 from core.config import settings
@@ -297,6 +297,15 @@ class EntryRequest(BaseModel):
     entry_price: float
     stop_price: float
     position_size: int
+    # "manual"    -> place the bracket order immediately once guards pass
+    #                (the historical, default behaviour).
+    # "automatic" -> guards run identically, but the bracket order is NOT
+    #                placed. It is parked in the PendingApprovalsHub and
+    #                broadcast over SSE; the frontend pops a confirmation
+    #                dialog and the user's Accept click triggers the actual
+    #                place_bracket_order via /entry-request/approve.
+    # Default kept as "manual" so existing callers stay unaffected.
+    request_type: Literal["manual", "automatic"] = "manual"
 
 
 class EntryRequestResponse(BaseModel):
@@ -310,6 +319,28 @@ class EntryRequestResponse(BaseModel):
     # cooldown banner up (with a countdown) until this moment.
     reason: Optional[str] = None  # e.g. "loss_cooldown"
     cooldown_until: Optional[str] = None
+
+
+# --- Automatic entry approvals ----------------------------------------------
+# When request_type="automatic" and all guards pass, the bracket order is
+# parked here instead of being placed. The pending row is broadcast on the
+# /entry-request/pending/stream SSE, the UI shows a modal, and the user's
+# Accept/Decline decision is delivered back via POST /entry-request/approve.
+class PendingApproval(BaseModel):
+    approval_id: str
+    symbol: str
+    contract_type: str
+    entry_price: float
+    stop_price: float
+    position_size: int
+    # ISO-8601 timestamp — mostly informational, useful if the FE wants to
+    # display "queued 3s ago" or to expire the popup after N seconds.
+    created_at: str
+
+
+class ApprovalDecisionRequest(BaseModel):
+    approval_id: str
+    decision: Literal["accept", "decline"]
 
 
 # Lockout status -- proactive view of the loss-cooldown so the UI can
@@ -471,56 +502,3 @@ class DailySummaryResponse(BaseModel):
     rows: List[DailySummaryRow] = []
 
 
-# ---------------- Auto Assist ----------------
-
-class AutoAssistStartRequest(BaseModel):
-    symbol: str = Field(..., min_length=1, description="Ticker to start streaming")
-
-    @field_validator("symbol")
-    @classmethod
-    def _uppercase_symbol(cls, v: str) -> str:
-        v = v.strip().upper()
-        if not v:
-            raise ValueError("symbol cannot be empty")
-        return v
-
-
-class AutoAssistBar(BaseModel):
-    time: float
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: Optional[float] = None
-    ema9: Optional[float] = None
-    vwap: Optional[float] = None
-
-
-class AutoAssistTick(BaseModel):
-    time: float
-    price: float
-    bar_time: float
-    bar_open: float
-    bar_high: float
-    bar_low: float
-    bar_close: float
-    bar_volume: Optional[float] = None
-    bar_vwap: Optional[float] = None
-
-
-class AutoAssistSignal(BaseModel):
-    symbol: str
-    price: float
-    last2_high: float
-    stop_level: float
-    position_size: int
-    contract_type: str = "stock"
-    bar_time: float
-    ts: float
-
-
-class AutoAssistState(BaseModel):
-    symbol: str
-    bars: list[AutoAssistBar]
-    last2_high: Optional[float] = None
-    stop_level: Optional[float] = None

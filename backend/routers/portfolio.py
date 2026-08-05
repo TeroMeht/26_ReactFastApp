@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 from typing import List
 from services.portfolio.ib_client import IbClient, OrderNotFoundError
 from services.portfolio.order_tracker import OrderTracker
-from services.portfolio.flows.entry import process_entry_request
+from services.portfolio.flows.entry import process_entry_request, place_approved_entry
 from services.portfolio.trades.trade_log import build_trade_log
 from services.portfolio.entry_attempts import build_entry_attempts
 from services.portfolio.risk_limits import build_lockout_status
@@ -15,10 +15,17 @@ from services.portfolio.flows.add import process_add_request
 from services.portfolio.flows.exit import process_exit_request
 from services.portfolio.flows.open_risk import process_openrisktable
 from services.portfolio.openrisk_hub import OpenRiskHub
+from services.portfolio.pending_approvals_hub import PendingApprovalsHub
 from db.order_log import fetch_order_log
 
 
-from dependencies import get_ib, get_db_conn, get_order_tracker, get_openrisk_hub
+from dependencies import (
+    get_ib,
+    get_db_conn,
+    get_order_tracker,
+    get_openrisk_hub,
+    get_pending_approvals_hub,
+)
 
 from schemas.api_schemas import (
     AddRequest,
@@ -34,6 +41,7 @@ from schemas.api_schemas import (
     OrderLogEntry,
     TradeLogResponse,
     LockoutStatusResponse,
+    ApprovalDecisionRequest,
 )
 from dataclasses import asdict
 
@@ -118,11 +126,114 @@ async def entry_request(
     payload: EntryRequest,
     ib=Depends(get_ib),
     tracker: OrderTracker = Depends(get_order_tracker),
+    approvals_hub: PendingApprovalsHub = Depends(get_pending_approvals_hub),
 ):
-    # Entry no longer arms exits -- exits are managed independently on the
-    # trade-manager page, so no db_conn is needed here.
+    """
+    Unified entry endpoint.
+
+    - request_type="manual"    -> unchanged historical behaviour: guards
+                                  run and, if they pass, the bracket
+                                  order is placed immediately.
+    - request_type="automatic" -> same guards; on pass, the priced order
+                                  is parked in ``approvals_hub`` and
+                                  broadcast on /entry-request/pending/stream.
+                                  The user's Accept click on the FE modal
+                                  hits /entry-request/approve, which does
+                                  the actual place_bracket_order.
+    Response shape is identical in both cases (parentOrderId/stopOrderId
+    are simply None on the automatic path until approval).
+    """
     client = IbClient(ib, tracker=tracker)
-    return await process_entry_request(client, payload)
+    return await process_entry_request(client, payload, approvals_hub=approvals_hub)
+
+
+@router.get("/entry-request/pending/stream")
+async def stream_pending_approvals(
+    approvals_hub: PendingApprovalsHub = Depends(get_pending_approvals_hub),
+):
+    """
+    Server-Sent Events stream of pending automatic-entry approvals.
+
+    A single global consumer (the FE ApprovalDialog mounted in the root
+    layout) subscribes once and pops a confirmation modal for every
+    pending row. On connect we send the current snapshot; subsequent
+    add/remove events fire as automatic requests are parked and the user
+    accepts/declines them.
+
+    Event shapes:
+      data: {"type": "snapshot", "pending": [PendingApproval, ...]}
+      data: {"type": "add",       "pending": PendingApproval}
+      data: {"type": "remove",    "approval_id": "..."}
+      data: {"type": "ping"}                                       (every 15s)
+    """
+    q = approvals_hub.subscribe()
+
+    async def event_gen():
+        try:
+            yield "data: " + json.dumps(approvals_hub.snapshot_now()) + "\n\n"
+
+            while True:
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=15.0)
+                    yield "data: " + json.dumps(msg) + "\n\n"
+                except asyncio.TimeoutError:
+                    yield "data: " + json.dumps({"type": "ping"}) + "\n\n"
+        except asyncio.CancelledError:
+            logger.debug("Pending-approvals SSE client disconnected")
+            raise
+        finally:
+            approvals_hub.unsubscribe(q)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/entry-request/approve", response_model=EntryRequestResponse)
+async def approve_entry_request(
+    payload: ApprovalDecisionRequest,
+    ib=Depends(get_ib),
+    tracker: OrderTracker = Depends(get_order_tracker),
+    approvals_hub: PendingApprovalsHub = Depends(get_pending_approvals_hub),
+):
+    """
+    Deliver the user's Accept/Decline for a parked automatic entry.
+
+    Accept  -> pop the row, place the bracket order, return the standard
+               EntryRequestResponse (allowed=True with parent/stop order
+               IDs on success).
+    Decline -> pop the row, return allowed=False with a "declined" note.
+
+    A missing approval_id (already handled, expired, backend restarted)
+    returns 404 so the FE can clear its local state.
+    """
+    approval = await approvals_hub.pop_pending(payload.approval_id)
+    if approval is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No pending approval with id={payload.approval_id}",
+        )
+
+    if payload.decision == "decline":
+        logger.info(
+            "User declined automatic entry %s for %s",
+            approval.approval_id,
+            approval.symbol,
+        )
+        return EntryRequestResponse(
+            allowed=False,
+            message="Automatic entry declined by user.",
+            symbol=approval.symbol,
+        )
+
+    client = IbClient(ib, tracker=tracker)
+    return await place_approved_entry(client, approval)
 
 
 @router.post("/add-request", response_model=AddRequestResponse)

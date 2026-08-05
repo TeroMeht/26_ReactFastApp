@@ -5,6 +5,7 @@ import asyncpg
 
 from services.portfolio.order_tracker import OrderTracker
 from services.portfolio.openrisk_hub import OpenRiskHub
+from services.portfolio.pending_approvals_hub import PendingApprovalsHub
 
 
 # --- IBKR dependency ---
@@ -22,6 +23,14 @@ def get_order_tracker(request: Request) -> OrderTracker:
 # --- Open-risk hub dependency ---
 def get_openrisk_hub(request: Request) -> OpenRiskHub:
     hub: OpenRiskHub = request.app.state.openrisk_hub
+    return hub
+
+
+# --- Pending-approvals hub dependency ---
+# Broker for automatic entry requests waiting on a user Accept/Decline
+# click in the frontend dialog. See services.portfolio.pending_approvals_hub.
+def get_pending_approvals_hub(request: Request) -> PendingApprovalsHub:
+    hub: PendingApprovalsHub = request.app.state.pending_approvals_hub
     return hub
 
 

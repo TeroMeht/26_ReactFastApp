@@ -21,6 +21,7 @@ from core.startup.ibkr import connect_ib, disconnect_ib
 from core.startup.database import init_database, ensure_schema, close_database
 from core.startup.order_tracker_setup import wire_order_tracker
 from core.startup.openrisk_hub_setup import wire_openrisk_hub
+from core.startup.pending_approvals_hub_setup import wire_pending_approvals_hub
 from core.startup.live_scanner import start_live_scanner, stop_live_scanner
 from core.startup.streamer_watchdog import (
     start_streamer_watchdog,
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI):
         await ensure_schema(app)
         await wire_order_tracker(app)
         await wire_openrisk_hub(app)
+        await wire_pending_approvals_hub(app)
         await start_live_scanner(app)   # non-fatal on failure
         start_streamer_watchdog(app)
     except Exception:

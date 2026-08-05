@@ -4,6 +4,7 @@ import * as React from "react";
 import Sidebar from "@/components/Sidebar";
 import RightSidebar from "@/components/RightSideBar";
 import LockoutBanner from "@/components/trade-manager/LockoutBanner";
+import AutomaticEntryApprovalDialog from "@/components/trade-manager/AutomaticEntryApprovalDialog";
 import { API_PREFIX } from '@/lib/api_prefix';
 import { components } from "@/generated/api"; // generated type from OpenAPI
 
@@ -82,6 +83,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
       {/* Right Sidebar with alarms — fixed 450px (xl+) */}
       <RightSidebar alarms={alarms} pageSpecific={true} />
+
+      {/*
+        Global Accept/Decline modal for automatic entry requests. Subscribes
+        once to /portfolio/entry-request/pending/stream so any page (not just
+        the trade manager) will surface the popup the moment an automatic
+        request lands.
+      */}
+      <AutomaticEntryApprovalDialog />
 
       {/* Optional error display */}
       {error && (
