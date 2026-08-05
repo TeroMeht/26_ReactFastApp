@@ -110,6 +110,124 @@ def check_frequency(snapshot: TradesSnapshot, symbol: str, current_time: datetim
 
 
 
+def entry_validator(
+    client: IbClient,
+    snapshot: TradesSnapshot,
+    current_time: datetime,
+    symbol: str,
+) -> EntryRequestResponse:
+
+    ok, message = check_daily_loss(snapshot)
+    if not ok:
+        enforce_daily_loss_circuit_breaker(client)
+        return EntryRequestResponse(allowed=False, message=message, symbol=symbol)
+
+    for ok, message in (
+        check_block_window(current_time),
+        check_total_attempts(snapshot),
+        check_attempts(snapshot, symbol),
+        check_frequency(snapshot, symbol, current_time),
+    ):
+        if not ok:
+            return EntryRequestResponse(allowed=False, message=message, symbol=symbol)
+
+    for cd_ok, cd_msg, cd_until in (
+        check_consecutive_losses(snapshot, current_time),
+        check_loss_cooldown(snapshot, current_time),
+    ):
+        if not cd_ok:
+            return EntryRequestResponse(
+                allowed=False,
+                message=cd_msg,
+                symbol=symbol,
+                reason="loss_cooldown",
+                cooldown_until=cd_until.isoformat() if cd_until else None,
+            )
+
+    return EntryRequestResponse(allowed=True, message="Entry allowed", symbol=symbol)
+
+
+async def process_manual_entry(
+    client: IbClient,
+    payload: EntryRequest,
+) -> EntryRequestResponse:
+    """
+    Manual entry: fetch a live IB quote right now, price + size the
+    order, and place the bracket immediately. Assumes ``entry_validator``
+    has already accepted this request in the orchestrator.
+    """
+    symbol = payload.symbol
+    stop_price = payload.stop_price
+
+    bid_ask = await client.get_bid_ask_price(symbol)
+    entry_price = calculate_entry_price(bid_ask, stop_price)
+    position_size = calculate_position_size(
+        entry_price=entry_price,
+        stop_price=stop_price,
+        risk=risk_settings.RISK,
+    )
+    order = build_order(OrderBuilder(
+        symbol=symbol,
+        entry_price=entry_price,
+        stop_price=stop_price,
+        position_size=position_size,
+        contract_type=payload.contract_type,
+    ))
+    return await _place_and_respond(
+        client, order, success_message="Entry ok"
+    )
+
+
+async def process_automatic_entry(
+    payload: EntryRequest,
+    approvals_hub: Optional[PendingApprovalsHub],
+) -> EntryRequestResponse:
+    """
+    Automatic entry: skip IB entirely for now. Compute a preview
+    ``position_size`` off the streamer-supplied ``entry_price`` so the
+    popup can show the user what will be sent, then park the row in
+    the hub. The actual bracket is placed later by
+    ``place_approved_entry`` when the user clicks Accept.
+
+    Guards have already run in the orchestrator; here we only handle
+    the two automatic-specific failure modes:
+      * no ``approvals_hub`` wired (shouldn't happen in production).
+      * ``calculate_position_size`` raises (e.g. risk-per-share
+        exceeds the risk budget); bubbles up to the orchestrator's
+        ValueError handler and becomes a clean reject.
+    """
+    symbol = payload.symbol
+    stop_price = payload.stop_price
+
+    if approvals_hub is None:
+        msg = (
+            f"Automatic entry for {symbol} rejected: approvals hub "
+            "unavailable."
+        )
+        logger.error(msg)
+        return EntryRequestResponse(
+            allowed=False, message=msg, symbol=symbol
+        )
+
+    preview_size = calculate_position_size(
+        entry_price=payload.entry_price,
+        stop_price=stop_price,
+        risk=risk_settings.RISK,
+    )
+    pending = await approvals_hub.add_pending(
+        symbol=symbol,
+        contract_type=payload.contract_type,
+        entry_price=float(payload.entry_price),
+        stop_price=float(stop_price),
+        position_size=preview_size,
+    )
+    return EntryRequestResponse(
+        allowed=True,
+        message=f"Awaiting user approval (id={pending.approval_id}).",
+        symbol=symbol,
+    )
+
+
 async def _place_and_respond(
     client: IbClient,
     order: Order,
@@ -141,7 +259,7 @@ async def _place_and_respond(
         stopOrderId=stop.orderId,
     )
 
-
+# Final step before entering
 async def place_approved_entry(
     client: IbClient,
     approval: PendingApproval,
@@ -194,7 +312,7 @@ async def place_approved_entry(
 
 
 
-
+# Main entry flow orchestrator -- the public surface of this module.
 async def process_entry_request(
     client: IbClient,
     payload: EntryRequest,
@@ -217,99 +335,21 @@ async def process_entry_request(
     try:
         snapshot = await build_today_snapshot(client)
 
-
-        ok, message = check_daily_loss(snapshot)
-        if not ok:
-            enforce_daily_loss_circuit_breaker(client)
-            return EntryRequestResponse(allowed=False, message=message, symbol=symbol)
-
-        for ok, message in (
-            check_block_window(current_time),
-            check_total_attempts(snapshot),
-            check_attempts(snapshot, symbol),
-            check_frequency(snapshot, symbol, current_time),
-        ):
-            if not ok:
-                return EntryRequestResponse(allowed=False, message=message, symbol=symbol)
-
-        # Escalating consecutive-loss lockout runs first -- it's the more
-        # restrictive of the two and they share the loss_cooldown response
-        # shape, so the frontend banner handles either tier transparently.
-        for cd_ok, cd_msg, cd_until in (
-            check_consecutive_losses(snapshot, current_time),
-            check_loss_cooldown(snapshot, current_time),
-        ):
-            if not cd_ok:
-                return EntryRequestResponse(
-                    allowed=False,
-                    message=cd_msg,
-                    symbol=symbol,
-                    reason="loss_cooldown",
-                    cooldown_until=cd_until.isoformat() if cd_until else None,
-                )
+        # entry_validator always returns an EntryRequestResponse: on
+        # rejection we return it verbatim; on allowed we proceed to
+        # pricing + placement.
+        validation = entry_validator(client, snapshot, current_time, symbol)
+        if not validation.allowed:
+            return validation
 
         logger.info(f"Entry allowed for {symbol}")
 
-        # ---- Automatic path -----------------------------------------------
-
+        # Dispatch to the flavour-specific handler. The manual path
+        # fetches a live quote and places immediately; the automatic
+        # path parks a preview in the hub for the user to Accept.
         if request_type == "automatic":
-            if approvals_hub is None:
-                msg = (
-                    f"Automatic entry for {symbol} rejected: approvals hub "
-                    "unavailable."
-                )
-                logger.error(msg)
-                return EntryRequestResponse(
-                    allowed=False, message=msg, symbol=symbol
-                )
-
-            # Sizing without build_order: call calculate_position_size
-            # directly so the popup can show the user the size that
-            # goes with the previewed entry/stop. If the risk-per-share
-            # exceeds RISK the ValueError bubbles to the outer handler
-            # and becomes a clean allowed=False reject.
-            preview_size = calculate_position_size(
-                entry_price=payload.entry_price,
-                stop_price=stop_price,
-                risk=risk_settings.RISK,
-            )
-            pending = await approvals_hub.add_pending(
-                symbol=symbol,
-                contract_type=payload.contract_type,
-                entry_price=float(payload.entry_price),
-                stop_price=float(stop_price),
-                position_size=preview_size,
-            )
-            return EntryRequestResponse(
-                allowed=True,
-                message=(
-                    f"Awaiting user approval (id={pending.approval_id})."
-                ),
-                symbol=symbol,
-            )
-
-        # ---- Manual path ---------------------------
-        # The manual "Send" button needs a real limit right now, so this
-        # is where the one and only IB bid/ask fetch of the manual flow
-        # happens. build_order is a pure packager -- we compute size
-        # here and hand it in explicitly.
-        bid_ask = await client.get_bid_ask_price(symbol)
-        entry_price = calculate_entry_price(bid_ask, stop_price)
-        position_size = calculate_position_size(
-            entry_price=entry_price,
-            stop_price=stop_price,
-            risk=risk_settings.RISK,
-        )
-        order = build_order(OrderBuilder(
-            symbol=symbol,
-            entry_price=entry_price,
-            stop_price=stop_price,
-            position_size=position_size,
-            contract_type=payload.contract_type,
-        ))
-        return await _place_and_respond(
-            client, order, success_message="Entry ok"
-        )
+            return await process_automatic_entry(payload, approvals_hub)
+        return await process_manual_entry(client, payload)
 
     except ValueError as e:
         # Business-logic rejects raised by pricing / sizing helpers
