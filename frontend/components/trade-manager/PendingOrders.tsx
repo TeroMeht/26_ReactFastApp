@@ -3,6 +3,11 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { API_PREFIX } from "@/lib/api_prefix";
 import { paths } from "@/generated/api";
+import {
+  readAutoApprove,
+  writeAutoApprove,
+  subscribeAutoApprove,
+} from "@/lib/autoApprove";
 
 import {
   Table,
@@ -69,6 +74,21 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
 
   const [contractTypes, setContractTypes] = useState<Record<string, "CFD" | "stock">>({});
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
+
+  // Cross-tab-aware toggle: when ON, the AutomaticEntryApprovalDialog
+  // Accepts pending automatic entries without showing the modal.
+  // Off by default; state lives in localStorage.
+  const [autoApprove, setAutoApprove] = useState(false);
+  useEffect(() => {
+    // Initialise from storage after mount (avoids SSR hydration mismatch).
+    setAutoApprove(readAutoApprove());
+    return subscribeAutoApprove(setAutoApprove);
+  }, []);
+  const toggleAutoApprove = () => {
+    const next = !autoApprove;
+    setAutoApprove(next);
+    writeAutoApprove(next);
+  };
 
   const fetchPositions = useCallback(async () => {
     try {
@@ -236,13 +256,41 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
     <div className="py-4">
       <h2 className="text-xl font-bold mb-4">Pending Orders</h2>
 
-      <Button
-        variant="outline"
-        onClick={fetchPositions}
-        disabled={loading}
-      >
-        {loading ? "Refreshing..." : "Refresh"}
-      </Button>
+      <div className="flex items-center gap-2 mb-2">
+        <Button
+          variant="outline"
+          onClick={fetchPositions}
+          disabled={loading}
+        >
+          {loading ? "Refreshing..." : "Refresh"}
+        </Button>
+
+        {/*
+          Auto-approve automatic entries. Off by default -- the popup
+          shows and waits for the user. When ON, incoming automatic
+          entries are Accepted immediately without a modal. Persists
+          in localStorage and syncs across tabs (see lib/autoApprove.ts).
+        */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={autoApprove}
+          onClick={toggleAutoApprove}
+          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm font-medium transition-colors ${
+            autoApprove
+              ? "bg-green-600 text-white border-green-700 hover:bg-green-700"
+              : "bg-gray-100 text-gray-700 border-gray-300 hover:bg-gray-200"
+          }`}
+        >
+          <span
+            aria-hidden="true"
+            className={`w-2.5 h-2.5 rounded-full ${
+              autoApprove ? "bg-white" : "bg-gray-400"
+            }`}
+          />
+          Auto-approve: {autoApprove ? "ON" : "OFF"}
+        </button>
+      </div>
 
       {message && (
         <div className="mb-4 p-2 bg-blue-100 text-blue-800 rounded-md text-sm">

@@ -2,6 +2,10 @@
 
 import * as React from "react";
 import { API_PREFIX } from "@/lib/api_prefix";
+import {
+  readAutoApprove,
+  subscribeAutoApprove,
+} from "@/lib/autoApprove";
 
 /**
  * Global approval dialog for request_type="automatic" entry requests.
@@ -51,6 +55,17 @@ export default function AutomaticEntryApprovalDialog() {
   const [lastResult, setLastResult] = React.useState<LastResult | null>(null);
   const esRef = React.useRef<EventSource | null>(null);
 
+  // Auto-approve toggle (Off by default). Kept in a ref so the SSE
+  // callback closure always reads the current value without needing
+  // to re-subscribe when the toggle flips.
+  const autoApproveRef = React.useRef<boolean>(false);
+  React.useEffect(() => {
+    autoApproveRef.current = readAutoApprove();
+    return subscribeAutoApprove((v) => {
+      autoApproveRef.current = v;
+    });
+  }, []);
+
   // --- SSE plumbing -------------------------------------------------------
   React.useEffect(() => {
     let cancelled = false;
@@ -69,16 +84,26 @@ export default function AutomaticEntryApprovalDialog() {
           if (payload.type === "snapshot") {
             // On (re)connect the backend replays every pending row so the
             // dialog can't miss one just because the tab was closed.
-            setQueue(payload.pending as PendingApproval[]);
+            const rows = payload.pending as PendingApproval[];
+            if (autoApproveRef.current) {
+              // Fire-and-forget accept for every parked row; don't queue.
+              rows.forEach((r) => autoAcceptRef.current(r));
+            } else {
+              setQueue(rows);
+            }
           } else if (payload.type === "add") {
             const row = payload.pending as PendingApproval;
-            setQueue((prev) =>
-              // Dedup by approval_id — snapshot might race with an add on
-              // reconnect if the backend just parked a new one.
-              prev.some((p) => p.approval_id === row.approval_id)
-                ? prev
-                : [...prev, row]
-            );
+            if (autoApproveRef.current) {
+              autoAcceptRef.current(row);
+            } else {
+              setQueue((prev) =>
+                // Dedup by approval_id — snapshot might race with an add on
+                // reconnect if the backend just parked a new one.
+                prev.some((p) => p.approval_id === row.approval_id)
+                  ? prev
+                  : [...prev, row]
+              );
+            }
           } else if (payload.type === "remove") {
             const id = payload.approval_id as string;
             setQueue((prev) => prev.filter((p) => p.approval_id !== id));
@@ -105,9 +130,16 @@ export default function AutomaticEntryApprovalDialog() {
   }, []);
 
   // --- Decision dispatch --------------------------------------------------
+  // ``silent`` skips the modal-busy state so an auto-approve doesn't
+  // flash a "Sending…" label on a dialog that isn't even mounted.
   const decide = React.useCallback(
-    async (approval: PendingApproval, decision: "accept" | "decline") => {
-      setBusy(true);
+    async (
+      approval: PendingApproval,
+      decision: "accept" | "decline",
+      opts: { silent?: boolean } = {}
+    ) => {
+      const { silent = false } = opts;
+      if (!silent) setBusy(true);
       try {
         const res = await fetch(
           `${API_PREFIX}/portfolio/entry-request/approve`,
@@ -160,11 +192,19 @@ export default function AutomaticEntryApprovalDialog() {
             err instanceof Error ? err.message : "Failed to submit decision",
         });
       } finally {
-        setBusy(false);
+        if (!silent) setBusy(false);
       }
     },
     []
   );
+
+  // Fire the auto-approve POST without adding the row to the modal queue.
+  // Kept as a plain function so both the ``add`` and ``snapshot`` SSE
+  // handlers can share it without a fresh closure per render.
+  const autoAcceptRef = React.useRef<(a: PendingApproval) => void>(() => {});
+  React.useEffect(() => {
+    autoAcceptRef.current = (a) => decide(a, "accept", { silent: true });
+  }, [decide]);
 
   // Auto-dismiss the transient "last result" banner after 6s.
   React.useEffect(() => {
