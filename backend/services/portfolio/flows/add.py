@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 import pytz
 
 from services.orders import (
+    BidAsk,
+    OrderBuilder,
     build_order,
     calculate_position_size,
     calculate_entry_price,
@@ -38,12 +40,12 @@ logger = logging.getLogger(__name__)
 # ----------------------------------------------------------------------
 # Guards — pure functions
 # ----------------------------------------------------------------------
-def check_not_losing(position: Position, bid_ask: dict) -> tuple[bool, str]:
+def check_not_losing(position: Position, bid_ask: BidAsk) -> tuple[bool, str]:
     """Refuse to add to a losing position."""
     pos_size = position.position
     avg_cost = position.avgcost
-    bid = bid_ask.get("bid")
-    ask = bid_ask.get("ask")
+    bid = bid_ask.bid
+    ask = bid_ask.ask
 
     if pos_size > 0:
         if ask > avg_cost:
@@ -143,11 +145,10 @@ async def process_add_request(
             logger.info(msg)
             return AddRequestResponse(allowed=False, message=msg, symbol=symbol)
 
+        # get_bid_ask_price now guarantees a valid dict or raises
+        # ValueError; the outer handler in this flow surfaces that as
+        # a clean AddRequestResponse.allowed=False.
         bid_ask = await client.get_bid_ask_price(symbol)
-        if not bid_ask:
-            msg = f"No bid/ask quote available for {symbol}."
-            logger.info(msg)
-            return AddRequestResponse(allowed=False, message=msg, symbol=symbol)
 
         # Pure guards over the fetched data.
         ok, message = check_not_losing(position, bid_ask)
@@ -182,13 +183,13 @@ async def process_add_request(
             return AddRequestResponse(allowed=False, message=message, symbol=symbol)
 
         # Place the add order and resize the existing STP to cover the new total.
-        new_order = build_order({
-            "symbol":        symbol,
-            "entry_price":   add_price,
-            "stop_price":    stp_aux_price,
-            "position_size": new_qty,
-            "contract_type": payload.contract_type,
-        })
+        new_order = build_order(OrderBuilder(
+            symbol=symbol,
+            entry_price=add_price,
+            stop_price=stp_aux_price,
+            position_size=new_qty,
+            contract_type=payload.contract_type,
+        ))
         place_result = await client.place_limit_order(new_order)
         modify_result = await client.modify_stp_order_by_id(
             stp_order.orderid, total_size

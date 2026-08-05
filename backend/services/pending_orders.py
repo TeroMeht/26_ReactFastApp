@@ -192,7 +192,7 @@ async def process_open_orders(db_conn,ib) -> List[PendingOrder]:
 
         for order, bid_ask in zip(combined_orders, bid_ask_results):
             try:
-                ask = bid_ask["ask"]
+                ask = bid_ask.ask
                 position_size = calculate_position_size(
                     ask,
                     order["stop_price"],

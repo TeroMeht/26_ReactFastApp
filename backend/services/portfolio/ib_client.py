@@ -1,14 +1,13 @@
 import asyncio
 import logging
-import math
-import time
+
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 import pytz
 from ib_async import IB, Stock, CFD, LimitOrder, StopOrder, MarketOrder
 from core.config import settings
-from services.orders import Order
+from services.orders import BidAsk, Order
 from services.portfolio.order_tracker import OrderTracker, TERMINAL_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -44,15 +43,6 @@ async def _await_event(event_source, condition_fn, timeout: float) -> bool:
         event_source -= handler
 
 
-def _safe_price(v) -> float:
-    """Coerce IB's floaty/NaN/None fields to a clean non-negative float."""
-    if v is None:
-        return 0.0
-    try:
-        f = float(v)
-        return 0.0 if math.isnan(f) or f < 0 else f
-    except (TypeError, ValueError):
-        return 0.0
 
 
 
@@ -277,70 +267,35 @@ class IbClient:
             logging.error(f"Error fetching executed trades: {e}")
             return []
 
-    async def get_bid_ask_price(self, symbol: str) -> dict | None:
-        """
-        Fetch bid/ask via a *streaming* market-data subscription. Snapshot
-        mode (reqTickersAsync) hangs in premarket/afterhours when no
-        consolidated NBBO exists — streaming always fires updateEvent with
-        whatever IB has cached, so we can bail out early on real quotes and
-        fall back to last/close when the book is empty.
+    async def get_bid_ask_price(self, symbol: str) -> BidAsk:
 
-        Never raises. Never returns None during normal operation — always
-        returns {"symbol", "bid", "ask", "source"} so downstream sizing /
-        entry-price math can decide what to do with degraded data.
-        `source` is one of: quote | last | close | empty.
-        """
-        t_start = time.perf_counter()
         contract = Stock(symbol=symbol, exchange="SMART", currency="USD")
-        try:
-            await self.ib.qualifyContractsAsync(contract)
-        except Exception as e:
-            elapsed_ms = (time.perf_counter() - t_start) * 1000
-            logger.error(
-                f"qualifyContractsAsync failed for {symbol} after {elapsed_ms:.0f}ms: {e}"
-            )
-            return None
+        await self.ib.qualifyContractsAsync(contract)
 
         ticker = self.ib.reqMktData(contract, "", False, False)
         try:
-            # First-choice: real bid+ask. Cap at 2s -- generous enough for
-            # a cold subscription during RTH, short enough that a dead
-            # premarket symbol doesn't stall the entry flow.
             matched = await _await_event(
                 ticker.updateEvent,
-                lambda t: _safe_price(t.bid) > 0 and _safe_price(t.ask) > 0,
+                lambda t: (
+                    t.bid is not None and t.ask is not None
+                    and t.bid > 0 and t.ask > 0
+                ),
                 timeout=2.0,
             )
         finally:
             self.ib.cancelMktData(contract)
 
-        bid = _safe_price(ticker.bid)
-        ask = _safe_price(ticker.ask)
-        last = _safe_price(ticker.last)
-        close = _safe_price(ticker.close)
+        bid, ask = ticker.bid, ticker.ask
+        if bid is None or ask is None or not (bid > 0 and ask > 0):
+            raise ValueError(
+                f"No usable bid/ask for {symbol}: bid={bid} ask={ask}"
+                + ("" if matched else " (no live quote within 2s)")
+            )
 
-        # Graceful fallback so downstream never sees {bid: 0, ask: 0}
-        # unless there is literally no price data at all.
-        if bid > 0 and ask > 0:
-            source = "quote"
-        elif last > 0:
-            bid = ask = last
-            source = "last"
-        elif close > 0:
-            bid = ask = close
-            source = "close"
-        else:
-            source = "empty"
 
-        total_ms = (time.perf_counter() - t_start) * 1000
-        log = logger.info if source == "quote" else logger.warning
-        log(
-            f"Fetched bid/ask for {symbol}: bid={bid} ask={ask} "
-            f"| source={source} total={total_ms:.0f}ms"
-            + ("" if matched else " (no live quote within 2s)")
-        )
-
-        return {"symbol": symbol, "bid": bid, "ask": ask, "source": source}
+        logger.info(f"Quote for {symbol}: bid={bid} ask={ask})")
+        
+        return BidAsk(symbol=symbol, bid=bid, ask=ask)
 
 # Helpers filtering functions and order placement logic
     async def get_stp_order_by_symbol(self, symbol: str) -> OpenOrder | None:

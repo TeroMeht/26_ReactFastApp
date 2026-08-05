@@ -18,7 +18,13 @@ import pytz
 
 from typing import Optional
 
-from services.orders import build_order, calculate_position_size, calculate_entry_price
+from services.orders import (
+    Order,
+    OrderBuilder,
+    build_order,
+    calculate_entry_price,
+    calculate_position_size,
+)
 from services.portfolio.ib_client import IbClient
 from services.portfolio.pending_approvals_hub import (
     PendingApproval,
@@ -102,27 +108,99 @@ def check_frequency(snapshot: TradesSnapshot, symbol: str, current_time: datetim
     return False, msg
 
 
+
+
+async def _place_and_respond(
+    client: IbClient,
+    order: Order,
+    *,
+    success_message: str,
+) -> EntryRequestResponse:
+    """
+    Place a pre-built bracket order and map the IB result onto the
+    standard EntryRequestResponse shape.
+
+    Both the manual path in ``process_entry_request`` and the
+    post-approval call in ``place_approved_entry`` end here so the
+    success/failure translation lives in one place.
+    """
+    parent, stop = await client.place_bracket_order(order)
+
+    if not parent or not stop:
+        msg = f"Bracket order placement failed for {order.symbol}"
+        logger.error(msg)
+        return EntryRequestResponse(
+            allowed=False, message=msg, symbol=order.symbol
+        )
+
+    return EntryRequestResponse(
+        allowed=True,
+        message=success_message,
+        symbol=order.symbol,
+        parentOrderId=parent.orderId,
+        stopOrderId=stop.orderId,
+    )
+
+
+async def place_approved_entry(
+    client: IbClient,
+    approval: PendingApproval,
+) -> EntryRequestResponse:
+
+    symbol = approval.symbol
+
+    try:
+
+        bid_ask = await client.get_bid_ask_price(symbol)
+        fresh_entry_price = calculate_entry_price(bid_ask, approval.stop_price)
+
+        position_size = calculate_position_size(
+            entry_price=fresh_entry_price,
+            stop_price=approval.stop_price,
+            risk=risk_settings.RISK,
+        )
+        order = build_order(OrderBuilder(
+            symbol=symbol,
+            entry_price=fresh_entry_price,
+            stop_price=approval.stop_price,
+            position_size=position_size,
+            contract_type=approval.contract_type,
+        ))
+        return await _place_and_respond(
+            client, order, success_message="Entry ok (approved)"
+        )
+    except ValueError as e:
+        # Same split as process_entry_request: pricing/sizing rejects
+        # are business logic, not crashes -- e.g. the fresh IB quote at
+        # Accept-time may have drifted so the stop now sits inside the
+        # spread. Clean reject, no traceback.
+        logger.info(
+            "Approved entry for %s rejected by pricing/sizing: %s", symbol, e
+        )
+        return EntryRequestResponse(
+            allowed=False,
+            message=str(e),
+            symbol=symbol,
+        )
+    except Exception as e:
+        logger.exception(
+            f"Error placing approved automatic entry for {symbol}"
+        )
+        return EntryRequestResponse(
+            allowed=False,
+            message=str(e),
+            symbol=symbol,
+        )
+
+
+
+
 async def process_entry_request(
     client: IbClient,
     payload: EntryRequest,
     approvals_hub: Optional[PendingApprovalsHub] = None,
 ) -> EntryRequestResponse:
-    """
-    Validate guards and either place a bracket order (manual) or park it
-    for user approval (automatic). No exit arming happens here -- exits
-    are managed separately on the trade-manager page.
 
-    request_type dispatch:
-        "manual"    -> historical behaviour: place the bracket order now.
-        "automatic" -> same guards; on pass, drop the priced order into
-                       ``approvals_hub`` so the frontend can show a modal
-                       and let the user Accept/Decline. The actual
-                       place_bracket_order happens in place_approved_entry
-                       once the user accepts.
-
-    ``approvals_hub`` is only required for the automatic path. The manual
-    path ignores it, which keeps existing tests and callers unaffected.
-    """
     symbol = payload.symbol
     stop_price = payload.stop_price
     request_type = payload.request_type
@@ -172,26 +250,10 @@ async def process_entry_request(
 
         logger.info(f"Entry allowed for {symbol}")
 
-        bid_ask = await client.get_bid_ask_price(symbol)
-        entry_price = calculate_entry_price(bid_ask, stop_price)
-        position_size = calculate_position_size(
-            entry_price=entry_price,
-            stop_price=stop_price,
-            risk=risk_settings.RISK,
-        )
-        logger.info(
-            f"Calculated position size: {position_size} for {symbol} at entry {entry_price}"
-        )
+        # ---- Automatic path -----------------------------------------------
 
-        # ---- Automatic path ------------------------------------------------
-        # Guards passed and the order is fully priced. Instead of placing it
-        # now, park it in the hub -- the FE dialog will POST to
-        # /entry-request/approve when the user clicks Accept, at which point
-        # place_approved_entry does the actual place_bracket_order.
         if request_type == "automatic":
             if approvals_hub is None:
-                # Shouldn't happen in production: the router always injects
-                # the hub. Fail loudly rather than silently placing the order.
                 msg = (
                     f"Automatic entry for {symbol} rejected: approvals hub "
                     "unavailable."
@@ -201,12 +263,22 @@ async def process_entry_request(
                     allowed=False, message=msg, symbol=symbol
                 )
 
+            # Sizing without build_order: call calculate_position_size
+            # directly so the popup can show the user the size that
+            # goes with the previewed entry/stop. If the risk-per-share
+            # exceeds RISK the ValueError bubbles to the outer handler
+            # and becomes a clean allowed=False reject.
+            preview_size = calculate_position_size(
+                entry_price=payload.entry_price,
+                stop_price=stop_price,
+                risk=risk_settings.RISK,
+            )
             pending = await approvals_hub.add_pending(
                 symbol=symbol,
                 contract_type=payload.contract_type,
-                entry_price=float(entry_price),
+                entry_price=float(payload.entry_price),
                 stop_price=float(stop_price),
-                position_size=position_size,
+                position_size=preview_size,
             )
             return EntryRequestResponse(
                 allowed=True,
@@ -216,82 +288,44 @@ async def process_entry_request(
                 symbol=symbol,
             )
 
-        # ---- Manual path (historical behaviour) ---------------------------
-        order = build_order({
-            "symbol":        symbol,
-            "entry_price":   entry_price,
-            "stop_price":    stop_price,
-            "position_size": position_size,
-            "contract_type": payload.contract_type,
-        })
-
-        parent, stop = await client.place_bracket_order(order)
-
-        if not parent or not stop:
-            msg = f"Bracket order placement failed for {symbol}"
-            logger.error(msg)
-            return EntryRequestResponse(allowed=False, message=msg, symbol=symbol)
-
-        return EntryRequestResponse(
-            allowed=True,
-            message="Entry ok",
+        # ---- Manual path ---------------------------
+        # The manual "Send" button needs a real limit right now, so this
+        # is where the one and only IB bid/ask fetch of the manual flow
+        # happens. build_order is a pure packager -- we compute size
+        # here and hand it in explicitly.
+        bid_ask = await client.get_bid_ask_price(symbol)
+        entry_price = calculate_entry_price(bid_ask, stop_price)
+        position_size = calculate_position_size(
+            entry_price=entry_price,
+            stop_price=stop_price,
+            risk=risk_settings.RISK,
+        )
+        order = build_order(OrderBuilder(
             symbol=symbol,
-            parentOrderId=parent.orderId,
-            stopOrderId=stop.orderId,
+            entry_price=entry_price,
+            stop_price=stop_price,
+            position_size=position_size,
+            contract_type=payload.contract_type,
+        ))
+        return await _place_and_respond(
+            client, order, success_message="Entry ok"
         )
 
-    except Exception as e:
-        logger.exception(f"Error processing entry request for {symbol}")
+    except ValueError as e:
+        # Business-logic rejects raised by pricing / sizing helpers
+        # (e.g. size rounds to 0, stop inside the spread, entry == stop).
+        # These are not programming errors, so no traceback -- just log
+        # the reason at INFO and hand the caller a clean reject.
+        logger.info(
+            "Entry request for %s rejected by pricing/sizing: %s", symbol, e
+        )
         return EntryRequestResponse(
             allowed=False,
             message=str(e),
             symbol=symbol,
         )
-
-
-async def place_approved_entry(
-    client: IbClient,
-    approval: PendingApproval,
-) -> EntryRequestResponse:
-    """
-    Place the bracket order for a user-approved automatic entry.
-
-    The guards already ran in process_entry_request when the row was
-    parked, so this is the tail of the manual path (build_order +
-    place_bracket_order) applied to a stored PendingApproval. Guards are
-    NOT re-run: the intent of the automatic flow is that once the user
-    sees the popup, the parameters are locked in. If the user takes a
-    long time to accept and the frequency guard *would* now trip, we
-    still honour the acceptance -- the popup itself is the human veto.
-    """
-    symbol = approval.symbol
-    try:
-        order = build_order({
-            "symbol":        symbol,
-            "entry_price":   approval.entry_price,
-            "stop_price":    approval.stop_price,
-            "position_size": approval.position_size,
-            "contract_type": approval.contract_type,
-        })
-
-        parent, stop = await client.place_bracket_order(order)
-
-        if not parent or not stop:
-            msg = f"Bracket order placement failed for {symbol}"
-            logger.error(msg)
-            return EntryRequestResponse(allowed=False, message=msg, symbol=symbol)
-
-        return EntryRequestResponse(
-            allowed=True,
-            message="Entry ok (approved)",
-            symbol=symbol,
-            parentOrderId=parent.orderId,
-            stopOrderId=stop.orderId,
-        )
     except Exception as e:
-        logger.exception(
-            f"Error placing approved automatic entry for {symbol}"
-        )
+        logger.exception(f"Error processing entry request for {symbol}")
         return EntryRequestResponse(
             allowed=False,
             message=str(e),

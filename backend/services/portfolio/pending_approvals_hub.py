@@ -31,7 +31,15 @@ logger = logging.getLogger(__name__)
 
 
 class PendingApproval:
-    """Plain container -- the API layer converts to the Pydantic schema."""
+    """
+    Plain container -- the API layer converts to the Pydantic schema.
+
+    Carries symbol / contract_type / entry_price / stop_price /
+    position_size. The size is computed at park time via
+    ``calculate_position_size`` (not build_order) so the popup can
+    show the user what will be sent, and place_approved_entry replays
+    that same frozen size at Accept.
+    """
 
     __slots__ = (
         "approval_id",

@@ -73,6 +73,39 @@ const statusStyle = (status: string | null): string => {
 const rowKey = (o: LiveOrder): string =>
   o.perm_id ? `p:${o.perm_id}` : `o:${o.order_id}`;
 
+/**
+ * Pick the price to show in the Price column.
+ *
+ * Why not just `o.lmt_price ?? o.aux_price`? Because IB reports the
+ * *unused* leg as literal `0`, not `null`. For an STP that leaves
+ * `lmt_price === 0`, which nullish-coalescing never falls through, so
+ * the column always displayed 0 for stops. We select by order_type
+ * instead:
+ *
+ *   - STP           -> aux_price (trigger price)
+ *   - STP LMT       -> "trigger -> limit"  (both matter)
+ *   - LMT / LIT / MIT -> lmt_price
+ *   - MKT / MOC / other -> first non-zero of lmt/aux, else "—"
+ */
+const displayOrderPrice = (o: LiveOrder): string => {
+  const t = (o.order_type || "").toUpperCase();
+  const nz = (v: number | null | undefined): number | null =>
+    v !== null && v !== undefined && v !== 0 ? v : null;
+
+  if (t === "STP") return nz(o.aux_price)?.toString() ?? "—";
+  if (t === "STP LMT" || t === "STOP LIMIT") {
+    const aux = nz(o.aux_price);
+    const lmt = nz(o.lmt_price);
+    if (aux !== null && lmt !== null) return `${aux} → ${lmt}`;
+    return (aux ?? lmt)?.toString() ?? "—";
+  }
+  if (t === "LMT" || t === "LIT" || t === "MIT") {
+    return nz(o.lmt_price)?.toString() ?? "—";
+  }
+  // MKT / MOC / unknown: show whichever leg is populated, if any.
+  return (nz(o.lmt_price) ?? nz(o.aux_price))?.toString() ?? "—";
+};
+
 const LiveOrders = () => {
   const [orders, setOrders] = useState<LiveOrder[]>([]);
   const [connected, setConnected] = useState(false);
@@ -333,7 +366,7 @@ const LiveOrders = () => {
                     {o.filled} / {o.remaining}
                   </TableCell>
                   <TableCell>
-                    {o.lmt_price ?? o.aux_price ?? "—"}
+                    {displayOrderPrice(o)}
                   </TableCell>
                   <TableCell>
                     <span
