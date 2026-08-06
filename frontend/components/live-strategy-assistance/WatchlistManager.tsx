@@ -45,9 +45,24 @@ const WatchlistManager: React.FC = () => {
   const [newStrategies, setNewStrategies] = React.useState<Set<string>>(new Set());
   const [saving, setSaving] = React.useState(false);
 
-  // Per-row "editing strategies" state (keyed by symbol)
-  const [editingSymbol, setEditingSymbol] = React.useState<string | null>(null);
-  const [editStrategies, setEditStrategies] = React.useState<Set<string>>(new Set());
+  // Per-row in-flight save flag. Prevents rapid double-clicks on the same
+  // symbol from racing PUTs and clobbering each other's writes; user just
+  // waits ~200ms between toggles.
+  const [savingSymbols, setSavingSymbols] = React.useState<Set<string>>(new Set());
+
+  // Per-row expand/collapse state — only expanded rows show the strategy
+  // checkboxes. Collapsed rows show a compact pill summary. Toggling a
+  // checkbox still auto-saves (the expand state is purely UI chrome).
+  const [expandedSymbols, setExpandedSymbols] = React.useState<Set<string>>(new Set());
+
+  const toggleExpanded = (symbol: string) => {
+    setExpandedSymbols((prev) => {
+      const next = new Set(prev);
+      if (next.has(symbol)) next.delete(symbol);
+      else next.add(symbol);
+      return next;
+    });
+  };
 
   // Start-streamer state — colocated with the watchlist so the user can add a
   // ticker and start the streamer from the same panel.
@@ -131,38 +146,54 @@ const WatchlistManager: React.FC = () => {
   };
 
   // -------------------------------------------------------------------------
-  // Edit / delete an existing ticker
+  // Toggle a single strategy on an existing row — auto-saves on click
   // -------------------------------------------------------------------------
 
-  const startEdit = (row: WatchlistRow) => {
-    setEditingSymbol(row.symbol);
-    setEditStrategies(new Set(row.strategies));
-  };
+  // Compute the new strategy list, optimistically update local state, then
+  // PUT. On failure, revert the row and surface the error. No Save/Cancel —
+  // the checkbox click IS the save.
+  const toggleStrategy = async (row: WatchlistRow, strategy: string) => {
+    if (savingSymbols.has(row.symbol)) return; // in-flight guard
+    const nextSet = toggleInSet(new Set(row.strategies), strategy);
+    const nextStrategies = Array.from(nextSet);
+    const prevStrategies = row.strategies;
 
-  const cancelEdit = () => {
-    setEditingSymbol(null);
-    setEditStrategies(new Set());
-  };
-
-  const saveEdit = async (symbol: string) => {
-    setSaving(true);
+    // Optimistic UI update.
+    setRows((rs) =>
+      rs.map((r) =>
+        r.symbol === row.symbol ? { ...r, strategies: nextStrategies } : r,
+      ),
+    );
+    setSavingSymbols((s) => new Set(s).add(row.symbol));
     setError(null);
+
     try {
-      const res = await fetch(`${API_PREFIX}/watchlist/${encodeURIComponent(symbol)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ strategies: Array.from(editStrategies) }),
-      });
+      const res = await fetch(
+        `${API_PREFIX}/watchlist/${encodeURIComponent(row.symbol)}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ strategies: nextStrategies }),
+        },
+      );
       if (!res.ok) {
         const body = await res.text();
         throw new Error(`Update failed (${res.status}): ${body}`);
       }
-      cancelEdit();
-      await fetchAll();
     } catch (err) {
+      // Revert on failure so UI matches server.
+      setRows((rs) =>
+        rs.map((r) =>
+          r.symbol === row.symbol ? { ...r, strategies: prevStrategies } : r,
+        ),
+      );
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSaving(false);
+      setSavingSymbols((s) => {
+        const next = new Set(s);
+        next.delete(row.symbol);
+        return next;
+      });
     }
   };
 
@@ -288,56 +319,44 @@ const WatchlistManager: React.FC = () => {
           <p className="text-xs text-gray-500">Watchlist is empty.</p>
         )}
         {rows.map((row) => {
-          const isEditing = editingSymbol === row.symbol;
+          const rowSaving = savingSymbols.has(row.symbol);
+          const rowStrategies = new Set(row.strategies);
+          const isExpanded = expandedSymbols.has(row.symbol);
           return (
             <div
               key={row.symbol}
               className="border rounded-md p-2 space-y-1 bg-white"
             >
               <div className="flex items-center justify-between">
-                <span className="font-semibold text-xs">{row.symbol}</span>
+                <span className="font-semibold text-xs">
+                  {row.symbol}
+                  {rowSaving && (
+                    <span className="ml-2 text-[10px] text-gray-400">saving…</span>
+                  )}
+                </span>
                 <div className="flex gap-2">
-                  {!isEditing && (
-                    <>
-                      <button
-                        onClick={() => startEdit(row)}
-                        className="text-xs text-blue-600 hover:underline"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => handleDelete(row.symbol)}
-                        disabled={saving}
-                        className="text-xs text-red-600 hover:underline disabled:opacity-60"
-                      >
-                        Remove
-                      </button>
-                    </>
-                  )}
-                  {isEditing && (
-                    <>
-                      <button
-                        onClick={() => saveEdit(row.symbol)}
-                        disabled={saving}
-                        className="text-xs text-green-600 hover:underline disabled:opacity-60"
-                      >
-                        {saving ? '...' : 'Save'}
-                      </button>
-                      <button
-                        onClick={cancelEdit}
-                        className="text-xs text-gray-600 hover:underline"
-                      >
-                        Cancel
-                      </button>
-                    </>
-                  )}
+                  <button
+                    onClick={() => toggleExpanded(row.symbol)}
+                    className="text-xs text-blue-600 hover:underline"
+                    aria-expanded={isExpanded}
+                  >
+                    {isExpanded ? 'Collapse' : 'Edit'}
+                  </button>
+                  <button
+                    onClick={() => handleDelete(row.symbol)}
+                    disabled={saving}
+                    className="text-xs text-red-600 hover:underline disabled:opacity-60"
+                  >
+                    Remove
+                  </button>
                 </div>
               </div>
 
-              {!isEditing && (
+              {!isExpanded && (
                 <div className="flex flex-wrap gap-1">
                   {row.strategies.length === 0 ? (
                     <span className="text-xs text-gray-400 italic">
+                      no strategies
                     </span>
                   ) : (
                     row.strategies.map((s) => (
@@ -352,7 +371,7 @@ const WatchlistManager: React.FC = () => {
                 </div>
               )}
 
-              {isEditing && (
+              {isExpanded && (
                 <div className="grid grid-cols-1 gap-1 pt-1">
                   {strategiesAvailable.map((s) => (
                     <label
@@ -361,10 +380,9 @@ const WatchlistManager: React.FC = () => {
                     >
                       <input
                         type="checkbox"
-                        checked={editStrategies.has(s)}
-                        onChange={() =>
-                          setEditStrategies((prev) => toggleInSet(prev, s))
-                        }
+                        checked={rowStrategies.has(s)}
+                        disabled={rowSaving}
+                        onChange={() => toggleStrategy(row, s)}
                         className="accent-blue-500"
                       />
                       <span className="font-mono">{s}</span>
