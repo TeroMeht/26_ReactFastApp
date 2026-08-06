@@ -1,21 +1,8 @@
-"""
-Strategy-based exit flow.
-
-Companion to services.portfolio.flows.exit_manual, which handles the
-POST-fill side of the same lifecycle. This module handles the PRE-fill
-side: a strategy alarm arrives → look up its armed exit_request row →
-place a tagged MKT order → disarm the strategy (delete the DB row).
-The STP adjustment fires off the fill via exit_manual.handle_exit_fill.
-
-Public surface:
-    process_exit_request  - orchestrator, called by the router
-"""
-
 import logging
+from decimal import Decimal
 
 from services.orders import Order
-from services.portfolio.ib_client import IbClient, Position
-from services.portfolio.flows.exit_manual import build_exit_ref
+from services.portfolio.ib_client import IbClient, OrderNotFoundError, Position
 from db.exits import (
     fetch_exits_by_symbol,
     delete_exit_request,
@@ -24,13 +11,14 @@ from db.exits import (
 from schemas.api_schemas import (
     ExitRequest,
     ExitRequestResponseIB,
+    ManualExitResponse,
 )
 
 logger = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------------
-# Pure helpers
+# Shared sizing helpers
 # ----------------------------------------------------------------------
 def _exit_action(position: Position) -> str:
     """SELL for a long, BUY for a short. Raises on zero position."""
@@ -43,13 +31,16 @@ def _exit_action(position: Position) -> str:
 
 def _exit_qty(position: Position, trim_percentage: float) -> int:
     """Round(|position| * trim) — how many contracts the exit should touch."""
-    return int(round(abs(position.position) * float(trim_percentage)))
+    position_size = abs(position.position)
+    trim = float(trim_percentage)
+    raw_qty = position_size * trim
+    return int(round(raw_qty))
 
 
-# ----------------------------------------------------------------------
-# Orchestrator
-# ----------------------------------------------------------------------
-async def process_exit_request(
+# ======================================================================
+# Automatic exit handling (strategy-driven MKT)
+# ======================================================================
+async def process_automatic_exit(
     client: IbClient, db_conn, payload: ExitRequest,
 ) -> ExitRequestResponseIB:
     """
@@ -58,13 +49,13 @@ async def process_exit_request(
       2. Bail if there's no position to exit.
       3. Bail if no exit_request rows exist for this symbol.
       4. Bail if no armed strategy matches the incoming alarm.
-      5. Place a tagged MKT for the matched trim, then disarm:
+      5. Place a MKT for the matched trim, then disarm:
            - trim >= 1.0 -> full exit, delete every row for this symbol
              so leftover strategies don't fire on a re-entered position
            - trim <  1.0 -> partial exit, delete only the fired row
 
     STP adjustment (cancel on full, resize on partial) is handled off
-    the fill event in exit_manual.handle_exit_fill.
+    the fill event in `handle_exit_fill` below.
     """
     symbol = payload.symbol   # uppercased + validated by ExitRequest schema
     alarm = payload.alarm     # validated against EXIT_TRIGGERS by schema
@@ -106,7 +97,7 @@ async def process_exit_request(
         if not 0.0 < trim <= 1.0:
             raise ValueError(f"Unexpected trim_percentage: {trim}")
 
-        # Place the tagged MKT. Fill bridge picks up the tag and adjusts STP.
+        # Place the MKT. Fill bridge will sync the STP to the resulting position.
         action = _exit_action(position)
         qty = _exit_qty(position, trim)
         order = Order(
@@ -115,9 +106,8 @@ async def process_exit_request(
             position_size=qty,
             contract_type=position.sectype,
         )
-        await client.place_market_order(
-            order, order_ref=build_exit_ref(trim),
-        )
+        await client.place_market_order(order)
+
         logger.info(
             "Exit MKT placed | symbol=%s action=%s qty=%s trim=%s",
             symbol, action, qty, trim,
@@ -146,3 +136,145 @@ async def process_exit_request(
             symbol=symbol,
             message="Unhandled error during exit handling",
         )
+
+
+# ======================================================================
+# Manual exit handling (user-placed LMTs, pre-fill)
+# ======================================================================
+async def process_manual_exit(
+    client: IbClient,
+    *,
+    symbol: str,
+    target_price: Decimal,
+    trim_percentage: Decimal,
+) -> ManualExitResponse:
+    """
+    Validate the position, size the trim, place a LIMIT order and return
+    a ManualExitResponse describing it (same shape as
+    `services.exits.list_manual_exits`, so the frontend can use them
+    interchangeably).
+    """
+    position = await client.get_position_by_symbol(symbol)
+    if not position or not position.position:
+        raise ValueError(f"No open position for {symbol}; cannot arm manual exit.")
+
+    pos_size = position.position
+    pos_abs = abs(int(pos_size))
+    contract_type = position.sectype or "STK"
+    action = _exit_action(position)
+    qty = _exit_qty(position, trim_percentage)
+    if qty <= 0:
+        raise ValueError(
+            f"Computed trim quantity is 0 for {symbol} "
+            f"(position={pos_size}, trim={trim_percentage})."
+        )
+
+    # Guard against over-trimming. Sum the quantities of every still-open
+    # LMT order on the exit side (SELL for longs, BUY for shorts) and
+    # refuse if (existing + new) would exceed |position|. Otherwise
+    # stacking e.g. a 50% then a 100% exit would flip the position by 50%
+    # on the wrong side once both fill.
+    existing_exit_qty = 0
+    try:
+        open_orders = await client.get_orders()
+        symbol_u = symbol.upper()
+        for o in open_orders:
+            if (o.symbol or "").upper() != symbol_u:
+                continue
+            if (o.ordertype or "").upper() != "LMT":
+                continue
+            if (o.action or "").upper() != action:
+                continue
+            existing_exit_qty += int(o.totalqty or 0)
+    except Exception:
+        logger.exception(
+            "process_manual_exit: failed to read open orders for over-trim check"
+        )
+
+    if existing_exit_qty + qty > pos_abs:
+        remaining = max(0, pos_abs - existing_exit_qty)
+        raise ValueError(
+            f"Manual exit would over-trim {symbol}: "
+            f"position={pos_abs}, already armed for {existing_exit_qty}, "
+            f"requested {qty} (max remaining: {remaining}). "
+            f"Cancel an existing exit or pick a smaller trim %."
+        )
+
+    order = Order(
+        symbol=symbol.upper(),
+        action=action,
+        position_size=qty,
+        contract_type=contract_type,
+        entry_price=float(target_price),  # place_limit_order maps entry_price -> lmtPrice
+    )
+
+    limit_order = await client.place_limit_order(order)
+    if limit_order is None:
+        raise RuntimeError(
+            f"IB rejected the manual exit LIMIT order for {symbol}."
+        )
+
+    order_id = getattr(limit_order, "orderId", None)
+    perm_id = getattr(limit_order, "permId", None) or None
+
+    logger.info(
+        "Armed manual exit | symbol=%s action=%s qty=%s target=%s trim=%s "
+        "order_id=%s perm_id=%s",
+        symbol, action, qty, target_price, trim_percentage, order_id, perm_id,
+    )
+
+    return ManualExitResponse(
+        symbol=symbol.upper(),
+        contract_type=contract_type,
+        order_id=int(order_id) if order_id else 0,
+        perm_id=int(perm_id) if perm_id else None,
+        target_price=target_price,
+        trim_percentage=trim_percentage,
+        action=action,
+        quantity=qty,
+        status="armed",
+    )
+
+
+# ======================================================================
+# Post-fill STP adjustment (runs on every fill, syncs STP to position)
+# ======================================================================
+async def handle_exit_fill(client: IbClient, symbol: str) -> None:
+    """
+Tätä kutsutaan säätämään stoppia kun markkinatoimeksianto täyttyy. Jos positio on nyt nolla, peruutetaan STP. 
+Jos positio on edelleen auki, muutetaan STP:n määrää vastaamaan jäljellä olevaa positioita.
+    """
+    existing_stp_order = await client.get_stp_order_by_symbol(symbol)
+    if existing_stp_order is None:
+        logger.info("No STP to adjust after fill | symbol=%s", symbol)
+        return
+
+    position = await client.get_position_by_symbol(symbol)
+    remaining_qty = (
+        abs(int(position.position))
+        if position and position.position is not None
+        else 0
+    )
+
+    if remaining_qty <= 0:
+        try:
+            await client.cancel_order_by_id(existing_stp_order.orderid)
+            logger.info(
+                "Cancelled STP after position went flat | symbol=%s order_id=%s",
+                symbol, existing_stp_order.orderid,
+            )
+        except OrderNotFoundError:
+            # STP became terminal between our lookup and the cancel
+            # (e.g. the fill we're reacting to WAS the STP). Harmless.
+            logger.info(
+                "STP already gone by cancel time | symbol=%s order_id=%s",
+                symbol, existing_stp_order.orderid,
+            )
+        return
+
+    stp_order_id = existing_stp_order.orderid
+    await client.modify_stp_order_by_id(stp_order_id, remaining_qty)
+    logger.info(
+        "Resized STP to match position | symbol=%s remaining=%s order_id=%s",
+        symbol, remaining_qty, stp_order_id,
+    )

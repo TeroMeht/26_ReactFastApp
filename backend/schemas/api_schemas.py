@@ -244,7 +244,7 @@ class ExitRequestResponseIB(BaseModel):
 # state the strategy-based exit flow produces.
 
 
-class CreateCustomExitRequest(BaseModel):
+class CreateManualExitRequest(BaseModel):
     symbol: str = Field(..., min_length=1)
     target_price: Decimal = Field(
         ..., gt=0, description="Limit price at which IB will execute the exit."
@@ -274,7 +274,7 @@ class CreateCustomExitRequest(BaseModel):
         return v
 
 
-class CustomExitResponse(BaseModel):
+class ManualExitResponse(BaseModel):
     # IB-only — no DB row, so no internal id and no created/updated stamps.
     # `perm_id` is what the frontend passes back on cancel.
     symbol: str

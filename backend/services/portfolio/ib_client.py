@@ -127,7 +127,7 @@ class OrderNotFoundError(Exception):
     Raised when a cancel targets an order that isn't in IB's open-orders
     list and isn't in a known terminal state on the tracker. Lets the
     router translate to HTTP 404 without inspecting a status string, and
-    lets internal callers (exit_manual, cancel_all_unfilled) treat the
+    lets internal callers (flows.exit, cancel_all_unfilled) treat the
     race case explicitly.
     """
     def __init__(self, order_id: int, message: str | None = None):
@@ -422,14 +422,8 @@ class IbClient:
             logging.error(f"Error in place_bracket_order for {order.symbol}: {e}")
             return None, None
 
-    async def place_limit_order(self, order: Order, order_ref: str | None = None):
-        """
-        Place a simple limit order asynchronously.
-
-        `order_ref` is forwarded to IB's `orderRef` field. The custom-exits
-        flow uses it to tag its LIMIT orders so they can be enumerated and
-        recognised on fill without any DB state.
-        """
+    async def place_limit_order(self, order: Order):
+        """Place a simple limit order asynchronously."""
         try:
             contract = _build_contract(order.symbol,order.contract_type)
 
@@ -445,8 +439,6 @@ class IbClient:
                 outsideRth=True,
                 tif="GTC",
             )
-            if order_ref:
-                limit_order.orderRef = order_ref
 
             trade = self.ib.placeOrder(contract, limit_order)
             self._register(trade)
@@ -461,12 +453,8 @@ class IbClient:
             logger.error(f"Error in place_limit_order for {order.symbol}: {e}")
             return None
 
-    async def place_market_order(self, order: Order, order_ref: str | None = None):
-        """
-        Place a market order. `order_ref` is forwarded to IB's `orderRef`
-        field so the OrderTracker fill bridge can recognise our exits on
-        fill (see services.portfolio.exit_manual.handle_exit_fill).
-        """
+    async def place_market_order(self, order: Order):
+        """Place a market order asynchronously."""
         try:
             contract = _build_contract(order.symbol,order.contract_type)
 
@@ -479,8 +467,6 @@ class IbClient:
                 transmit=True,
                 tif="DAY",
             )
-            if order_ref:
-                market_order.orderRef = order_ref
 
             trade = self.ib.placeOrder(contract, market_order)
             self._register(trade)
@@ -715,7 +701,7 @@ class IbClient:
                 # Signal via exception rather than a status string so
                 # callers don't have to inspect the returned dict. The
                 # router translates this to HTTP 404; internal callers
-                # (exit_manual, cancel_all_unfilled) catch it explicitly.
+                # (flows.exit, cancel_all_unfilled) catch it explicitly.
                 raise OrderNotFoundError(order_id)
 
             symbol = target.contract.symbol if target.contract else None

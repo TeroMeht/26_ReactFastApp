@@ -12,7 +12,7 @@ from services.portfolio.trades.trade_log import build_trade_log
 from services.portfolio.entry_attempts import build_entry_attempts
 from services.portfolio.risk_limits import build_lockout_status
 from services.portfolio.flows.add import process_add_request
-from services.portfolio.flows.exit import process_exit_request
+from services.portfolio.flows.exit import process_automatic_exit
 from services.portfolio.flows.open_risk import process_openrisktable
 from services.portfolio.openrisk_hub import OpenRiskHub
 from services.portfolio.pending_approvals_hub import PendingApprovalsHub
@@ -254,7 +254,7 @@ async def exit_request(
     tracker: OrderTracker = Depends(get_order_tracker),
 ):
     client = IbClient(ib, tracker=tracker)
-    return await process_exit_request(client, db_conn, payload)
+    return await process_automatic_exit(client, db_conn, payload)
 
 
 @router.post("/move-stop-be")

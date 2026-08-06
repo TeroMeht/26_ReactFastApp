@@ -10,7 +10,7 @@ from fastapi import FastAPI
 
 from services.portfolio.order_tracker import OrderTracker
 from services.portfolio.ib_client import IbClient
-from services.portfolio.flows.exit_manual import handle_exit_fill, parse_exit_ref
+from services.portfolio.flows.exit import handle_exit_fill
 
 logger = logging.getLogger(__name__)
 
@@ -26,35 +26,27 @@ async def wire_order_tracker(app: FastAPI) -> None:
 
     # Attach the pool first so seed/bind writes are persisted.
     order_tracker.set_db_pool(db_pool)
-    order_tracker.add_fill_handler(lambda snap: _exit_on_fill(ib, snap))
+    order_tracker.add_fill_handler(lambda snap: _sync_stp_on_fill(ib, snap))
     order_tracker.bind_events(ib)
     await order_tracker.seed(ib)
 
     app.state.order_tracker = order_tracker
 
 
-async def _exit_on_fill(ib, snap: dict) -> None:
-    """Exit fill bridge. When IB reports a fill, look at its orderRef —
-    if it carries the EXIT tag (from either the strategy-based exit flow
-    or a user-placed custom exit), run the shared STP adjustment logic
-    (resize on partial, cancel on 100%). No DB lookup; the tag itself
-    encodes the trim percentage.
+async def _sync_stp_on_fill(ib, snap: dict) -> None:
+    """Fill bridge. Runs on every filled order (entries, adds, exits,
+    external TWS trades, and the STP itself). Delegates to
+    handle_exit_fill, which keeps the protective STP in sync with the
+    current position — resize to remaining, or cancel when flat.
     """
-    trim = parse_exit_ref(snap.get("order_ref"))
-    if trim is None:
-        return  # not one of our exits
     symbol = snap.get("symbol")
     if not symbol:
         return
     try:
         client = IbClient(ib, tracker=order_tracker)
-        await handle_exit_fill(
-            client,
-            symbol=symbol,
-            trim_percentage=trim,
-        )
+        await handle_exit_fill(client, symbol=symbol)
     except Exception:
         logger.exception(
-            "exit fill handler failed for symbol=%s perm_id=%s",
+            "STP sync failed for symbol=%s perm_id=%s",
             symbol, snap.get("perm_id"),
         )

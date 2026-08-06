@@ -13,12 +13,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from dependencies import get_ib, get_order_tracker
 from services.portfolio.ib_client import IbClient
 from services.portfolio.order_tracker import OrderTracker
-from services.custom_exits import (
-    place_custom_exit,
-    list_custom_exits,
-    cancel_custom_exit_by_perm_id,
-)
-from schemas.api_schemas import CreateCustomExitRequest, CustomExitResponse
+from services.portfolio.flows.exit import process_manual_exit
+from services.exits import list_manual_exits, cancel_manual_exit_by_perm_id
+from schemas.api_schemas import CreateManualExitRequest, ManualExitResponse
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +25,7 @@ router = APIRouter(
 )
 
 
-@router.get("/{symbol}", response_model=List[CustomExitResponse])
+@router.get("/{symbol}", response_model=List[ManualExitResponse])
 async def get_custom_exits(
     symbol: str,
     ib=Depends(get_ib),
@@ -36,28 +33,26 @@ async def get_custom_exits(
 ):
     try:
         client = IbClient(ib, tracker=tracker)
-        rows = await list_custom_exits(client, symbol)
-        return [CustomExitResponse(**r) for r in rows]
+        return await list_manual_exits(client, symbol)
     except Exception as e:
         logger.exception("Failed to list custom exits for %s", symbol)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("", response_model=CustomExitResponse)
+@router.post("", response_model=ManualExitResponse)
 async def create_custom_exit(
-    payload: CreateCustomExitRequest,
+    payload: CreateManualExitRequest,
     ib=Depends(get_ib),
     tracker: OrderTracker = Depends(get_order_tracker),
 ):
     try:
         client = IbClient(ib, tracker=tracker)
-        row = await place_custom_exit(
+        return await process_manual_exit(
             client,
             symbol=payload.symbol,
             target_price=payload.target_price,
             trim_percentage=payload.trim_percentage,
         )
-        return CustomExitResponse(**row)
     except ValueError as e:
         # Pre-trade validation failure (no position, qty 0, …)
         raise HTTPException(status_code=400, detail=str(e))
@@ -78,7 +73,7 @@ async def cancel_custom_exit_endpoint(
     """
     try:
         client = IbClient(ib, tracker=tracker)
-        result = await cancel_custom_exit_by_perm_id(client, perm_id)
+        result = await cancel_manual_exit_by_perm_id(client, perm_id)
         if result.get("status") == "error":
             raise HTTPException(status_code=500, detail=result.get("message"))
         return result
