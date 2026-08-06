@@ -257,13 +257,6 @@ const LiveOrders = () => {
   };
 
   const handleCancelAll = async () => {
-    if (
-      !window.confirm(
-        "Cancel ALL unfilled orders? Orders already partially or fully filled will be left alone."
-      )
-    ) {
-      return;
-    }
     setBulkBusy(true);
     try {
       const res = await fetch(`${API_PREFIX}/portfolio/cancel-all-unfilled`, {

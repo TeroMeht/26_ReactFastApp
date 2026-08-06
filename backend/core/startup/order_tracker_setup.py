@@ -10,7 +10,10 @@ from fastapi import FastAPI
 
 from services.portfolio.order_tracker import OrderTracker
 from services.portfolio.ib_client import IbClient
-from services.portfolio.flows.exit import handle_exit_fill
+from services.portfolio.flows.exit import (
+    handle_exit_fill,
+    notify_manual_exit_fill_if_relevant,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,17 @@ async def _sync_stp_on_fill(ib, snap: dict) -> None:
     symbol = snap.get("symbol")
     if not symbol:
         return
+    # Telegram-notify manual-exit fills before STP sync so a slow STP
+    # query never delays the user seeing the fill. Automatic exits are
+    # notified at placement time (see process_automatic_exit) since MKTs
+    # fill too fast to reliably register between placement and fill.
+    try:
+        notify_manual_exit_fill_if_relevant(snap)
+    except Exception:
+        logger.exception(
+            "manual-exit notification failed for perm_id=%s",
+            snap.get("perm_id"),
+        )
     try:
         client = IbClient(ib, tracker=order_tracker)
         await handle_exit_fill(client, symbol=symbol)

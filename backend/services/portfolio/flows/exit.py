@@ -1,8 +1,11 @@
+import asyncio
 import logging
 from decimal import Decimal
+from typing import Any, Dict, Set
 
 from services.orders import Order
 from services.portfolio.ib_client import IbClient, OrderNotFoundError, Position
+from services.telegram import send_telegram_message, now_hhmm_helsinki
 from db.exits import (
     fetch_exits_by_symbol,
     delete_exit_request,
@@ -13,6 +16,17 @@ from schemas.api_schemas import (
     ExitRequestResponseIB,
     ManualExitResponse,
 )
+
+
+# Manual-exit permIds we're waiting to fill. Automatic exits are
+# notified at placement time (MKTs fill too fast to reliably register
+# between placement and fill), so this set only holds manual LMTs.
+# Membership tells the fill bridge "this fill is a manual exit we
+# placed; send Telegram." Everything else the message needs (symbol,
+# qty, avg price) is on the fill snapshot itself. Lives in memory only —
+# a restart while a manual exit is unfilled skips that one notification
+# (STP sync still works, since handle_exit_fill doesn't depend on it).
+_pending_manual_exit_perm_ids: Set[int] = set()
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +126,15 @@ async def process_automatic_exit(
             "Exit MKT placed | symbol=%s action=%s qty=%s trim=%s",
             symbol, action, qty, trim,
         )
+
+        # Automatic exits are MKT orders that fill within milliseconds,
+        # so we notify on placement instead of trying to race the
+        # fill-event registration. Fire-and-forget so a slow Telegram
+        # API can't delay the exit response.
+        asyncio.create_task(send_telegram_message(
+            f"\U0001F53B Automatic exit placed @ {symbol} @ {alarm} "
+            f"@ {qty} ({trim * 100:.0f}%) at: {now_hhmm_helsinki()}"
+        ))
 
         # Disarm — full exit clears every strategy for the symbol so
         # leftover rows don't fire on a re-entered position.
@@ -223,6 +246,12 @@ async def process_manual_exit(
         symbol, action, qty, target_price, trim_percentage, order_id, perm_id,
     )
 
+    # Register for fill-time Telegram notification. If IB didn't assign
+    # a permId within the place_limit_order timeout, skip registration —
+    # the fill will still adjust the STP, we just won't send a Telegram.
+    if perm_id:
+        _pending_manual_exit_perm_ids.add(int(perm_id))
+
     return ManualExitResponse(
         symbol=symbol.upper(),
         contract_type=contract_type,
@@ -234,6 +263,35 @@ async def process_manual_exit(
         quantity=qty,
         status="armed",
     )
+
+
+# ======================================================================
+# Fill-time Telegram notification for manual exits
+# ======================================================================
+def notify_manual_exit_fill_if_relevant(snap: Dict[str, Any]) -> None:
+    """
+    If the filled order's permId matches a pending manual exit we
+    placed, fire a one-liner Telegram notification and drop it from the
+    registry. Called from the OrderTracker fill bridge for every fill;
+    no-op if the permId isn't ours. Fire-and-forget so a slow/failed
+    Telegram API can't stall the fill pipeline.
+
+    Automatic exits use placement-time notification (see
+    process_automatic_exit) because MKTs fill too fast to reliably
+    register between placement and fill.
+    """
+    perm_id = snap.get("perm_id")
+    if not perm_id or int(perm_id) not in _pending_manual_exit_perm_ids:
+        return
+    _pending_manual_exit_perm_ids.discard(int(perm_id))
+
+    symbol = snap.get("symbol") or "?"
+    filled = int(snap.get("filled") or snap.get("total_qty") or 0)
+    avg = float(snap.get("avg_fill_price") or 0)
+
+    asyncio.create_task(send_telegram_message(
+        f"\U00002705 Manual exit filled @ {symbol} @ {filled} @ {avg:.2f} at: {now_hhmm_helsinki()}"
+    ))
 
 
 # ======================================================================

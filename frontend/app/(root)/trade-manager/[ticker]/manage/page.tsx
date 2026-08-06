@@ -172,8 +172,23 @@ const ManagePage = () => {
         }),
       });
       if (!res.ok) throw new Error(await res.text());
+      // Optimistic insert from the POST response. Refetching immediately
+      // races IB's open-orders feed — the just-placed order often isn't
+      // in reqOpenOrders yet, so a refetch would show a stale list. The
+      // POST response is authoritative (built server-side from the same
+      // ManualExitResponse shape list_manual_exits returns), so we
+      // append it directly and let the next natural fetch reconcile.
+      const created: CustomExitRow = await res.json();
+      setCustomExits((prev) => {
+        // Dedup on perm_id/order_id in case a refresh happens to land
+        // between placement and this handler.
+        const key = created.perm_id ?? created.order_id;
+        const alreadyPresent = prev.some(
+          (r) => (r.perm_id ?? r.order_id) === key,
+        );
+        return alreadyPresent ? prev : [...prev, created];
+      });
       setCustomDraft({ target_price: "", trim: 1 });
-      await fetchCustomExits();
     } catch (err: any) {
       console.error("Error adding custom exit:", err);
       setCustomError(`Failed to arm custom exit: ${err.message || err}`);
@@ -210,9 +225,13 @@ const ManagePage = () => {
   // POST a new exit_request row. Backend upserts by (symbol, strategy);
   // we still guard against arming the same strategy twice client-side
   // so the user gets a clearer message than a silent overwrite.
-  const handleAddExit = async () => {
+  const handleAddExit = async (strategyOverride?: string) => {
     if (!symbol) return;
-    const { strategy, trim } = addDraft;
+    // Prefer an explicit override — the click handler passes the value
+    // shown in the <select> (which is derived, not committed to state),
+    // so the first click doesn't race a pending setAddDraft update.
+    const strategy = strategyOverride ?? addDraft.strategy;
+    const { trim } = addDraft;
     if (!strategy) return;
 
     if (exitRows.some((r) => r.strategy === strategy)) {
@@ -413,12 +432,13 @@ const ManagePage = () => {
               </div>
               <button
                 onClick={() => {
-                  // Commit the implicit default ("first available") to
-                  // state if the user never touched the dropdown.
+                  // Pass the shown strategy directly so we don't race the
+                  // pending setAddDraft. Also mirror it back into state for
+                  // consistency with any other reads.
                   if (addDraft.strategy !== selectedStrategy) {
                     setAddDraft((d) => ({ ...d, strategy: selectedStrategy }));
                   }
-                  handleAddExit();
+                  handleAddExit(selectedStrategy);
                 }}
                 disabled={addingExit || !selectedStrategy}
                 className="text-xs bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700 disabled:opacity-50"

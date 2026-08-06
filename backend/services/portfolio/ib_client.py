@@ -442,8 +442,26 @@ class IbClient:
 
             trade = self.ib.placeOrder(contract, limit_order)
             self._register(trade)
+
+            # Wait briefly for IB to acknowledge and populate permId. Without
+            # this, callers (e.g. place_manual_exit) return a response with
+            # perm_id=None, and any subsequent cancel-by-permId fails because
+            # IB doesn't yet map the local orderId to the returned identifier.
+            # IB typically assigns permId within ~100ms; cap the wait so a
+            # stalled gateway can't hang the request.
+            deadline = asyncio.get_event_loop().time() + 2.0
+            while not getattr(limit_order, "permId", 0):
+                if asyncio.get_event_loop().time() >= deadline:
+                    logger.warning(
+                        "permId not assigned within timeout for %s orderId=%s",
+                        order.symbol, limit_order.orderId,
+                    )
+                    break
+                await asyncio.sleep(0.05)
+
             logger.info(f"Limit order submitted for {order.symbol}: "
                         f"orderId={limit_order.orderId}, "
+                        f"permId={getattr(limit_order, 'permId', 0)}, "
                         f"action={order.action}, quantity={order.position_size}, "
                         f"price={order.entry_price}")
 

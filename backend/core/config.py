@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from pathlib import Path
 from pydantic import field_validator
 from pydantic import model_validator
@@ -34,6 +34,11 @@ class Settings(BaseSettings):
 
     # --- Timezone ---
     TIMEZONE:str
+
+    # --- Telegram (notifications for automatic exits) ---
+    # Optional: absence disables notifications; send helper no-ops with a warning.
+    TELEGRAM_BOT_TOKEN: str
+    TELEGRAM_CHAT_ID: str
 
 
     @field_validator("TARGET_SCRIPT_PATH")
