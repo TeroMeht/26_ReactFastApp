@@ -104,6 +104,21 @@ const DailySummary: React.FC = () => {
   // just add noise to pre-market prep. Toggle exposes them when the trader
   // wants to double-check that nothing tradeable was misgraded as D.
   const [hideD, setHideD] = React.useState<boolean>(true);
+  // Per-row expansion of the Catalyst cell. Default state is collapsed so the
+  // table stays scannable; the trader clicks the row's Catalyst cell (or the
+  // chevron) to reveal notes + source headline. Keyed by the same tuple used
+  // for the row's React key so it survives sort/filter changes.
+  const [expandedRows, setExpandedRows] = React.useState<Set<string>>(
+    () => new Set(),
+  );
+  const toggleExpanded = React.useCallback((key: string) => {
+    setExpandedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
 
   const loadLatest = React.useCallback(async () => {
     setLoading(true);
@@ -277,9 +292,13 @@ const DailySummary: React.FC = () => {
                     </TableCell>
                   </TableRow>
                 )}
-                {sortedRows.map((r) => (
+                {sortedRows.map((r) => {
+                  const rowKey = `${r.side}-${r.rank}-${r.symbol}`;
+                  const isExpanded = expandedRows.has(rowKey);
+                  const hasDetails = Boolean(r.notes) || Boolean(r.headline);
+                  return (
                   <TableRow
-                    key={`${r.side}-${r.rank}-${r.symbol}`}
+                    key={rowKey}
                     style={{
                       backgroundColor:
                         r.side === "up"
@@ -324,29 +343,67 @@ const DailySummary: React.FC = () => {
                       </span>
                     </TableCell>
                     <TableCell>
-                      <div className="text-sm text-black">{r.reason || "—"}</div>
-                      {r.notes && (
-                        <div
-                          className="text-xs text-black mt-0.5"
-                          title="LLM caveats: float, peer flow, already in price, etc."
+                      {/* Header row: the one-line reason + a disclosure button.
+                          Notes/headline live behind the toggle so the table
+                          stays scannable by default. */}
+                      <button
+                        type="button"
+                        onClick={() => hasDetails && toggleExpanded(rowKey)}
+                        disabled={!hasDetails}
+                        aria-expanded={isExpanded}
+                        className={
+                          "flex w-full items-start gap-1 text-left " +
+                          (hasDetails ? "cursor-pointer" : "cursor-default")
+                        }
+                        title={
+                          hasDetails
+                            ? isExpanded
+                              ? "Collapse catalyst details"
+                              : "Expand catalyst details"
+                            : undefined
+                        }
+                      >
+                        <span
+                          className={
+                            "mt-0.5 inline-block w-3 text-xs text-gray-500 transition-transform " +
+                            (hasDetails ? "" : "invisible ") +
+                            (isExpanded ? "rotate-90" : "")
+                          }
+                          aria-hidden="true"
                         >
-                          {r.notes}
+                          ▸
+                        </span>
+                        <span className="text-sm text-black flex-1">
+                          {r.reason || "—"}
+                        </span>
+                      </button>
+                      {isExpanded && hasDetails && (
+                        <div className="mt-1 pl-4">
+                          {r.notes && (
+                            <div
+                              className="text-xs text-black"
+                              title="LLM caveats: float, peer flow, already in price, etc."
+                            >
+                              {r.notes}
+                            </div>
+                          )}
+                          {r.headline && (
+                            <a
+                              href={r.news_url || undefined}
+                              target="_blank"
+                              rel="noreferrer noopener"
+                              className="text-xs text-blue-600 underline hover:text-blue-800 line-clamp-1 block mt-0.5"
+                              title="Open source headline in a new tab"
+                            >
+                              {r.headline} ↗
+                            </a>
+                          )}
                         </div>
-                      )}
-                      {r.headline && (
-                        <a
-                          href={r.news_url || undefined}
-                          target="_blank"
-                          rel="noreferrer noopener"
-                          className="text-xs text-blue-600 underline hover:text-blue-800 line-clamp-1 block mt-0.5"
-                          title="Open source headline in a new tab"
-                        >
-                          {r.headline} ↗
-                        </a>
                       )}
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           </div>
