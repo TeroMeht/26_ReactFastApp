@@ -13,7 +13,7 @@ from core.lifespan import lifespan
 from routers import (
     watchlist, script, alarms, livestream, portfolio,
     pending_orders, exits, scanner, live_scanner, custom_exits,
-    daily_summary,data_streamer
+    daily_summary, data_streamer, runtime_settings,
 )
 
 
@@ -51,5 +51,6 @@ def create_app() -> FastAPI:
     app.include_router(daily_summary.router)
     app.include_router(live_scanner.router)
     app.include_router(data_streamer.router)
-    
+    app.include_router(runtime_settings.router)
+
     return app

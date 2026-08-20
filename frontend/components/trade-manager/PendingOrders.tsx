@@ -90,6 +90,40 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
     writeAutoApprove(next);
   };
 
+  // Read-only mirror of the backend's extended-hours-stop mode.
+  // The backend derives this from Helsinki wall time -- premarket
+  // (before 16:30 Europe/Helsinki, i.e. before the 09:30 US open) uses
+  // a conditional LMT so the stop can fire during pre-/after-hours;
+  // from 16:30 onwards it falls back to the native STP. There is no
+  // setter; the poll below just keeps the badge in sync as the
+  // boundary is crossed.
+  const [extendedHoursStop, setExtendedHoursStop] = useState<boolean | null>(
+    null,
+  );
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch(
+          `${API_PREFIX}/runtime-settings/extended-hours-stop`,
+        );
+        if (!res.ok) return;
+        const data: { enabled: boolean } = await res.json();
+        if (!cancelled) setExtendedHoursStop(!!data.enabled);
+      } catch (err) {
+        console.error("Failed to read extended-hours-stop setting:", err);
+      }
+    };
+    load();
+    // Poll once a minute so the badge flips right after the 16:30
+    // Helsinki boundary without needing a manual refresh.
+    const id = setInterval(load, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
   const fetchPositions = useCallback(async () => {
     try {
       setLoading(true);
@@ -307,6 +341,41 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
           />
           Auto-approve: {autoApprove ? "ON" : "OFF"}
         </button>
+
+        {/*
+          Read-only status of the backend's extended-hours-stop mode.
+          Driven by Helsinki wall time: premarket (before 16:30) uses
+          a conditional LMT so the stop can fire pre-market; from
+          16:30 onwards the backend uses a native RTH-only STP.
+        */}
+        <span
+          role="status"
+          title="Automatic: premarket (before 16:30 Europe/Helsinki) uses a conditional LMT so the stop can fire pre-market; from 16:30 the backend uses a native STP (RTH only)."
+          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm font-medium ${
+            extendedHoursStop === null
+              ? "bg-gray-100 text-gray-500 border-gray-300"
+              : extendedHoursStop
+              ? "bg-green-100 text-green-800 border-green-300"
+              : "bg-gray-100 text-gray-700 border-gray-300"
+          }`}
+        >
+          <span
+            aria-hidden="true"
+            className={`w-2.5 h-2.5 rounded-full ${
+              extendedHoursStop === null
+                ? "bg-gray-300"
+                : extendedHoursStop
+                ? "bg-green-600"
+                : "bg-gray-400"
+            }`}
+          />
+          Extended-hours stop:{" "}
+          {extendedHoursStop === null
+            ? "…"
+            : extendedHoursStop
+            ? "ON (premarket)"
+            : "OFF (RTH)"}
+        </span>
       </div>
 
       {message && (

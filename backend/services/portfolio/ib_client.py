@@ -9,6 +9,7 @@ from ib_async import IB, Stock, CFD, LimitOrder, StopOrder, MarketOrder,PriceCon
 from core.config import settings
 from services.orders import BidAsk, Order
 from services.portfolio.order_tracker import OrderTracker, TERMINAL_STATUSES
+from services.runtime_settings import get_extended_hours_stop_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -583,10 +584,12 @@ class IbClient:
             parent = self._build_parent_order(order)
             reverse_action = self._reverse_action(order.action)
 
-            # Protective-leg shape is decided here, from .env:
-            #   EXTENDED_HOURS_STOP_ENABLED=false -> native STP
-            #   EXTENDED_HOURS_STOP_ENABLED=true  -> conditional LMT
-            if settings.EXTENDED_HOURS_STOP_ENABLED:
+            # Protective-leg shape is decided here from the runtime
+            # toggle exposed on top of the pending-orders table
+            # (services.runtime_settings, routers.runtime_settings):
+            #   extended_hours_stop_enabled=False -> native STP
+            #   extended_hours_stop_enabled=True  -> conditional LMT
+            if get_extended_hours_stop_enabled():
                 stoploss = self._build_conditional_stp_order(
                     contract, order, parent.orderId, reverse_action
                 )

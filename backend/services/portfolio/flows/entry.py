@@ -59,17 +59,17 @@ logger = logging.getLogger(__name__)
 
 
 
-def check_block_window(now: datetime) -> tuple[bool, str]:
-    risk = risk_settings
-    first_entry = time(risk.FIRST_ENTRY_HOUR, risk.FIRST_ENTRY_MINUTE)
-    if now.time() < first_entry:
-        msg = (
-            f"Entry blocked before {first_entry.strftime('%H:%M')} "
-            f"(current time: {now.strftime('%H:%M')})."
-        )
-        logger.info(msg)
-        return False, msg
-    return True, ""
+# def check_block_window(now: datetime) -> tuple[bool, str]:
+#     risk = risk_settings
+#     first_entry = time(risk.FIRST_ENTRY_HOUR, risk.FIRST_ENTRY_MINUTE)
+#     if now.time() < first_entry:
+#         msg = (
+#             f"Entry blocked before {first_entry.strftime('%H:%M')} "
+#             f"(current time: {now.strftime('%H:%M')})."
+#         )
+#         logger.info(msg)
+#         return False, msg
+#     return True, ""
 
 
 def check_attempts(snapshot: TradesSnapshot, symbol: str) -> tuple[bool, str]:
@@ -141,7 +141,7 @@ def check_all_guards(
         )
 
     for ok, message in (
-        check_block_window(current_time),
+        #check_block_window(current_time),
         check_total_attempts(snapshot),
         check_attempts(snapshot, symbol),
         check_frequency(snapshot, symbol, current_time),

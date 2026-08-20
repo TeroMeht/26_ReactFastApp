@@ -1,7 +1,6 @@
 from typing import List, Optional
 from pathlib import Path
 from pydantic import field_validator
-from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -40,15 +39,7 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str
     TELEGRAM_CHAT_ID: str
 
-    # --- Extended-hours (pre-market) protective stop ---
-    # Global default for whether new bracket orders should use a
-    # conditional-LMT protective leg (fires from pre-market prints) instead
-    # of a native STP (RTH-only trigger on US stocks). Per-Order override
-    # via Order.pre_market_stop still wins.
-    EXTENDED_HOURS_STOP_ENABLED: bool
-    # Absolute-dollar offset worse-than-trigger to use as the limit price
-    # when the conditional-LMT protective leg fires. e.g. 0.10 -> long stop
-    # at 95 transmits a SELL LMT @ 94.90 once price reaches 95.
+
     STOP_LIMIT_OFFSET: float
 
 
