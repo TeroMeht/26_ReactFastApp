@@ -7,7 +7,10 @@ from fastapi.responses import StreamingResponse
 from typing import List
 from services.portfolio.ib_client import IbClient, OrderNotFoundError
 from services.portfolio.order_tracker import OrderTracker
-from services.portfolio.flows.entry import process_entry_request, place_approved_entry
+from services.portfolio.flows.entry import (
+    process_entry_request,
+    place_approved_entry,
+)
 from services.portfolio.trades.trade_log import build_trade_log
 from services.portfolio.entry_attempts import build_entry_attempts
 from services.portfolio.risk_limits import build_lockout_status
@@ -231,6 +234,12 @@ async def approve_entry_request(
             message="Automatic entry declined by user.",
             symbol=approval.symbol,
         )
+
+    # Honor a per-request contract_type override (Pending Orders table
+    # Send button carries the user's stock/CFD dropdown choice here).
+    # Absent -> keep the value baked in when the approval was registered.
+    if payload.contract_type is not None:
+        approval.contract_type = payload.contract_type
 
     client = IbClient(ib, tracker=tracker)
     return await place_approved_entry(client, approval)

@@ -141,19 +141,36 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
 
   const handleSend = async (order: PendingOrder) => {
     try {
-      const contractType = contractTypes[order.id] ?? "stock";
-      const payload = {
-        symbol: order.symbol,
-        entry_price: order.latest_price,
-        stop_price: order.stop_price,
-        position_size: order.position_size,
-        contract_type: contractType,
-      };
+      // Rows in this table are pre-validated at fetch time and (when
+      // they pass every guard) registered in PendingApprovalsHub with
+      // a stable source_id. The backend returns the resulting
+      // approval_id on the row; Send just replays it to /approve so
+      // the click skips snapshot + validation entirely.
+      const approvalId = (order as PendingOrder & { approval_id?: string | null })
+        .approval_id;
+      if (!approvalId) {
+        // Row is present but blocked by a guard -- reason is on the
+        // row itself. The Send button is disabled in this state; this
+        // is a defensive log only.
+        console.warn(
+          "Send clicked on a row without approval_id (blocked)",
+          order,
+        );
+        return;
+      }
 
-      const res = await fetch(`${API_PREFIX}/portfolio/entry-request`, {
+      // The per-row dropdown (stock / CFD) overrides the contract_type
+      // that was baked in when process_open_orders registered the row.
+      const contractType = contractTypes[order.id] ?? "stock";
+
+      const res = await fetch(`${API_PREFIX}/portfolio/entry-request/approve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          approval_id: approvalId,
+          decision: "accept",
+          contract_type: contractType,
+        }),
       });
 
       if (!res.ok) {
@@ -356,9 +373,21 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
             </TableRow>
           ) : (
             positions.map((order) => {
-              const sendDisabled = allowedOrders.has(order.id);
+              const blockedReason = (
+                order as PendingOrder & { blocked_reason?: string | null }
+              ).blocked_reason;
+              // Send is disabled when either the row was already sent
+              // this session (dedupes double-clicks) or the row failed
+              // an entry guard at fetch time (no approval_id, so
+              // /approve would 404 anyway).
+              const sendDisabled =
+                allowedOrders.has(order.id) || !!blockedReason;
               return (
-                <TableRow key={order.id}>
+                <TableRow
+                  key={order.id}
+                  title={blockedReason ?? undefined}
+                  className={blockedReason ? "opacity-60" : undefined}
+                >
                   <TableCell>{order.id}</TableCell>
                   <TableCell>{order.symbol}</TableCell>
                   <TableCell>
@@ -404,6 +433,14 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
                   <TableCell>{order.size}</TableCell>
                   <TableCell className="text-center whitespace-nowrap">
                     <div className="flex flex-row items-center justify-center gap-2">
+                      {blockedReason && (
+                        <span
+                          className="px-2 py-0.5 text-xs rounded bg-amber-100 text-amber-800 border border-amber-200"
+                          title={blockedReason}
+                        >
+                          Blocked
+                        </span>
+                      )}
                       <Button variant="ghost" onClick={() => handleDelete(order)}>
                         Delete
                       </Button>
@@ -411,6 +448,7 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
                         variant="outline"
                         onClick={() => handleSend(order)}
                         disabled={sendDisabled}
+                        title={blockedReason ?? undefined}
                       >
                         Send
                       </Button>

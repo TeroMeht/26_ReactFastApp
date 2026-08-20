@@ -11,7 +11,9 @@ and the /lockout-status view live in services.portfolio.risk_limits --
 they're total-lockout monitoring, not entry-flow-specific.
 """
 
+import asyncio
 import logging
+import time as _time
 from datetime import datetime, time, timedelta
 
 import pytz
@@ -19,12 +21,19 @@ import pytz
 from typing import Optional
 
 from services.orders import (
+    BidAsk,
     Order,
     OrderBuilder,
     build_order,
     calculate_entry_price,
     calculate_position_size,
 )
+
+# Max age (ms) of a client-supplied bid/ask before we fall back to a
+# fresh server-side quote fetch. Fast-moving pre-market ticks age
+# quickly; 1s is generous vs. what "fresh" actually means but forgiving
+# of small clock skew between client and server.
+FRESH_QUOTE_MAX_AGE_MS = 1000
 from services.portfolio.ib_client import IbClient
 from services.portfolio.pending_approvals_hub import (
     PendingApproval,
@@ -110,17 +119,26 @@ def check_frequency(snapshot: TradesSnapshot, symbol: str, current_time: datetim
 
 
 
-def entry_validator(
-    client: IbClient,
+def check_all_guards(
     snapshot: TradesSnapshot,
     current_time: datetime,
     symbol: str,
 ) -> EntryRequestResponse:
+    """
+    Pure predicate: run every entry guard and return the verdict as an
+    EntryRequestResponse. No side effects (does NOT trip the daily-loss
+    circuit breaker) -- safe to call on every pending-orders table
+    refresh to filter out invalid rows.
 
+    entry_validator() wraps this and adds the circuit-breaker side
+    effect for the click-time (place) path.
+    """
     ok, message = check_daily_loss(snapshot)
     if not ok:
-        enforce_daily_loss_circuit_breaker(client)
-        return EntryRequestResponse(allowed=False, message=message, symbol=symbol)
+        return EntryRequestResponse(
+            allowed=False, message=message, symbol=symbol,
+            reason="daily_loss",
+        )
 
     for ok, message in (
         check_block_window(current_time),
@@ -147,19 +165,80 @@ def entry_validator(
     return EntryRequestResponse(allowed=True, message="Entry allowed", symbol=symbol)
 
 
+def entry_validator(
+    client: IbClient,
+    snapshot: TradesSnapshot,
+    current_time: datetime,
+    symbol: str,
+) -> EntryRequestResponse:
+    """
+    Click-time validator. Wraps check_all_guards() and additionally
+    trips the daily-loss circuit breaker (cancels all working orders)
+    when the daily loss limit is breached -- that side effect only
+    belongs on the place path, not on read-only filtering.
+    """
+    result = check_all_guards(snapshot, current_time, symbol)
+    if not result.allowed and result.reason == "daily_loss":
+        enforce_daily_loss_circuit_breaker(client)
+    return result
+
+
+def _fresh_client_quote(payload: EntryRequest) -> Optional[BidAsk]:
+    """
+    Return a BidAsk built from the payload's client-supplied top-of-book
+    if all fields are present and the timestamp is within
+    FRESH_QUOTE_MAX_AGE_MS of now. Otherwise return None so the caller
+    falls back to the server-side reqMktData round-trip.
+    """
+    if payload.bid is None or payload.ask is None or payload.quote_ts_ms is None:
+        return None
+    if payload.bid <= 0 or payload.ask <= 0:
+        return None
+    now_ms = int(_time.time() * 1000)
+    age_ms = now_ms - int(payload.quote_ts_ms)
+    if age_ms < 0 or age_ms > FRESH_QUOTE_MAX_AGE_MS:
+        return None
+    return BidAsk(symbol=payload.symbol, bid=payload.bid, ask=payload.ask)
+
+
 async def process_manual_entry(
     client: IbClient,
     payload: EntryRequest,
+    prep_ms: int = 0,
+    prefetched_bid_ask: Optional[BidAsk] = None,
 ) -> EntryRequestResponse:
     """
-    Manual entry: fetch a live IB quote right now, price + size the
-    order, and place the bracket immediately. Assumes ``entry_validator``
-    has already accepted this request in the orchestrator.
+    Manual entry: price + size the order and place the bracket
+    immediately. Quote source, in order of preference:
+      1. ``prefetched_bid_ask`` from the orchestrator's parallel gather.
+      2. The payload's client-supplied top-of-book, if fresh.
+      3. Fresh server-side reqMktData round-trip (fallback).
+
+    Assumes ``entry_validator`` has already accepted this request in the
+    orchestrator.
+
+    prep_ms is the elapsed wall-clock of the orchestrator's prep stage
+    (snapshot, possibly parallel with the IB quote fetch); forwarded
+    here so the single timing log line at the end covers the whole
+    entry pipeline.
     """
     symbol = payload.symbol
     stop_price = payload.stop_price
 
-    bid_ask = await client.get_bid_ask_price(symbol)
+    t0 = _time.perf_counter()
+
+    if prefetched_bid_ask is not None:
+        bid_ask = prefetched_bid_ask
+        quote_source = "parallel"
+    else:
+        bid_ask = _fresh_client_quote(payload)
+        if bid_ask is not None:
+            quote_source = "client"
+        else:
+            bid_ask = await client.get_bid_ask_price(symbol)
+            quote_source = "ib"
+    t1 = _time.perf_counter()
+
     entry_price = calculate_entry_price(bid_ask, stop_price)
     position_size = calculate_position_size(
         entry_price=entry_price,
@@ -173,9 +252,20 @@ async def process_manual_entry(
         position_size=position_size,
         contract_type=payload.contract_type,
     ))
-    return await _place_and_respond(
+
+    response = await _place_and_respond(
         client, order, success_message="Entry ok"
     )
+    t2 = _time.perf_counter()
+
+    quote_ms = int((t1 - t0) * 1000)
+    place_ms = int((t2 - t1) * 1000)
+    total_ms = prep_ms + quote_ms + place_ms
+    logger.info(
+        "entry timing %s prep=%dms quote=%dms(%s) place=%dms total=%dms",
+        symbol, prep_ms, quote_ms, quote_source, place_ms, total_ms,
+    )
+    return response
 
 
 async def process_automatic_entry(
@@ -311,7 +401,6 @@ async def place_approved_entry(
         )
 
 
-
 # Main entry flow orchestrator -- the public surface of this module.
 async def process_entry_request(
     client: IbClient,
@@ -333,11 +422,37 @@ async def process_entry_request(
     )
 
     try:
-        snapshot = await build_today_snapshot(client)
+        # Fetch snapshot and (when relevant) the IB quote in parallel.
+        # The snapshot feeds the guards; the quote feeds pricing. They
+        # are independent, so awaiting them together via asyncio.gather
+        # collapses the wall-clock to max(snap, quote) instead of
+        # snap + quote -- saves 200-500ms on the entry hot path.
+        #
+        # We only kick off the IB quote when we actually need it:
+        # manual path, and no fresh client-supplied quote in the
+        # payload. Automatic path skips it (no placement here); manual
+        # with a fresh client quote skips it too (the client quote is
+        # already the source of truth).
+        needs_ib_quote = (
+            request_type == "manual" and _fresh_client_quote(payload) is None
+        )
+
+        t_prep0 = _time.perf_counter()
+        if needs_ib_quote:
+            snapshot, prefetched_bid_ask = await asyncio.gather(
+                build_today_snapshot(client),
+                client.get_bid_ask_price(symbol),
+            )
+        else:
+            snapshot = await build_today_snapshot(client)
+            prefetched_bid_ask = None
+        prep_ms = int((_time.perf_counter() - t_prep0) * 1000)
 
         # entry_validator always returns an EntryRequestResponse: on
         # rejection we return it verbatim; on allowed we proceed to
-        # pricing + placement.
+        # pricing + placement. A rejection here wastes the parallel
+        # quote fetch (a couple of ms of IB work); acceptable price
+        # for the happy-path latency win.
         validation = entry_validator(client, snapshot, current_time, symbol)
         if not validation.allowed:
             return validation
@@ -349,7 +464,12 @@ async def process_entry_request(
         # path parks a preview in the hub for the user to Accept.
         if request_type == "automatic":
             return await process_automatic_entry(payload, approvals_hub)
-        return await process_manual_entry(client, payload)
+        return await process_manual_entry(
+            client,
+            payload,
+            prep_ms=prep_ms,
+            prefetched_bid_ask=prefetched_bid_ask,
+        )
 
     except ValueError as e:
         # Business-logic rejects raised by pricing / sizing helpers

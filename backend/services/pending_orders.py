@@ -1,9 +1,14 @@
 import httpx
 import logging
+from datetime import datetime
 from typing import List, Optional, Dict
+import pytz
 from db.pending_orders import *
 from services.orders import calculate_position_size
 from services.portfolio.ib_client import IbClient
+from services.portfolio.flows.entry import check_all_guards
+from services.portfolio.pending_approvals_hub import PendingApprovalsHub
+from services.portfolio.trades.trades_snapshot import build_today_snapshot
 from schemas.api_schemas import PendingOrder
 
 from core.config import settings
@@ -173,34 +178,96 @@ async def wrapup_pending_orders(db_conn) -> List[Dict]:
 
 
 # Calculate and generate PendingOrder for UI to show
-async def process_open_orders(db_conn,ib) -> List[PendingOrder]:
-        
+async def process_open_orders(
+    db_conn,
+    ib,
+    approvals_hub: PendingApprovalsHub,
+) -> List[PendingOrder]:
+        """
+        Build the Pending Orders table view.
+
+        For each row from Alpaca+DB we run the full entry_validator
+        guards up-front (using the shared cached snapshot so this is
+        near-free after the first call in a 5s window). Rows that pass
+        every guard get registered in PendingApprovalsHub with a stable
+        source_id and the response carries the resulting approval_id so
+        the Send button can POST to /entry-request/approve without
+        re-running any guards on the click.
+
+        Rows that fail a guard are still returned -- the UI needs to
+        show them with a blocked_reason so the user can see why Send is
+        disabled. Stale hub entries (row disappeared upstream, or was
+        valid on a previous fetch and is now blocked) are pruned via
+        sync_source_ids at the end.
+        """
         client = IbClient(ib)
         combined_orders = await wrapup_pending_orders(db_conn)
 
         if not combined_orders:
+            # Nothing to show -- also prune any hub rows that no longer
+            # correspond to an upstream row.
+            await approvals_hub.sync_source_ids(set())
             return []
 
-        #  Fetch ALL bid/ask prices concurrently
-        tasks = [client.get_bid_ask_price(order["symbol"])
-            for order in combined_orders
-        ]
+        # Guards need a snapshot + current time. Snapshot is cached
+        # server-side (SNAPSHOT_TTL_SECONDS=5) so this rarely round-trips.
+        # Kick it off concurrently with the bid/ask fan-out so the two
+        # I/O waits overlap.
+        tz = pytz.timezone(settings.TIMEZONE)
+        current_time = datetime.now(tz)
 
-        bid_ask_results = await asyncio.gather(*tasks, return_exceptions=True)
+        snapshot_task = asyncio.create_task(build_today_snapshot(client))
+        bid_ask_task = asyncio.gather(
+            *(client.get_bid_ask_price(o["symbol"]) for o in combined_orders),
+            return_exceptions=True,
+        )
+        snapshot = await snapshot_task
+        bid_ask_results = await bid_ask_task
 
         processed_orders: List[PendingOrder] = []
+        valid_source_ids: set[str] = set()
 
         for order, bid_ask in zip(combined_orders, bid_ask_results):
             try:
+                if isinstance(bid_ask, Exception):
+                    logger.error(
+                        "Error fetching bid/ask for %s: %s",
+                        order["symbol"], bid_ask,
+                    )
+                    continue
+
                 ask = bid_ask.ask
                 position_size = calculate_position_size(
                     ask,
                     order["stop_price"],
-                    risk_settings.RISK
+                    risk_settings.RISK,
                 )
-                
-                size = position_size * ask
-                size = round(size,2)
+                size = round(position_size * ask, 2)
+
+                # Run every entry guard. Rows that fail still get
+                # returned (with blocked_reason) so the user sees why
+                # Send is disabled.
+                verdict = check_all_guards(snapshot, current_time, order["symbol"])
+
+                approval_id: Optional[str] = None
+                blocked_reason: Optional[str] = None
+                cooldown_until: Optional[str] = None
+                source_id = f"{order['source']}:{order['id']}"
+
+                if verdict.allowed:
+                    approval = await approvals_hub.add_pending(
+                        symbol=order["symbol"],
+                        contract_type="stock",
+                        entry_price=ask,
+                        stop_price=order["stop_price"],
+                        position_size=position_size,
+                        source_id=source_id,
+                    )
+                    approval_id = approval.approval_id
+                    valid_source_ids.add(source_id)
+                else:
+                    blocked_reason = verdict.message
+                    cooldown_until = verdict.cooldown_until
 
                 processed_orders.append(
                     PendingOrder(
@@ -209,15 +276,20 @@ async def process_open_orders(db_conn,ib) -> List[PendingOrder]:
                         stop_price=order["stop_price"],
                         latest_price=ask,
                         position_size=position_size,
-                        size = size,
-                        status= order["status"],
-                        source = order["source"]
+                        size=size,
+                        status=order["status"],
+                        source=order["source"],
+                        approval_id=approval_id,
+                        blocked_reason=blocked_reason,
+                        cooldown_until=cooldown_until,
                     )
-                
                 )
-                logger.info(processed_orders)
             except Exception as e:
                 logger.error(f"Error processing {order['symbol']}: {e}")
                 continue
+
+        # Prune stale hub rows (row disappeared upstream, or previously
+        # valid row is now blocked).
+        await approvals_hub.sync_source_ids(valid_source_ids)
 
         return processed_orders
