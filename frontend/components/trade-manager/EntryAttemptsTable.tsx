@@ -28,6 +28,9 @@ type EntryAttemptsResponse = {
   total_attempts: number;
   max_total: number;
   total_remaining: number;
+  weekly_total_attempts: number;
+  weekly_max_total: number;
+  weekly_total_remaining: number;
 };
 
 type Props = {
@@ -44,6 +47,9 @@ const EntryAttemptsTable: React.FC<Props> = ({ refreshTrigger = 0 }) => {
   const [totalAttempts, setTotalAttempts] = useState(0);
   const [maxTotal, setMaxTotal] = useState(0);
   const [totalRemaining, setTotalRemaining] = useState(0);
+  const [weeklyTotalAttempts, setWeeklyTotalAttempts] = useState(0);
+  const [weeklyMaxTotal, setWeeklyMaxTotal] = useState(0);
+  const [weeklyTotalRemaining, setWeeklyTotalRemaining] = useState(0);
   const [loading, setLoading] = useState(false);
 
   const fetchAttempts = useCallback(async () => {
@@ -56,12 +62,18 @@ const EntryAttemptsTable: React.FC<Props> = ({ refreshTrigger = 0 }) => {
       setTotalAttempts(json.total_attempts ?? 0);
       setMaxTotal(json.max_total ?? 0);
       setTotalRemaining(json.total_remaining ?? 0);
+      setWeeklyTotalAttempts(json.weekly_total_attempts ?? 0);
+      setWeeklyMaxTotal(json.weekly_max_total ?? 0);
+      setWeeklyTotalRemaining(json.weekly_total_remaining ?? 0);
     } catch (err) {
       console.error("Fetch entry-attempts error:", err);
       setRows([]);
       setTotalAttempts(0);
       setMaxTotal(0);
       setTotalRemaining(0);
+      setWeeklyTotalAttempts(0);
+      setWeeklyMaxTotal(0);
+      setWeeklyTotalRemaining(0);
     } finally {
       setLoading(false);
     }
@@ -143,10 +155,14 @@ const EntryAttemptsTable: React.FC<Props> = ({ refreshTrigger = 0 }) => {
             Daily total across all tickers. Mirrors the per-symbol coloring
             so the user sees at a glance how close they are to the
             MAX_TOTAL_ENTRIES_PER_DAY hard cap defined in backend config.
+
+            The Weekly row underneath tracks MAX_TOTAL_ENTRIES_PER_WEEK
+            (counts persistent entry_log rows since Mon 00:00 of the user's
+            timezone). Same coloring rule so the visual language matches.
           */}
           <TableFooter className="sticky bottom-0 bg-background">
             <TableRow className="h-7">
-              <TableCell className="font-semibold px-2 py-1">Total</TableCell>
+              <TableCell className="font-semibold px-2 py-1">Total today</TableCell>
               <TableCell className="px-2 py-1 text-right font-semibold">
                 {totalAttempts}
               </TableCell>
@@ -163,6 +179,26 @@ const EntryAttemptsTable: React.FC<Props> = ({ refreshTrigger = 0 }) => {
                 }`}
               >
                 {totalRemaining}
+              </TableCell>
+            </TableRow>
+            <TableRow className="h-7">
+              <TableCell className="font-semibold px-2 py-1">Weekly</TableCell>
+              <TableCell className="px-2 py-1 text-right font-semibold">
+                {weeklyTotalAttempts}
+              </TableCell>
+              <TableCell className="px-2 py-1 text-right font-semibold">
+                {weeklyMaxTotal}
+              </TableCell>
+              <TableCell
+                className={`px-2 py-1 text-right font-semibold ${
+                  weeklyTotalRemaining === 0
+                    ? "text-red-600"
+                    : weeklyTotalRemaining <= 2
+                    ? "text-amber-600"
+                    : "text-green-700"
+                }`}
+              >
+                {weeklyTotalRemaining}
               </TableCell>
             </TableRow>
           </TableFooter>

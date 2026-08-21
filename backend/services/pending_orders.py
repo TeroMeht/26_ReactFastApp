@@ -216,7 +216,7 @@ async def process_open_orders(
         tz = pytz.timezone(settings.TIMEZONE)
         current_time = datetime.now(tz)
 
-        snapshot_task = asyncio.create_task(build_today_snapshot(client))
+        snapshot_task = asyncio.create_task(build_today_snapshot(client, db_conn=db_conn))
         bid_ask_task = asyncio.gather(
             *(client.get_bid_ask_price(o["symbol"]) for o in combined_orders),
             return_exceptions=True,

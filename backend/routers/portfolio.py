@@ -130,6 +130,7 @@ async def entry_request(
     ib=Depends(get_ib),
     tracker: OrderTracker = Depends(get_order_tracker),
     approvals_hub: PendingApprovalsHub = Depends(get_pending_approvals_hub),
+    db_conn=Depends(get_db_conn),
 ):
     """
     Unified entry endpoint.
@@ -147,7 +148,9 @@ async def entry_request(
     are simply None on the automatic path until approval).
     """
     client = IbClient(ib, tracker=tracker)
-    return await process_entry_request(client, payload, approvals_hub=approvals_hub)
+    return await process_entry_request(
+        client, payload, approvals_hub=approvals_hub, db_conn=db_conn
+    )
 
 
 @router.get("/entry-request/pending/stream")
@@ -204,6 +207,7 @@ async def approve_entry_request(
     ib=Depends(get_ib),
     tracker: OrderTracker = Depends(get_order_tracker),
     approvals_hub: PendingApprovalsHub = Depends(get_pending_approvals_hub),
+    db_conn=Depends(get_db_conn),
 ):
     """
     Deliver the user's Accept/Decline for a parked automatic entry.
@@ -242,7 +246,7 @@ async def approve_entry_request(
         approval.contract_type = payload.contract_type
 
     client = IbClient(ib, tracker=tracker)
-    return await place_approved_entry(client, approval)
+    return await place_approved_entry(client, approval, db_conn=db_conn)
 
 
 @router.post("/add-request", response_model=AddRequestResponse)
@@ -405,17 +409,20 @@ async def cancel_all_unfilled(
 
 
 @router.get("/entry-attempts", response_model=EntryAttemptsResponse)
-async def get_entry_attempts(ib=Depends(get_ib)):
+async def get_entry_attempts(ib=Depends(get_ib), db_conn=Depends(get_db_conn)):
     """
     Per-symbol entry-attempt stats for today plus the daily total. Only
     symbols with at least one attempt today are returned (ordered
     alphabetically). Used by the Trade Manager UI to surface how close each
     symbol is to MAX_ATTEMPTS_PER_SYMBOL_PER_DAY and how close the day is
-    to MAX_TOTAL_ENTRIES_PER_DAY.
+    to MAX_TOTAL_ENTRIES_PER_DAY (and, via the weekly_* fields, how close
+    the week is to MAX_TOTAL_ENTRIES_PER_WEEK).
     """
     try:
         client = IbClient(ib)
-        return EntryAttemptsResponse(**asdict(await build_entry_attempts(client)))
+        return EntryAttemptsResponse(
+            **asdict(await build_entry_attempts(client, db_conn=db_conn))
+        )
     except Exception as e:
         logger.exception("entry-attempts failed")
         raise HTTPException(status_code=500, detail=str(e))

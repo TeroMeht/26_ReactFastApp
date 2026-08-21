@@ -47,21 +47,29 @@ class EntryAttempts:
     total_attempts: int
     max_total: int
     total_remaining: int
+    weekly_total_attempts: int = 0
+    weekly_max_total: int = 0
+    weekly_total_remaining: int = 0
 
 
-async def build_entry_attempts(client: IbClient) -> EntryAttempts:
+async def build_entry_attempts(client: IbClient, db_conn=None) -> EntryAttempts:
     """
     Build the entry-attempts view over today's snapshot. Only symbols
     with at least one attempt today appear (that's the semantics of
     TradesSnapshot.entry_counts). Exceptions from IB propagate to the
     router; they should surface as 500s, not be silently swallowed into
     an empty result.
+
+    Pass db_conn to also populate the weekly_* fields (sourced from
+    TradesSnapshot.weekly_entries); omitted, they stay at their zero
+    defaults.
     """
-    snapshot = await build_today_snapshot(client)
+    snapshot = await build_today_snapshot(client, db_conn=db_conn)
     counts = snapshot.entry_counts
 
     max_attempts = risk_settings.MAX_ATTEMPTS_PER_SYMBOL_PER_DAY
     max_total = risk_settings.MAX_TOTAL_ENTRIES_PER_DAY
+    weekly_max_total = risk_settings.MAX_TOTAL_ENTRIES_PER_WEEK
 
     rows = [
         EntryAttemptsEntry(
@@ -74,10 +82,14 @@ async def build_entry_attempts(client: IbClient) -> EntryAttempts:
     ]
 
     total_attempts = sum(counts.values())
+    weekly_total_attempts = snapshot.weekly_entries
 
     return EntryAttempts(
         rows=rows,
         total_attempts=total_attempts,
         max_total=max_total,
         total_remaining=max(0, max_total - total_attempts),
+        weekly_total_attempts=weekly_total_attempts,
+        weekly_max_total=weekly_max_total,
+        weekly_total_remaining=max(0, weekly_max_total - weekly_total_attempts),
     )

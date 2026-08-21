@@ -22,6 +22,7 @@ from db.exits import create_exit_requests_table
 from db.watchlist import create_watchlist_tables
 from db.order_log import create_order_log_table
 from db.daily_summary import create_daily_summary_tables
+from db.entry_log import create_entry_log_table
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ async def ensure_schema(app: FastAPI) -> None:
         await create_watchlist_tables(conn)
         await create_order_log_table(conn)
         await create_daily_summary_tables(conn)
+        await create_entry_log_table(conn)
 
 
 async def close_database(app: FastAPI) -> None:

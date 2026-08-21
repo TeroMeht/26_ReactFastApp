@@ -49,6 +49,7 @@ from services.portfolio.trades.trades_snapshot import (
     TradesSnapshot,
     build_today_snapshot,
 )
+from db.entry_log import insert_entry_event
 
 from core.risk_manager_config import risk_settings
 from core.config import settings
@@ -59,17 +60,17 @@ logger = logging.getLogger(__name__)
 
 
 
-# def check_block_window(now: datetime) -> tuple[bool, str]:
-#     risk = risk_settings
-#     first_entry = time(risk.FIRST_ENTRY_HOUR, risk.FIRST_ENTRY_MINUTE)
-#     if now.time() < first_entry:
-#         msg = (
-#             f"Entry blocked before {first_entry.strftime('%H:%M')} "
-#             f"(current time: {now.strftime('%H:%M')})."
-#         )
-#         logger.info(msg)
-#         return False, msg
-#     return True, ""
+def check_block_window(now: datetime) -> tuple[bool, str]:
+    risk = risk_settings
+    first_entry = time(risk.FIRST_ENTRY_HOUR, risk.FIRST_ENTRY_MINUTE)
+    if now.time() < first_entry:
+        msg = (
+            f"Entry blocked before {first_entry.strftime('%H:%M')} "
+            f"(current time: {now.strftime('%H:%M')})."
+        )
+        logger.info(msg)
+        return False, msg
+    return True, ""
 
 
 def check_attempts(snapshot: TradesSnapshot, symbol: str) -> tuple[bool, str]:
@@ -93,6 +94,17 @@ def check_total_attempts(snapshot: TradesSnapshot) -> tuple[bool, str]:
             f"Max total entries reached for today ({total}/{max_total}). "
             f"No more entries allowed today."
         )
+        logger.info(msg)
+        return False, msg
+    return True, ""
+
+
+def check_weekly_attempts(snapshot: TradesSnapshot) -> tuple[bool, str]:
+    total = snapshot.weekly_entries
+    max_total = risk_settings.MAX_TOTAL_ENTRIES_PER_WEEK
+    if total >= max_total:
+        msg = (f"Max weekly entries reached ({total}/{max_total}). "
+               f"No more entries allowed this week.")
         logger.info(msg)
         return False, msg
     return True, ""
@@ -141,8 +153,9 @@ def check_all_guards(
         )
 
     for ok, message in (
-        #check_block_window(current_time),
+        check_block_window(current_time),
         check_total_attempts(snapshot),
+        check_weekly_attempts(snapshot),
         check_attempts(snapshot, symbol),
         check_frequency(snapshot, symbol, current_time),
     ):
@@ -206,6 +219,7 @@ async def process_manual_entry(
     payload: EntryRequest,
     prep_ms: int = 0,
     prefetched_bid_ask: Optional[BidAsk] = None,
+    db_conn=None,
 ) -> EntryRequestResponse:
     """
     Manual entry: price + size the order and place the bracket
@@ -254,7 +268,7 @@ async def process_manual_entry(
     ))
 
     response = await _place_and_respond(
-        client, order, success_message="Entry ok"
+        client, order, success_message="Entry ok", db_conn=db_conn
     )
     t2 = _time.perf_counter()
 
@@ -271,6 +285,7 @@ async def process_manual_entry(
 async def process_automatic_entry(
     payload: EntryRequest,
     approvals_hub: Optional[PendingApprovalsHub],
+    db_conn=None,
 ) -> EntryRequestResponse:
     """
     Automatic entry: skip IB entirely for now. Compute a preview
@@ -285,6 +300,11 @@ async def process_automatic_entry(
       * ``calculate_position_size`` raises (e.g. risk-per-share
         exceeds the risk budget); bubbles up to the orchestrator's
         ValueError handler and becomes a clean reject.
+
+    ``db_conn`` is accepted for signature symmetry with
+    ``process_manual_entry`` but unused here -- this path never calls
+    ``place_bracket_order`` (that happens later, in
+    ``place_approved_entry``), so there is no entry_log row to write yet.
     """
     symbol = payload.symbol
     stop_price = payload.stop_price
@@ -323,6 +343,7 @@ async def _place_and_respond(
     order: Order,
     *,
     success_message: str,
+    db_conn=None,
 ) -> EntryRequestResponse:
     """
     Place a pre-built bracket order and map the IB result onto the
@@ -341,6 +362,16 @@ async def _place_and_respond(
             allowed=False, message=msg, symbol=order.symbol
         )
 
+    if db_conn is not None:
+        try:
+            await insert_entry_event(db_conn, order.symbol)
+        except Exception:
+            # The order is already live at IB -- a logging-DB write
+            # failure must never fail the order placement response.
+            logger.exception(
+                "Failed to record entry_log row for %s", order.symbol
+            )
+
     return EntryRequestResponse(
         allowed=True,
         message=success_message,
@@ -353,6 +384,7 @@ async def _place_and_respond(
 async def place_approved_entry(
     client: IbClient,
     approval: PendingApproval,
+    db_conn=None,
 ) -> EntryRequestResponse:
 
     symbol = approval.symbol
@@ -375,7 +407,7 @@ async def place_approved_entry(
             contract_type=approval.contract_type,
         ))
         return await _place_and_respond(
-            client, order, success_message="Entry ok (approved)"
+            client, order, success_message="Entry ok (approved)", db_conn=db_conn
         )
     except ValueError as e:
         # Same split as process_entry_request: pricing/sizing rejects
@@ -406,6 +438,7 @@ async def process_entry_request(
     client: IbClient,
     payload: EntryRequest,
     approvals_hub: Optional[PendingApprovalsHub] = None,
+    db_conn=None,
 ) -> EntryRequestResponse:
 
     symbol = payload.symbol
@@ -440,11 +473,11 @@ async def process_entry_request(
         t_prep0 = _time.perf_counter()
         if needs_ib_quote:
             snapshot, prefetched_bid_ask = await asyncio.gather(
-                build_today_snapshot(client),
+                build_today_snapshot(client, db_conn=db_conn),
                 client.get_bid_ask_price(symbol),
             )
         else:
-            snapshot = await build_today_snapshot(client)
+            snapshot = await build_today_snapshot(client, db_conn=db_conn)
             prefetched_bid_ask = None
         prep_ms = int((_time.perf_counter() - t_prep0) * 1000)
 
@@ -463,12 +496,13 @@ async def process_entry_request(
         # fetches a live quote and places immediately; the automatic
         # path parks a preview in the hub for the user to Accept.
         if request_type == "automatic":
-            return await process_automatic_entry(payload, approvals_hub)
+            return await process_automatic_entry(payload, approvals_hub, db_conn=db_conn)
         return await process_manual_entry(
             client,
             payload,
             prep_ms=prep_ms,
             prefetched_bid_ask=prefetched_bid_ask,
+            db_conn=db_conn,
         )
 
     except ValueError as e:

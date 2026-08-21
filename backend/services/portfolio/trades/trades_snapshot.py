@@ -23,7 +23,7 @@ import logging
 import time as _time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from typing import Iterable
 from core.config import settings
 import pytz
@@ -34,6 +34,7 @@ from services.portfolio.trades.trade_builder import (
     build_completed_trades,
     count_entries_from_fills,
 )
+from db.entry_log import count_entries_since
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,13 @@ SNAPSHOT_TTL_SECONDS = 5
 def _latest_fill_time(fills: Iterable[Fill]) -> datetime | None:
     """Newest `time` in a fill sequence, or None if the sequence is empty."""
     return max((f.time for f in fills), default=None)
+
+
+def _start_of_iso_week(now: datetime, tz) -> datetime:
+    """Monday 00:00 of `now`'s ISO week, tz-aware in `tz`."""
+    monday_date = now.date() - timedelta(days=now.weekday())
+    naive_start = datetime.combine(monday_date, time.min)
+    return tz.localize(naive_start)
 
 
 # ----------------------------------------------------------------------
@@ -78,6 +86,7 @@ class TradesSnapshot:
     entry_counts: dict[str, int] = field(default_factory=dict)
     realized_pnl_by_symbol: dict[str, float] = field(default_factory=dict)
     realized_pnl: float = 0.0
+    weekly_entries: int = 0
 
     def stats_by_symbol(self) -> dict[str, SymbolTradeStats]:
         """
@@ -192,12 +201,16 @@ def _count_entries_per_symbol(fills_by_symbol: dict[str, list[Fill]]) -> dict[st
 # Single-flight: concurrent misses share one in-flight fetch via a Future
 # so a page load's 4 endpoints never race four parallel round trips.
 # ----------------------------------------------------------------------
-_snapshot_cache: dict[int, tuple["TradesSnapshot", float]] = {}
-_snapshot_in_flight: dict[int, asyncio.Future] = {}
+_snapshot_cache: dict[tuple[int, bool], tuple["TradesSnapshot", float]] = {}
+_snapshot_in_flight: dict[tuple[int, bool], asyncio.Future] = {}
 
 
-def _cache_key(client: IbClient) -> int:
-    return id(getattr(client, "ib", client))
+def _cache_key(client: IbClient, db_conn=None) -> tuple[int, bool]:
+    # A snapshot built without db_conn is missing weekly_entries, so it must
+    # not be handed back to a caller that passed a db_conn (and vice versa).
+    # Simplest fix: fold "was a db_conn supplied" into the cache key so the
+    # two variants never collide.
+    return (id(getattr(client, "ib", client)), bool(db_conn))
 
 
 def invalidate_snapshot_cache(client: IbClient | None = None) -> None:
@@ -205,16 +218,20 @@ def invalidate_snapshot_cache(client: IbClient | None = None) -> None:
     if client is None:
         _snapshot_cache.clear()
     else:
-        _snapshot_cache.pop(_cache_key(client), None)
+        for db_conn_flag in (False, True):
+            _snapshot_cache.pop((id(getattr(client, "ib", client)), db_conn_flag), None)
 
 
-async def build_today_snapshot(client: IbClient) -> TradesSnapshot:
+async def build_today_snapshot(client: IbClient, db_conn=None) -> TradesSnapshot:
     """
     Build today's snapshot, cached for SNAPSHOT_TTL_SECONDS. Concurrent
     callers with a cache miss share one in-flight IB fetch (single-flight),
     so a Trade Manager page load's fanout collapses to one round trip.
+
+    Pass db_conn to also populate weekly_entries (the weekly-total-entries
+    guard needs it); omit it for callers that don't need the weekly count.
     """
-    key = _cache_key(client)
+    key = _cache_key(client, db_conn)
     cached = _snapshot_cache.get(key)
     if cached is not None and _time.monotonic() < cached[1]:
         return cached[0]
@@ -230,7 +247,7 @@ async def build_today_snapshot(client: IbClient) -> TradesSnapshot:
     fut = loop.create_future()
     _snapshot_in_flight[key] = fut
     try:
-        snapshot = await _build_today_snapshot_uncached(client)
+        snapshot = await _build_today_snapshot_uncached(client, db_conn)
         _snapshot_cache[key] = (snapshot, _time.monotonic() + SNAPSHOT_TTL_SECONDS)
         fut.set_result(snapshot)
         return snapshot
@@ -241,19 +258,29 @@ async def build_today_snapshot(client: IbClient) -> TradesSnapshot:
         _snapshot_in_flight.pop(key, None)
 
 
-async def _build_today_snapshot_uncached(client: IbClient) -> TradesSnapshot:
+async def _build_today_snapshot_uncached(client: IbClient, db_conn=None) -> TradesSnapshot:
     """
     Single round trip to IB for today's fills, then derive everything.
     Returns an empty snapshot if IB returns no data.
+
+    When db_conn is given, weekly_entries is also populated (a DB read
+    since IB fills here). Fetched regardless of whether today has fills --
+    a quiet day today doesn't mean a quiet week.
     """
     logger.info("\n")
     logger.info("============ Building today's trade snapshot ============")
 
     today_fills = await client.get_trades()
 
+    weekly_entries = 0
+    if db_conn is not None:
+        weekly_entries = await count_entries_since(
+            db_conn, _start_of_iso_week(datetime.now(TIMEZONE), TIMEZONE)
+        )
+
     if not today_fills:
         logger.info("No fills for today — returning empty snapshot")
-        return TradesSnapshot()
+        return TradesSnapshot(weekly_entries=weekly_entries)
 
     fills_by_symbol = _group_fills_by_symbol(today_fills)
     entry_counts = _count_entries_per_symbol(fills_by_symbol)
@@ -273,5 +300,6 @@ async def _build_today_snapshot_uncached(client: IbClient) -> TradesSnapshot:
         completed_trades=completed_trades,
         entry_counts=entry_counts,
         realized_pnl_by_symbol=realized_pnl_by_symbol,
+        weekly_entries=weekly_entries,
         realized_pnl=realized,
     )

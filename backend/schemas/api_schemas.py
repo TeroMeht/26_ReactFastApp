@@ -433,6 +433,9 @@ class EntryAttemptsResponse(BaseModel):
     total_attempts: int
     max_total: int
     total_remaining: int
+    weekly_total_attempts: int
+    weekly_max_total: int
+    weekly_total_remaining: int
 
 
 # Scanner response
