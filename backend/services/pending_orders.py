@@ -142,10 +142,10 @@ async def normalize_auto_orders(db_conn) -> List[Dict]:
 
         for order in auto_orders:
             normalized_auto_orders.append({
-                "id": str(order.get("Id")),
-                "symbol": order.get("Symbol"),
-                "stop_price": float(order.get("Stop")) if order.get("Stop") else None,
-                "status": order.get("Status"),
+                "id": str(order.get("id")),
+                "symbol": order.get("symbol"),
+                "stop_price": float(order.get("stop")) if order.get("stop") else None,
+                "status": order.get("status"),
                 "source": "DB"
             })
 

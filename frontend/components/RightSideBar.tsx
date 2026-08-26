@@ -21,10 +21,10 @@ type CandleRow =
   paths["/api/livestream/pricedata"]["get"]["responses"]["200"]["content"]["application/json"][number];
 
 type AlarmData = {
-  Symbol: string;
-  Time: string;
-  Alarm: string;
-  Date: string;
+  symbol: string;
+  time: string;
+  alarm: string;
+  date: string;
 };
 
 interface RightSidebarProps {
@@ -163,10 +163,10 @@ const RightSidebar: React.FC<RightSidebarProps> = ({ pageSpecific, alarms }) => 
 
   const sortedAlarms = alarms
     ? [...alarms]
-        .filter((alarm) => !showTodayOnly || isToday(alarm.Date))
+        .filter((alarm) => !showTodayOnly || isToday(alarm.date))
         .sort((a, b) => {
-          const dateA = new Date(`${a.Date} ${a.Time}`);
-          const dateB = new Date(`${b.Date} ${b.Time}`);
+          const dateA = new Date(`${a.date} ${a.time}`);
+          const dateB = new Date(`${b.date} ${b.time}`);
           return dateB.getTime() - dateA.getTime();
         })
     : [];
@@ -202,16 +202,16 @@ const RightSidebar: React.FC<RightSidebarProps> = ({ pageSpecific, alarms }) => 
                 <TableBody>
                   {sortedAlarms.length > 0 ? (
                     sortedAlarms.map((alarm, index) => {
-                      const today = isToday(alarm.Date);
+                      const today = isToday(alarm.date);
                       return (
                         <TableRow
                           key={index}
                           className={`hover:bg-gray-100 cursor-pointer ${today ? "bg-yellow-100" : ""}`}
-                          onClick={() => router.push(`/pricedata/${alarm.Symbol}`)}
+                          onClick={() => router.push(`/pricedata/${alarm.symbol}`)}
                         >
-                          <TableCell className="px-1.5 py-1.5 text-xs break-words whitespace-normal">{alarm.Symbol}</TableCell>
-                          <TableCell className="px-1.5 py-1.5 text-xs break-words whitespace-normal">{alarm.Alarm}</TableCell>
-                          <TableCell className="px-1.5 py-1.5 text-xs break-words whitespace-normal">{alarm.Time}</TableCell>
+                          <TableCell className="px-1.5 py-1.5 text-xs break-words whitespace-normal">{alarm.symbol}</TableCell>
+                          <TableCell className="px-1.5 py-1.5 text-xs break-words whitespace-normal">{alarm.alarm}</TableCell>
+                          <TableCell className="px-1.5 py-1.5 text-xs break-words whitespace-normal">{alarm.time}</TableCell>
                         </TableRow>
                       );
                     })

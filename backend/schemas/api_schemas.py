@@ -133,35 +133,36 @@ class OpenPosition(BaseModel):
 
 
 class AlarmResponse(BaseModel):
-    Id: int
-    Symbol: str
-    Time: time
-    Alarm: str
-    Date: date
+    id: int
+    symbol: str
+    time: time
+    alarm: str
+    date: date
 
 class CreateAlarmRequest(BaseModel):
-    Symbol: str
-    Time: time
-    Alarm: str
-    Date: date
+    symbol: str
+    time: time
+    alarm: str
+    date: date
 
 
 
 
 class CandleRow(BaseModel):
-    Symbol: str
-    Date:date
-    Time: time
-    Open: Decimal
-    High: Decimal
-    Low: Decimal
-    Close: Decimal
-    Volume: Decimal
-    VWAP: Decimal
-    EMA9: Decimal
-    Avg_volume: Optional[Decimal]
-    Rvol: Decimal
-    Relatr: Decimal
+    symbol: str
+    date: date
+    time: time
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: Decimal
+    vwap: Decimal
+    ema9: Decimal
+    avg_volume: Optional[Decimal]
+    rvol: Decimal
+    relatr: Decimal
+    day_atr_ext: Optional[Decimal] = None
 
 
 class ModifyOrderRequest(BaseModel):

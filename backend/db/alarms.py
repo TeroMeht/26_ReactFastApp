@@ -6,9 +6,9 @@ import asyncpg
 async def fetch_alarms(db_conn:asyncpg.Connection) -> List[Dict]:
     rows = await db_conn.fetch(
         """
-        SELECT "Id", "Symbol", "Time", "Alarm", "Date"
+        SELECT "id", "symbol", "time", "alarm", "date"
         FROM alarms
-        ORDER BY "Date" DESC, "Time" DESC
+        ORDER BY "date" DESC, "time" DESC
         LIMIT 50;
         """
     )
@@ -23,13 +23,13 @@ async def insert_alarm(db_conn:asyncpg.Connection, alarm: Dict):
     """
     row = await db_conn.fetchrow(
         """
-        INSERT INTO alarms ("Symbol", "Time", "Alarm", "Date")
+        INSERT INTO alarms ("symbol", "time", "alarm", "date")
         VALUES ($1, $2, $3, $4)
-        RETURNING "Id", "Symbol", "Time", "Alarm", "Date";
+        RETURNING "id", "symbol", "time", "alarm", "date";
         """,
-        alarm["Symbol"],
-        alarm["Time"],
-        alarm["Alarm"],
-        alarm["Date"]
+        alarm["symbol"],
+        alarm["time"],
+        alarm["alarm"],
+        alarm["date"]
     )
     return dict(row)

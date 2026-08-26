@@ -39,7 +39,7 @@ export const LastRowsTable: React.FC = () => {
         if (cancelled) return;
         const next = new Map<string, LastRow>();
         for (const row of json.filter(Boolean)) {
-          const s = String(row.Symbol ?? "");
+          const s = String(row.symbol ?? "");
           if (s) next.set(s, row);
         }
         setBySymbol(next);
@@ -60,11 +60,11 @@ export const LastRowsTable: React.FC = () => {
     };
   }, []);
 
-  const displayedColumns = ["Symbol", "Time", "Relatr", "Rvol"];
+  const displayedColumns = ["symbol", "time", "relatr", "day_atr_ext", "rvol"];
 
   const rows = React.useMemo(() => {
     const list = Array.from(bySymbol.values());
-    list.sort((a, b) => Number(b.Rvol ?? 0) - Number(a.Rvol ?? 0));
+    list.sort((a, b) => Number(b.rvol ?? 0) - Number(a.rvol ?? 0));
     return list;
   }, [bySymbol]);
 
@@ -82,17 +82,24 @@ export const LastRowsTable: React.FC = () => {
         </TableHeader>
         <TableBody>
           {rows.map((row, idx) => {
-            const rowClass = Number(row.Rvol) > 1.5 ? "bg-blue-100" : "";
+            const rowClass = Number(row.rvol) > 1.5 ? "bg-blue-100" : "";
             return (
-              <TableRow key={String(row.Symbol ?? idx)} className={rowClass}>
+              <TableRow key={String(row.symbol ?? idx)} className={rowClass}>
                 {displayedColumns.map((col) => {
                   let cellClass = "";
-                  if (col === "Relatr") {
+                  if (col === "relatr") {
                     const val = Number(row[col]);
                     if (val < -0.45) cellClass = "font-bold text-green-600";
                     if (val > 0.45) cellClass = "font-bold text-red-600";
                   }
-                  if (col === "Rvol" && Number(row[col]) > 1.5) {
+                  if (col === "day_atr_ext") {
+                    const val = Number(row[col]);
+                    // Day-level extension anchored on yesterday's close.
+                    // Sign convention matches relatr: positive => below.
+                    if (val <= -1.0) cellClass = "font-bold text-green-600";
+                    if (val >=  1.0) cellClass = "font-bold text-red-600";
+                  }
+                  if (col === "rvol" && Number(row[col]) > 1.5) {
                     cellClass = "font-bold text-grey-900";
                   }
                   return (

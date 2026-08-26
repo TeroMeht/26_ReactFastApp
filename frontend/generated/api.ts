@@ -1000,21 +1000,21 @@ export interface components {
         /** AlarmResponse */
         AlarmResponse: {
             /** Id */
-            Id: number;
+            id: number;
             /** Symbol */
-            Symbol: string;
+            symbol: string;
             /**
              * Time
              * Format: time
              */
-            Time: string;
+            time: string;
             /** Alarm */
-            Alarm: string;
+            alarm: string;
             /**
              * Date
              * Format: date
              */
-            Date: string;
+            date: string;
         };
         /** CancelOrderResult */
         CancelOrderResult: {
@@ -1040,37 +1040,39 @@ export interface components {
         /** CandleRow */
         CandleRow: {
             /** Symbol */
-            Symbol: string;
+            symbol: string;
             /**
              * Date
              * Format: date
              */
-            Date: string;
+            date: string;
             /**
              * Time
              * Format: time
              */
-            Time: string;
+            time: string;
             /** Open */
-            Open: string;
+            open: string;
             /** High */
-            High: string;
+            high: string;
             /** Low */
-            Low: string;
+            low: string;
             /** Close */
-            Close: string;
+            close: string;
             /** Volume */
-            Volume: string;
+            volume: string;
             /** Vwap */
-            VWAP: string;
+            vwap: string;
             /** Ema9 */
-            EMA9: string;
+            ema9: string;
             /** Avg Volume */
-            Avg_volume: string | null;
+            avg_volume: string | null;
             /** Rvol */
-            Rvol: string;
+            rvol: string;
             /** Relatr */
-            Relatr: string;
+            relatr: string;
+            /** Day Atr Ext */
+            day_atr_ext?: string | null;
         };
         /** CreateCustomExitRequest */
         CreateCustomExitRequest: {

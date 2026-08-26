@@ -26,7 +26,7 @@ async def fetch_last_row(db_conn: asyncpg.Connection, table_name: str) -> Dict:
         f"""
         SELECT *
         FROM "{table_name}"
-        ORDER BY "Date" DESC, "Time" DESC
+        ORDER BY "date" DESC, "time" DESC
         LIMIT 1;
         """
     )
@@ -51,8 +51,8 @@ async def fetch_pricedata_by_symbol(db_conn: asyncpg.Connection, table_name: str
         f"""
         SELECT *
         FROM "{table_name}"
-        WHERE "Symbol" = $1
-        ORDER BY "Date" ASC, "Time" ASC;
+        WHERE "symbol" = $1
+        ORDER BY "date" ASC, "time" ASC;
         """,
         symbol
     )

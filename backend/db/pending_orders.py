@@ -10,16 +10,16 @@ async def fetch_active_auto_orders(db_conn:asyncpg.Connection) -> List[Dict]:
     rows = await db_conn.fetch(
         """
         SELECT
-            "Id",
-            "Symbol",
-            "Time",
-            "Stop",
-            "Date",
-            "Status"
+            "id",
+            "symbol",
+            "time",
+            "stop",
+            "date",
+            "status"
         FROM orders
-        WHERE "Status" = 'active'
-          AND "Date" = CURRENT_DATE
-        ORDER BY "Time" ASC;
+        WHERE "status" = 'active'
+          AND "date" = CURRENT_DATE
+        ORDER BY "time" ASC;
         """
     )
 
@@ -32,17 +32,17 @@ async def delete_auto_order(db_conn: asyncpg.Connection, order_id: int) -> Optio
     row = await db_conn.fetchrow(
         """
         DELETE FROM orders
-        WHERE "Id" = $1
-        RETURNING "Id", "Status", "Symbol";
+        WHERE "id" = $1
+        RETURNING "id", "status", "symbol";
         """,
         order_id
     )
 
     if row:
         return {
-            "order_id": row["Id"],
+            "order_id": row["id"],
             "status": "deleted",
-            "symbol": row["Symbol"]
+            "symbol": row["symbol"]
         }
 
     return None

@@ -83,13 +83,13 @@ const PriceDataPage: React.FC = () => {
           <TableBody>
             {data.map((row, idx) => (
               <TableRow key={idx}>
-                <TableCell>{row.Date}</TableCell>
-                <TableCell>{row.Time}</TableCell>
-                <TableCell>{row.Open}</TableCell>
-                <TableCell>{row.High}</TableCell>
-                <TableCell>{row.Low}</TableCell>
-                <TableCell>{row.Close}</TableCell>
-                <TableCell>{row.Volume}</TableCell>
+                <TableCell>{row.date}</TableCell>
+                <TableCell>{row.time}</TableCell>
+                <TableCell>{row.open}</TableCell>
+                <TableCell>{row.high}</TableCell>
+                <TableCell>{row.low}</TableCell>
+                <TableCell>{row.close}</TableCell>
+                <TableCell>{row.volume}</TableCell>
               </TableRow>
             ))}
           </TableBody>

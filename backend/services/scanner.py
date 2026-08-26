@@ -93,14 +93,14 @@ def get_today_anchorprice(today_bars) -> List[Dict[str, str]]:
 
 def calculate_percentage_change(rvol_df: pd.DataFrame, close_prices_df: pd.DataFrame) -> pd.DataFrame:
 
-    # Merge the rvol_df with the close_prices_df based on 'Symbol'
+    # Merge the rvol_df with the close_prices_df based on 'symbol'
     merged_df = pd.merge(rvol_df, close_prices_df, on='symbol', how='left')
 
     # Rename columns to remove the '_x' suffix and use the correct names
     merged_df.rename(columns={
-        'date_x': 'date',    # Rename 'Date_x' to 'Date'
-        'time_x': 'time',    # Rename 'Time_x' to 'Time'
-        'close_x': 'close'   # Rename 'Close_x' to 'Close'
+        'date_x': 'date',    # Rename 'Date_x' to 'date'
+        'time_x': 'time',    # Rename 'Time_x' to 'time'
+        'close_x': 'close'   # Rename 'Close_x' to 'close'
     }, inplace=True)
 
     # Calculate the percentage change in close prices
