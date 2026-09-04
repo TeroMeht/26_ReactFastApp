@@ -18,6 +18,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from ib_async import IB, Trade
 
 from db.order_log import insert_order_log_event
+from services.portfolio.position_ledger import PositionLedger
 
 logger = logging.getLogger(__name__)
 
@@ -115,12 +116,31 @@ class OrderTracker:
         # so duplicate IB callbacks don't double-trigger the handler.
         self._fill_fired: Set[int] = set()
 
+        # PositionLedger owns the authoritative signed position per
+        # symbol and drives the STP reconciler. Attached at startup by
+        # wire_order_tracker. When None, the ledger path is disabled
+        # (tests, or a legacy boot that hasn't wired it yet).
+        self._position_ledger: Optional[PositionLedger] = None
+        # Dedup: ib_async can fire the same execId to _on_exec more
+        # than once (openOrder replay after reconnect, dupe callbacks).
+        # The ledger itself is idempotent, but this shortcut avoids
+        # scheduling the coroutine at all for a repeat.
+        self._seen_exec_ids: Set[str] = set()
+
     # ------------------------------------------------------------------
     # Persistence wiring
     # ------------------------------------------------------------------
     def set_db_pool(self, pool) -> None:
         """Attach an asyncpg pool so events are persisted to order_log."""
         self._db_pool = pool
+
+    def set_position_ledger(self, ledger: PositionLedger) -> None:
+        """
+        Attach the ledger this tracker will feed from execDetailsEvent.
+        Wire this before ``bind_events`` so no fills arrive before the
+        ledger is ready to accept them.
+        """
+        self._position_ledger = ledger
 
     def _persist_event(self, entry: Dict[str, Any]) -> None:
         """
@@ -334,6 +354,60 @@ class OrderTracker:
             self.register_trade(trade)
         except Exception:
             logger.exception("execDetailsEvent handler failed")
+
+        # Feed the authoritative position ledger. This is the ONLY path
+        # that mutates the ledger after startup seeding, and it is what
+        # keeps the STP reconciler race-free: we observe the fill here
+        # BEFORE anyone reads IB's eventually-consistent position book.
+        ledger = self._position_ledger
+        loop = self._loop
+        if ledger is None or loop is None:
+            return
+        try:
+            execution = getattr(fill, "execution", None)
+            if execution is None:
+                return
+            exec_id = getattr(execution, "execId", None) or getattr(
+                execution, "permId", None
+            )
+            if not exec_id:
+                return
+            exec_id = str(exec_id)
+            if exec_id in self._seen_exec_ids:
+                return
+            self._seen_exec_ids.add(exec_id)
+
+            symbol = getattr(trade.contract, "symbol", None) if trade.contract else None
+            if not symbol:
+                return
+            # ib_async gives execution.side as "BOT" / "SLD".
+            side = (getattr(execution, "side", "") or "").upper()
+            if side.startswith("B"):
+                action = "BUY"
+            elif side.startswith("S"):
+                action = "SELL"
+            else:
+                # Fall back to the parent order's action if side is
+                # unexpectedly absent — the fill's side matches the
+                # order's side for every non-combo trade we place.
+                action = (getattr(trade.order, "action", "") or "").upper()
+
+            shares = getattr(execution, "shares", 0) or 0
+
+            coro = ledger.apply_fill(
+                symbol=symbol,
+                action=action,
+                shares=shares,
+                exec_id=exec_id,
+                source="fill",
+            )
+
+            if loop.is_running():
+                asyncio.run_coroutine_threadsafe(coro, loop)
+            else:
+                loop.create_task(coro)
+        except Exception:
+            logger.exception("Failed to feed PositionLedger from execDetails")
 
     def _on_error(self, reqId: int, errorCode: int, errorString: str, contract) -> None:
         """

@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Any, Dict, Set
 
 from services.orders import Order
-from services.portfolio.ib_client import IbClient, OrderNotFoundError, Position
+from services.portfolio.ib_client import IbClient, Position
 from services.telegram import send_telegram_message, now_hhmm_helsinki
 from db.exits import (
     fetch_exits_by_symbol,
@@ -25,7 +25,8 @@ from schemas.api_schemas import (
 # placed; send Telegram." Everything else the message needs (symbol,
 # qty, avg price) is on the fill snapshot itself. Lives in memory only —
 # a restart while a manual exit is unfilled skips that one notification
-# (STP sync still works, since handle_exit_fill doesn't depend on it).
+# (STP sync still works — it's driven by the PositionLedger reconciler,
+# not by this per-permId registry).
 _pending_manual_exit_perm_ids: Set[int] = set()
 
 logger = logging.getLogger(__name__)
@@ -68,8 +69,9 @@ async def process_automatic_exit(
              so leftover strategies don't fire on a re-entered position
            - trim <  1.0 -> partial exit, delete only the fired row
 
-    STP adjustment (cancel on full, resize on partial) is handled off
-    the fill event in `handle_exit_fill` below.
+    STP adjustment (cancel on full, resize on partial) happens
+    automatically via the position-ledger reconciler
+    (services.portfolio.stp_reconciler) when the fill lands.
     """
     symbol = payload.symbol   # uppercased + validated by ExitRequest schema
     alarm = payload.alarm     # validated against EXIT_TRIGGERS by schema
@@ -295,44 +297,12 @@ def notify_manual_exit_fill_if_relevant(snap: Dict[str, Any]) -> None:
 
 
 # ======================================================================
-# Post-fill STP adjustment (runs on every fill, syncs STP to position)
+# Post-fill STP adjustment
 # ======================================================================
-async def handle_exit_fill(client: IbClient, symbol: str) -> None:
-    """
-Tätä kutsutaan säätämään stoppia kun markkinatoimeksianto täyttyy. Jos positio on nyt nolla, peruutetaan STP. 
-Jos positio on edelleen auki, muutetaan STP:n määrää vastaamaan jäljellä olevaa positioita.
-    """
-    existing_stp_order = await client.get_stp_order_by_symbol(symbol)
-    if existing_stp_order is None:
-        logger.info("No STP to adjust after fill | symbol=%s", symbol)
-        return
-
-    position = await client.get_position_by_symbol(symbol)
-    remaining_qty = (
-        abs(int(position.position))
-        if position and position.position is not None
-        else 0
-    )
-
-    if remaining_qty <= 0:
-        try:
-            await client.cancel_order_by_id(existing_stp_order.orderid)
-            logger.info(
-                "Cancelled STP after position went flat | symbol=%s order_id=%s",
-                symbol, existing_stp_order.orderid,
-            )
-        except OrderNotFoundError:
-            # STP became terminal between our lookup and the cancel
-            # (e.g. the fill we're reacting to WAS the STP). Harmless.
-            logger.info(
-                "STP already gone by cancel time | symbol=%s order_id=%s",
-                symbol, existing_stp_order.orderid,
-            )
-        return
-
-    stp_order_id = existing_stp_order.orderid
-    await client.modify_stp_order_by_id(stp_order_id, remaining_qty)
-    logger.info(
-        "Resized STP to match position | symbol=%s remaining=%s order_id=%s",
-        symbol, remaining_qty, stp_order_id,
-    )
+# `handle_exit_fill` used to live here. It was replaced by the
+# position-ledger-driven reconciler in
+# services.portfolio.stp_reconciler.reconcile_stp, which is subscribed
+# to PositionChanged events emitted by PositionLedger. That reconciler
+# is now the SOLE writer of STP quantity in response to a fill —
+# entries, adds, exits, and STP hits all funnel through it. See
+# core/startup/order_tracker_setup.py for the wiring.

@@ -182,7 +182,13 @@ async def process_add_request(
         if not ok:
             return AddRequestResponse(allowed=False, message=message, symbol=symbol)
 
-        # Place the add order and resize the existing STP to cover the new total.
+        # Place the add order. STP resizing is handled by the
+        # position-ledger-driven reconciler in stp_reconciler.py: when
+        # the add fills, execDetailsEvent feeds PositionLedger, which
+        # emits PositionChanged, which drives reconcile_stp to match
+        # STP quantity to the new position. This flow no longer touches
+        # the STP itself — a single writer removes the race with the
+        # fill handler that used to leave STP < position.
         new_order = build_order(OrderBuilder(
             symbol=symbol,
             entry_price=add_price,
@@ -191,17 +197,17 @@ async def process_add_request(
             contract_type=payload.contract_type,
         ))
         place_result = await client.place_limit_order(new_order)
-        modify_result = await client.modify_stp_order_by_id(
-            stp_order.orderid, total_size
-        )
 
         return AddRequestResponse(
             allowed=True,
-            message="New order placed and STP modified successfully",
+            message=(
+                "New order placed; STP will be resized by reconciler "
+                "when the add fills"
+            ),
             symbol=symbol,
             new_order=new_order,
             place_result=place_result,
-            modified_stp_qty=modify_result.get("new_quantity"),
+            modified_stp_qty=total_size,  # target size the reconciler will drive to
         )
 
     except Exception as e:
