@@ -43,17 +43,6 @@ class Settings(BaseSettings):
     STOP_LIMIT_OFFSET: float
 
 
-    @field_validator("TARGET_SCRIPT_PATH")
-    @classmethod
-    def validate_target_script_path(cls, v: Path) -> Path:
-        if not v.exists():
-            raise ValueError(f"TARGET_SCRIPT_PATH does not exist: {v}")
-
-        if not v.is_file():
-            raise ValueError(f"TARGET_SCRIPT_PATH is not a file: {v}")
-
-        return v.resolve()
-
 
     @field_validator("ALLOWED_ORIGINS")
     def parse_allowed_origins(cls, v: str) -> List[str]:

@@ -2,6 +2,25 @@ from typing import List, Dict
 import asyncpg
 
 
+async def create_alarms_table(db_conn: asyncpg.Connection) -> None:
+    """Create the 'alarms' table used to store price/time alarms.
+
+    Idempotent: safe to run on every boot. Columns match the SELECT/INSERT
+    in fetch_alarms/insert_alarm and the AlarmResponse schema
+    (id, symbol, time, alarm, date).
+    """
+    await db_conn.execute("""
+        CREATE TABLE IF NOT EXISTS alarms (
+            id      BIGSERIAL PRIMARY KEY,
+            symbol  TEXT NOT NULL,
+            time    TIME NOT NULL,
+            alarm   TEXT NOT NULL,
+            date    DATE NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_alarms_date_time
+            ON alarms (date DESC, time DESC);
+    """)
+
 
 async def fetch_alarms(db_conn:asyncpg.Connection) -> List[Dict]:
     rows = await db_conn.fetch(

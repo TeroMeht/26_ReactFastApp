@@ -3,7 +3,7 @@ setlocal
 set ROOT=%~dp0
 
 echo Starting FastAPI Backend...
-start "Backend" cmd /k "cd /d %ROOT%backend && python -m uvicorn main:app"
+start "Backend" cmd /k "cd /d %ROOT%backend && call .venv\Scripts\activate.bat && python -m uvicorn main:app"
 
 echo Starting Next.js Frontend...
 REM frontend_start.bat skips `npm run build` when nothing under

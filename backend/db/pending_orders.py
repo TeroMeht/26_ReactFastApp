@@ -2,6 +2,25 @@ from typing import List, Dict, Optional
 import asyncpg
 
 
+async def create_orders_table(db_conn: asyncpg.Connection) -> None:
+    """Create the 'orders' table used for auto (DB-driven) pending orders.
+
+    Idempotent: safe to run on every boot. Columns match the SELECT in
+    fetch_active_auto_orders (id, symbol, time, stop, date, status).
+    """
+    await db_conn.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id      BIGSERIAL PRIMARY KEY,
+            symbol  TEXT        NOT NULL,
+            time    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            stop    NUMERIC,
+            date    DATE        NOT NULL DEFAULT CURRENT_DATE,
+            status  TEXT        NOT NULL DEFAULT 'active'
+        );
+        CREATE INDEX IF NOT EXISTS idx_orders_date_status
+            ON orders (date, status);
+    """)
+
 
 async def fetch_active_auto_orders(db_conn:asyncpg.Connection) -> List[Dict]:
     """
