@@ -7,7 +7,6 @@ from db.pending_orders import *
 from services.orders import calculate_position_size
 from services.portfolio.ib_client import IbClient
 from services.portfolio.flows.entry import check_all_guards
-from services.portfolio.pending_approvals_hub import PendingApprovalsHub
 from services.portfolio.trades.trades_snapshot import build_today_snapshot
 from schemas.api_schemas import PendingOrder
 
@@ -181,32 +180,21 @@ async def wrapup_pending_orders(db_conn) -> List[Dict]:
 async def process_open_orders(
     db_conn,
     ib,
-    approvals_hub: PendingApprovalsHub,
 ) -> List[PendingOrder]:
         """
         Build the Pending Orders table view.
 
-        For each row from Alpaca+DB we run the full entry_validator
-        guards up-front (using the shared cached snapshot so this is
-        near-free after the first call in a 5s window). Rows that pass
-        every guard get registered in PendingApprovalsHub with a stable
-        source_id and the response carries the resulting approval_id so
-        the Send button can POST to /entry-request/approve without
-        re-running any guards on the click.
-
-        Rows that fail a guard are still returned -- the UI needs to
-        show them with a blocked_reason so the user can see why Send is
-        disabled. Stale hub entries (row disappeared upstream, or was
-        valid on a previous fetch and is now blocked) are pruned via
-        sync_source_ids at the end.
+        For each row from Alpaca+DB we run the full entry guards
+        up-front (using the shared cached snapshot so this is near-free
+        after the first call in a 5s window) so the UI can disable
+        Send and surface a blocked_reason on rows that would fail
+        anyway. The Send click itself posts to /entry-request, which
+        re-runs the guards at click-time and places the bracket order.
         """
         client = IbClient(ib)
         combined_orders = await wrapup_pending_orders(db_conn)
 
         if not combined_orders:
-            # Nothing to show -- also prune any hub rows that no longer
-            # correspond to an upstream row.
-            await approvals_hub.sync_source_ids(set())
             return []
 
         # Guards need a snapshot + current time. Snapshot is cached
@@ -225,7 +213,6 @@ async def process_open_orders(
         bid_ask_results = await bid_ask_task
 
         processed_orders: List[PendingOrder] = []
-        valid_source_ids: set[str] = set()
 
         for order, bid_ask in zip(combined_orders, bid_ask_results):
             try:
@@ -244,28 +231,14 @@ async def process_open_orders(
                 )
                 size = round(position_size * ask, 2)
 
-                # Run every entry guard. Rows that fail still get
-                # returned (with blocked_reason) so the user sees why
-                # Send is disabled.
+                # Run every entry guard so the UI can disable Send and
+                # show a blocked_reason on rows that would fail at
+                # click-time anyway.
                 verdict = check_all_guards(snapshot, current_time, order["symbol"])
 
-                approval_id: Optional[str] = None
                 blocked_reason: Optional[str] = None
                 cooldown_until: Optional[str] = None
-                source_id = f"{order['source']}:{order['id']}"
-
-                if verdict.allowed:
-                    approval = await approvals_hub.add_pending(
-                        symbol=order["symbol"],
-                        contract_type="stock",
-                        entry_price=ask,
-                        stop_price=order["stop_price"],
-                        position_size=position_size,
-                        source_id=source_id,
-                    )
-                    approval_id = approval.approval_id
-                    valid_source_ids.add(source_id)
-                else:
+                if not verdict.allowed:
                     blocked_reason = verdict.message
                     cooldown_until = verdict.cooldown_until
 
@@ -279,7 +252,6 @@ async def process_open_orders(
                         size=size,
                         status=order["status"],
                         source=order["source"],
-                        approval_id=approval_id,
                         blocked_reason=blocked_reason,
                         cooldown_until=cooldown_until,
                     )
@@ -287,9 +259,5 @@ async def process_open_orders(
             except Exception as e:
                 logger.error(f"Error processing {order['symbol']}: {e}")
                 continue
-
-        # Prune stale hub rows (row disappeared upstream, or previously
-        # valid row is now blocked).
-        await approvals_hub.sync_source_ids(valid_source_ids)
 
         return processed_orders

@@ -98,12 +98,6 @@ class PendingOrder(BaseModel):
     size: float
     status: str
     source: str
-    # Set when the row passed every entry guard at table-build time and
-    # was registered in PendingApprovalsHub. The frontend Send button
-    # POSTs this to /portfolio/entry-request/approve (with
-    # decision="accept") to place the bracket without re-running any
-    # guards on the click.
-    approval_id: Optional[str] = None
     # Set when the row failed a guard at table-build time. Human-readable
     # summary that the UI shows in a badge / tooltip next to the disabled
     # Send button so the user knows why they can't send it right now.
@@ -311,24 +305,6 @@ class EntryRequest(BaseModel):
     entry_price: float
     stop_price: float
     position_size: int
-    # "manual"    -> place the bracket order immediately once guards pass
-    #                (the historical, default behaviour).
-    # "automatic" -> guards run identically, but the bracket order is NOT
-    #                placed. It is parked in the PendingApprovalsHub and
-    #                broadcast over SSE; the frontend pops a confirmation
-    #                dialog and the user's Accept click triggers the actual
-    #                place_bracket_order via /entry-request/approve.
-    # Default kept as "manual" so existing callers stay unaffected.
-    request_type: Literal["manual", "automatic"] = "manual"
-    # Optional fresh top-of-book from the frontend's streaming quote.
-    # When present and quote_ts_ms is within FRESH_QUOTE_MAX_AGE_MS of
-    # now, the manual entry path skips the server-side reqMktData
-    # round-trip and prices off these values -- shaves 100-2000ms of
-    # latency on fast-moving pre-market symbols. Absence falls back to
-    # the existing get_bid_ask_price behaviour.
-    bid: Optional[float] = None
-    ask: Optional[float] = None
-    quote_ts_ms: Optional[int] = None  # epoch millis when captured
 
 
 class EntryRequestResponse(BaseModel):
@@ -342,34 +318,6 @@ class EntryRequestResponse(BaseModel):
     # cooldown banner up (with a countdown) until this moment.
     reason: Optional[str] = None  # e.g. "loss_cooldown"
     cooldown_until: Optional[str] = None
-
-
-# --- Automatic entry approvals ----------------------------------------------
-# When request_type="automatic" and all guards pass, the bracket order is
-# parked here instead of being placed. The pending row is broadcast on the
-# /entry-request/pending/stream SSE, the UI shows a modal, and the user's
-# Accept/Decline decision is delivered back via POST /entry-request/approve.
-class PendingApproval(BaseModel):
-    approval_id: str
-    symbol: str
-    contract_type: str
-    entry_price: float
-    stop_price: float
-    position_size: int
-    # ISO-8601 timestamp — mostly informational, useful if the FE wants to
-    # display "queued 3s ago" or to expire the popup after N seconds.
-    created_at: str
-
-
-class ApprovalDecisionRequest(BaseModel):
-    approval_id: str
-    decision: Literal["accept", "decline"]
-    # Optional override for the approval's contract_type. Used by the
-    # Pending Orders table Send button so the per-row stock/CFD toggle
-    # in the UI actually takes effect at placement time. Automatic-
-    # entry dialog Accept clicks omit this and keep the value that
-    # was baked in when the scanner registered the approval.
-    contract_type: Optional[Literal["stock", "CFD"]] = None
 
 
 # Lockout status -- proactive view of the loss-cooldown so the UI can

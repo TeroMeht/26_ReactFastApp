@@ -1,8 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, List
-from dependencies import get_db_conn, get_ib, get_pending_approvals_hub
+from dependencies import get_db_conn, get_ib
 from services.pending_orders import *
-from services.portfolio.pending_approvals_hub import PendingApprovalsHub
 
 
 router = APIRouter(
@@ -49,10 +48,9 @@ async def delete_auto_order(order_id: int, db_conn=Depends(get_db_conn))-> Dict:
 async def get_all_pending_orders(
     db_conn=Depends(get_db_conn),
     ib=Depends(get_ib),
-    approvals_hub: PendingApprovalsHub = Depends(get_pending_approvals_hub),
 ) -> List[PendingOrder]:
     try:
-        pending_orders = await process_open_orders(db_conn, ib, approvals_hub)
+        pending_orders = await process_open_orders(db_conn, ib)
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
     return [PendingOrder(**order.__dict__) for order in pending_orders]

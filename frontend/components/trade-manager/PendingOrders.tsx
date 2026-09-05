@@ -4,12 +4,6 @@ import React, { useState, useEffect, useCallback } from "react";
 import { API_PREFIX } from "@/lib/api_prefix";
 import { paths } from "@/generated/api";
 import {
-  readAutoApprove,
-  writeAutoApprove,
-  subscribeAutoApprove,
-} from "@/lib/autoApprove";
-
-import {
   Table,
   TableHeader,
   TableBody,
@@ -74,21 +68,6 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
 
   const [contractTypes, setContractTypes] = useState<Record<string, "CFD" | "stock">>({});
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
-
-  // Cross-tab-aware toggle: when ON, the AutomaticEntryApprovalDialog
-  // Accepts pending automatic entries without showing the modal.
-  // Off by default; state lives in localStorage.
-  const [autoApprove, setAutoApprove] = useState(false);
-  useEffect(() => {
-    // Initialise from storage after mount (avoids SSR hydration mismatch).
-    setAutoApprove(readAutoApprove());
-    return subscribeAutoApprove(setAutoApprove);
-  }, []);
-  const toggleAutoApprove = () => {
-    const next = !autoApprove;
-    setAutoApprove(next);
-    writeAutoApprove(next);
-  };
 
   // Read-only mirror of the backend's extended-hours-stop mode.
   // The backend derives this from Helsinki wall time -- premarket
@@ -175,35 +154,20 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
 
   const handleSend = async (order: PendingOrder) => {
     try {
-      // Rows in this table are pre-validated at fetch time and (when
-      // they pass every guard) registered in PendingApprovalsHub with
-      // a stable source_id. The backend returns the resulting
-      // approval_id on the row; Send just replays it to /approve so
-      // the click skips snapshot + validation entirely.
-      const approvalId = (order as PendingOrder & { approval_id?: string | null })
-        .approval_id;
-      if (!approvalId) {
-        // Row is present but blocked by a guard -- reason is on the
-        // row itself. The Send button is disabled in this state; this
-        // is a defensive log only.
-        console.warn(
-          "Send clicked on a row without approval_id (blocked)",
-          order,
-        );
-        return;
-      }
-
-      // The per-row dropdown (stock / CFD) overrides the contract_type
-      // that was baked in when process_open_orders registered the row.
+      // Single entry flow: Send posts the row directly to /entry-request,
+      // which runs every guard and, on pass, places the bracket order.
+      // No approval step, no hub.
       const contractType = contractTypes[order.id] ?? "stock";
 
-      const res = await fetch(`${API_PREFIX}/portfolio/entry-request/approve`, {
+      const res = await fetch(`${API_PREFIX}/portfolio/entry-request`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          approval_id: approvalId,
-          decision: "accept",
+          symbol: order.symbol,
           contract_type: contractType,
+          entry_price: order.latest_price,
+          stop_price: order.stop_price,
+          position_size: order.position_size,
         }),
       });
 
@@ -317,32 +281,6 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
         </Button>
 
         {/*
-          Auto-approve automatic entries. Off by default -- the popup
-          shows and waits for the user. When ON, incoming automatic
-          entries are Accepted immediately without a modal. Persists
-          in localStorage and syncs across tabs (see lib/autoApprove.ts).
-        */}
-        <button
-          type="button"
-          role="switch"
-          aria-checked={autoApprove}
-          onClick={toggleAutoApprove}
-          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm font-medium transition-colors ${
-            autoApprove
-              ? "bg-green-600 text-white border-green-700 hover:bg-green-700"
-              : "bg-gray-100 text-gray-700 border-gray-300 hover:bg-gray-200"
-          }`}
-        >
-          <span
-            aria-hidden="true"
-            className={`w-2.5 h-2.5 rounded-full ${
-              autoApprove ? "bg-white" : "bg-gray-400"
-            }`}
-          />
-          Auto-approve: {autoApprove ? "ON" : "OFF"}
-        </button>
-
-        {/*
           Read-only status of the backend's extended-hours-stop mode.
           Driven by Helsinki wall time: premarket (before 16:30) uses
           a conditional LMT so the stop can fire pre-market; from
@@ -447,8 +385,8 @@ const PendingOrdersTable = ({ onRefreshed }: Props = {}) => {
               ).blocked_reason;
               // Send is disabled when either the row was already sent
               // this session (dedupes double-clicks) or the row failed
-              // an entry guard at fetch time (no approval_id, so
-              // /approve would 404 anyway).
+              // an entry guard at fetch time (blocked_reason set, so
+              // /entry-request would just reject it).
               const sendDisabled =
                 allowedOrders.has(order.id) || !!blockedReason;
               return (
