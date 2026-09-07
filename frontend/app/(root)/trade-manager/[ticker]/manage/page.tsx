@@ -88,6 +88,22 @@ const ManagePage = () => {
     new_stop_price?: number;
   } | null>(null);
 
+  // Add-stop-order state - lets the user plant a protective STP on a
+  // position that has none. Only visible when position.auxprice is 0
+  // (no STP planted). Kept separate from the Add flow so the two
+  // responses don't collide.
+  const [addStopPrice, setAddStopPrice] = useState("");
+  const [addStopLoading, setAddStopLoading] = useState(false);
+  const [addStopResult, setAddStopResult] = useState<{
+    allowed: boolean;
+    message: string;
+    symbol?: string;
+    order_id?: number | null;
+    stop_price?: number | null;
+    quantity?: number | null;
+    action?: string | null;
+  } | null>(null);
+
   // Memoize the parsed position on dataParam (a stable string) so we don't
   // produce a fresh object on every render - that re-firing useCallback /
   // useEffect deps caused an infinite GET /api/exits/{symbol} loop.
@@ -317,6 +333,54 @@ const ManagePage = () => {
     }
   };
 
+  // Place a stand-alone protective STP for a position that has none.
+  // Backend enforces "no existing STP" and reverse-action sign — this
+  // client only checks that a stop price was entered.
+  const handleAddStopOrder = async () => {
+    if (!position) return;
+    const priceNum = Number(addStopPrice);
+    if (!priceNum || priceNum <= 0) {
+      setAddStopResult({
+        allowed: false,
+        message: "Enter a positive stop price.",
+      });
+      return;
+    }
+
+    try {
+      setAddStopLoading(true);
+      setAddStopResult(null);
+
+      const res = await fetch(`${API_PREFIX}/portfolio/add-stop-order`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: position.symbol,
+          stop_price: priceNum,
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text);
+      }
+
+      const data = await res.json();
+      setAddStopResult(data);
+      if (data.allowed) {
+        // Clear the input so a follow-up visit starts clean.
+        setAddStopPrice("");
+      }
+    } catch (err: any) {
+      setAddStopResult({
+        allowed: false,
+        message: err.message || String(err),
+      });
+    } finally {
+      setAddStopLoading(false);
+    }
+  };
+
   const handleAdd = async () => {
     if (!position) return;
 
@@ -354,25 +418,66 @@ const ManagePage = () => {
   if (!position) return <div>Loading position...</div>;
 
   return (
-    <div className="p-6 max-w-2xl mx-auto bg-white shadow-lg rounded-md mt-10">
-      <h2 className="text-lg font-semibold mb-4">
-        Position Management - {position.symbol}
-      </h2>
+    // Parent layout uses overflow-hidden with a fixed viewport height, so
+    // this wrapper is the vertical scroll container. h-full picks up the
+    // available height from the flex column, overflow-y-auto lets long
+    // content scroll rather than getting clipped.
+    <div className="h-full overflow-y-auto">
+      <div className="p-6 max-w-4xl mx-auto bg-white shadow-lg rounded-md mt-4 mb-6">
+        <h2 className="text-lg font-semibold mb-4">
+          Position Management - {position.symbol}
+        </h2>
 
-      <div className="space-y-2 text-left">
-        <p><strong>Contract:</strong> {position.contract_type}</p>
-        <p><strong>Aux Price:</strong> {position.auxprice}</p>
-        <p><strong>Avg Cost:</strong> {position.avgcost}</p>
-        <p><strong>Position:</strong> {position.position}</p>
-        <p><strong>Open Risk:</strong> {position.openrisk}</p>
-        <p><strong>Allocation:</strong> {position.allocation}</p>
-        <p><strong>Size:</strong> {position.size}</p>
-      </div>
+        {/* One-line summary table of the position -- horizontal instead of
+            the previous stack of <p> rows, so it fits above the fold and
+            leaves room for the exit/stop panels below. */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr className="border-b bg-gray-50 text-gray-600">
+                <th className="text-left py-1 px-2 font-medium">Contract</th>
+                <th className="text-right py-1 px-2 font-medium">Position</th>
+                <th className="text-right py-1 px-2 font-medium">Avg Cost</th>
+                <th className="text-right py-1 px-2 font-medium">Stop</th>
+                <th className="text-right py-1 px-2 font-medium">Open Risk</th>
+                <th className="text-right py-1 px-2 font-medium">Allocation</th>
+                <th className="text-right py-1 px-2 font-medium">Size</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className="py-1 px-2">{position.contract_type}</td>
+                <td className="py-1 px-2 text-right">{position.position}</td>
+                <td className="py-1 px-2 text-right">{position.avgcost}</td>
+                <td className="py-1 px-2 text-right">
+                  {position.auxprice ? position.auxprice : "-"}
+                </td>
+                <td
+                  className={`py-1 px-2 text-right ${
+                    typeof position.openrisk === "number" && position.openrisk < 0
+                      ? "text-green-700"
+                      : ""
+                  }`}
+                >
+                  {position.openrisk}
+                </td>
+                <td className="py-1 px-2 text-right">{position.allocation}</td>
+                <td className="py-1 px-2 text-right">{position.size}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+      {/* Exit-management panels side-by-side. On narrow viewports they
+          stack; from md+ the grid puts Exit plans and Custom Price Exits
+          on the same row so the user can compare the two exit surfaces
+          at a glance. */}
+      <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
 
       {/* Strategy-based exit plans for this symbol. Layout mirrors the
-          Custom Price Exits section below: always-visible add form on top,
-          read-only table beneath. To change a row, delete + re-add. */}
-      <div className="mt-6">
+          Custom Price Exits section beside it: always-visible add form on
+          top, read-only table beneath. To change a row, delete + re-add. */}
+      <div>
         <h3 className="font-semibold mb-2">Exit plans</h3>
 
         {exitsError && (
@@ -496,7 +601,7 @@ const ManagePage = () => {
       {/* Custom price-target exits - real IB LIMIT orders. When IB fills
           one, the backend resizes the STP (or cancels it on a 100% trim)
           using the same flow as strategy-based exits. */}
-      <div className="mt-6">
+      <div>
         <h3 className="font-semibold mb-2">Custom Price Exits</h3>
 
         {customError && (
@@ -608,6 +713,67 @@ const ManagePage = () => {
         )}
       </div>
 
+      </div>
+      {/* End exit-management side-by-side grid. */}
+
+      {/* Add Stop order - only meaningful when the position has no STP
+          planted yet. `position.auxprice` is populated from the current
+          protective stop's aux/trigger price; 0 means "no stop". */}
+      {!position.auxprice && (
+        <div className="mt-6">
+          <h3 className="font-semibold mb-2">Add Stop order</h3>
+
+          <div className="mb-2 p-2 border rounded bg-gray-50 flex flex-wrap items-end gap-2">
+            <div>
+              <label className="block text-xs text-gray-600">Stop Price</label>
+              <input
+                type="number"
+                step="0.01"
+                value={addStopPrice}
+                onChange={(e) => setAddStopPrice(e.target.value)}
+                className="border rounded px-2 py-0.5 text-sm w-48"
+              />
+            </div>
+            <button
+              onClick={handleAddStopOrder}
+              disabled={addStopLoading || !addStopPrice}
+              className="text-xs bg-red-600 text-white px-2 py-1 rounded hover:bg-red-700 disabled:opacity-50"
+            >
+              {addStopLoading ? "Placing..." : "Add Stop order"}
+            </button>
+          </div>
+
+          {addStopResult && (
+            <div
+              className={`p-2 rounded text-sm space-y-1 border ${
+                addStopResult.allowed
+                  ? "bg-green-50 border-green-200 text-green-800"
+                  : "bg-red-50 border-red-200 text-red-800"
+              }`}
+            >
+              <p>
+                <strong>
+                  {addStopResult.allowed ? "Placed" : "Rejected"}:
+                </strong>{" "}
+                {addStopResult.message}
+              </p>
+              {addStopResult.order_id != null && (
+                <p>
+                  <strong>Order ID:</strong> {addStopResult.order_id}
+                </p>
+              )}
+              {addStopResult.action && (
+                <p>
+                  <strong>Action:</strong> {addStopResult.action}{" "}
+                  <strong>Qty:</strong> {addStopResult.quantity}{" "}
+                  <strong>Stop:</strong> {addStopResult.stop_price}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Total Risk Input */}
       <div className="mt-6">
         <label className="block text-sm font-medium mb-1">Total Risk</label>
@@ -691,6 +857,7 @@ const ManagePage = () => {
           )}
         </div>
       )}
+      </div>
     </div>
   );
 };

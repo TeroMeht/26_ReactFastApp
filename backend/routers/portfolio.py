@@ -12,6 +12,7 @@ from services.portfolio.trades.trade_log import build_trade_log
 from services.portfolio.entry_attempts import build_entry_attempts
 from services.portfolio.risk_limits import build_lockout_status
 from services.portfolio.flows.add import process_add_request
+from services.portfolio.flows.add_stop import process_add_stop_request
 from services.portfolio.flows.exit import process_automatic_exit
 from services.portfolio.flows.open_risk import process_openrisktable
 from services.portfolio.openrisk_hub import OpenRiskHub
@@ -27,6 +28,8 @@ from dependencies import (
 
 from schemas.api_schemas import (
     AddRequest,
+    AddStopOrderRequest,
+    AddStopOrderResponse,
     EntryRequestResponse,
     EntryRequest,
     ExitRequest,
@@ -142,6 +145,22 @@ async def add_request(
 ):
     client = IbClient(ib, tracker=tracker)
     return await process_add_request(client, payload)
+
+
+@router.post("/add-stop-order", response_model=AddStopOrderResponse)
+async def add_stop_order(
+    payload: AddStopOrderRequest,
+    ib=Depends(get_ib),
+    tracker: OrderTracker = Depends(get_order_tracker),
+):
+    """
+    Place a stand-alone protective STP for an existing position that
+    has none. Sized to the full open position, tagged PROTECTIVE_STP so
+    downstream code (reconciler, open-risk, add flow, move-to-BE)
+    treats it exactly like a bracket-planted stop.
+    """
+    client = IbClient(ib, tracker=tracker)
+    return await process_add_stop_request(client, payload)
 
 
 @router.post("/exit-request", response_model=ExitRequestResponseIB)

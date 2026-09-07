@@ -5,11 +5,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 import pytz
-from ib_async import IB, Stock, CFD, LimitOrder, StopOrder, MarketOrder,PriceCondition
+from ib_async import IB, Stock, CFD, LimitOrder, StopOrder, MarketOrder
 from core.config import settings
 from services.orders import BidAsk, Order
 from services.portfolio.order_tracker import OrderTracker, TERMINAL_STATUSES
-from services.runtime_settings import get_extended_hours_stop_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -84,18 +83,6 @@ class OpenOrder:
     status: str
     filled: float
     remaining: float
-    # Populated for conditional-LMT protective legs (pre-market stops):
-    # the price at which the PriceCondition arms and submits the LMT.
-    # None for native STP orders (their trigger sits in `auxprice`).
-    trigger_price: Optional[float] = None
-    has_price_condition: bool = False
-
-
-# Sentinel orderRef marking a bracket's protective leg. Downstream code
-# (get_stp_order_by_symbol, exit flow, open-risk, add flow) uses this to
-# find "the stop" regardless of whether it's a native STP or a
-# conditional LMT for the pre-market path.
-PROTECTIVE_STP_REF = "PROTECTIVE_STP"
 
 
 @dataclass(frozen=True)
@@ -190,8 +177,7 @@ class IbClient:
         contract = _build_contract(symbol, contract_type)
         await self.ib.qualifyContractsAsync(contract)
         # Only cache if IB actually resolved it -- otherwise we'd cache
-        # a broken object and every downstream conditional order would
-        # attach a PriceCondition to conId=0.
+        # a broken object with conId=0.
         if getattr(contract, "conId", 0):
             self._contract_cache[key] = contract
         return contract
@@ -229,40 +215,22 @@ class IbClient:
         try:
             trades = await self.ib.reqAllOpenOrdersAsync()
 
-            orders = []
-            for t in trades:
-                # A protective conditional LMT carries its trigger on
-                # order.conditions[0].price, not on auxPrice. Surface it as
-                # trigger_price and mirror into auxprice so downstream code
-                # (add flow, open-risk table) that reads auxprice keeps
-                # working without a rewrite.
-                trig: Optional[float] = None
-                has_cond = False
-                aux = t.order.auxPrice
-                conds = getattr(t.order, "conditions", None) or []
-                for c in conds:
-                    if isinstance(c, PriceCondition):
-                        trig = float(c.price)
-                        has_cond = True
-                        if not aux:
-                            aux = trig
-                        break
-
-                orders.append(OpenOrder(
+            orders = [
+                OpenOrder(
                     orderid=t.order.permId,
                     symbol=t.contract.symbol,
                     action=t.order.action,
                     ordertype=t.order.orderType,
                     totalqty=t.order.totalQuantity,
                     lmtprice=t.order.lmtPrice,
-                    auxprice=aux,
+                    auxprice=t.order.auxPrice,
                     orderref=t.order.orderRef,
                     status=t.orderStatus.status,
                     filled=t.orderStatus.filled,
                     remaining=t.orderStatus.remaining,
-                    trigger_price=trig,
-                    has_price_condition=has_cond,
-                ))
+                )
+                for t in trades
+            ]
 
             logger.debug(f"Fetched orders: {orders}")
             return orders
@@ -374,9 +342,7 @@ class IbClient:
     async def get_stp_order_by_symbol(self, symbol: str) -> OpenOrder | None:
         """
         Return the first open protective (stop) order for the given symbol.
-        Matches either a native STP / STP LMT or a conditional LMT tagged
-        with orderRef=PROTECTIVE_STP (the pre-market path). Returns None
-        if not found.
+        Matches a native STP or STP LMT. Returns None if not found.
         """
         try:
             orders = await self.get_orders()
@@ -385,10 +351,7 @@ class IbClient:
                 (
                     o for o in orders
                     if o.symbol and o.symbol.upper() == wanted
-                    and (
-                        (o.ordertype and o.ordertype.upper() in ("STP", "STP LMT"))
-                        or (o.orderref == PROTECTIVE_STP_REF and o.has_price_condition)
-                    )
+                    and o.ordertype and o.ordertype.upper() in ("STP", "STP LMT")
                 ),
                 None,
             )
@@ -472,75 +435,6 @@ class IbClient:
             tif="GTC",
         )
 
-    @staticmethod
-    def _stop_trigger_and_limit(stop_price: float, reverse_action: str) -> tuple[bool, float]:
-        """
-        Derive the PriceCondition direction and the protective LMT price
-        from the stop price and the child's side.
-
-          * SELL child (long stop): fire when price <= stop; LMT sits
-            settings.STOP_LIMIT_OFFSET *below* the trigger.
-          * BUY  child (short stop): fire when price >= stop; LMT sits
-            settings.STOP_LIMIT_OFFSET *above* the trigger.
-
-        Returns (is_more, lmt_price).
-        """
-        offset = float(settings.STOP_LIMIT_OFFSET)
-
-        if reverse_action == "SELL":
-            is_more = False
-            lmt_price = round(stop_price - offset, 2)
-        else:
-            is_more = True
-            lmt_price = round(stop_price + offset, 2)
-
-        return is_more, lmt_price
-
-    def _build_conditional_stp_order(self, contract, order: Order, parent_order_id: int, reverse_action: str) -> LimitOrder:
-
-        if not getattr(contract, "conId", 0):
-            raise ValueError(
-                f"Cannot attach PriceCondition to {order.symbol}: "
-                "contract.conId is not populated "
-                "(qualifyContractsAsync did not resolve it)."
-            )
-
-        is_more, lmt_price = self._stop_trigger_and_limit(
-            order.stop_price, reverse_action
-        )
-
-        cond = PriceCondition(
-            conId=contract.conId,
-            exch=getattr(contract, "primaryExchange", None) or "SMART",
-            isMore=is_more,
-            price=float(order.stop_price),
-        )
-
-        stoploss = LimitOrder(
-            action=reverse_action,
-            totalQuantity=order.position_size,
-            lmtPrice=lmt_price,
-            orderId=self.ib.client.getReqId(),
-            parentId=parent_order_id,
-            transmit=True,
-            outsideRth=True,  # allow fill in extended hours once armed
-            tif="GTC",
-        )
-        stoploss.conditions = [cond]
-        # True = "conditions ignore the RTH restriction" -> evaluate on
-        # extended-hours ticks too. (IB's field name reads literally.)
-        stoploss.conditionsIgnoreRth = True
-        stoploss.conditionsCancelOrder = False  # False = submit-on-trigger
-        stoploss.orderRef = PROTECTIVE_STP_REF
-
-        logger.info(
-            "Built pre-market protective LMT for %s: "
-            "trigger=%.2f lmt=%.2f isMore=%s conId=%s",
-            order.symbol, order.stop_price, lmt_price,
-            is_more, contract.conId,
-        )
-        return stoploss
-
     async def _submit_bracket_pair(self, contract, parent, stoploss, order: Order):
         """
         Ship a parent+child bracket to IB.
@@ -574,9 +468,9 @@ class IbClient:
 
     async def place_bracket_order(self, order: Order):
         """
-        Orchestrate a bracket entry: contract -> parent LMT -> protective
-        leg (native STP or conditional LMT depending on .env flag) ->
-        submit both.
+        Orchestrate a bracket entry: contract -> parent LMT -> native STP
+        protective leg -> submit both. RTH-only trading, so the stop is
+        always a native STP.
         """
         try:
             contract = await self._qualified_contract(order.symbol, order.contract_type)
@@ -584,19 +478,9 @@ class IbClient:
             parent = self._build_parent_order(order)
             reverse_action = self._reverse_action(order.action)
 
-            # Protective-leg shape is decided here from the runtime
-            # toggle exposed on top of the pending-orders table
-            # (services.runtime_settings, routers.runtime_settings):
-            #   extended_hours_stop_enabled=False -> native STP
-            #   extended_hours_stop_enabled=True  -> conditional LMT
-            if get_extended_hours_stop_enabled():
-                stoploss = self._build_conditional_stp_order(
-                    contract, order, parent.orderId, reverse_action
-                )
-            else:
-                stoploss = self._build_native_stp_order(
-                    order, parent.orderId, reverse_action
-                )
+            stoploss = self._build_native_stp_order(
+                order, parent.orderId, reverse_action
+            )
 
             await self._submit_bracket_pair(contract, parent, stoploss, order)
 
@@ -607,7 +491,52 @@ class IbClient:
             return None, None
 
 
-        
+    async def place_standalone_stp_order(
+        self,
+        symbol: str,
+        contract_type: str,
+        stop_price: float,
+        quantity: int,
+        action: str,
+    ):
+        """
+        Place a stand-alone native STP (no parent). Used by the
+        add-stop-order flow for a position that has none. Stop price is
+        the exact input from the user -- no offset applied.
+        """
+        try:
+            contract = await self._qualified_contract(symbol, contract_type)
+
+            stop_price = float(stop_price)
+            quantity = int(quantity)
+
+            stp = StopOrder(
+                action=action,
+                totalQuantity=quantity,
+                stopPrice=stop_price,
+                orderId=self.ib.client.getReqId(),
+                parentId=0,
+                transmit=True,
+                outsideRth=True,
+                tif="GTC",
+            )
+
+            trade = self.ib.placeOrder(contract, stp)
+            self._register(trade)
+
+            logger.info(
+                "Stand-alone STP submitted for %s: orderId=%s, action=%s, "
+                "qty=%s, stop=%s",
+                symbol, stp.orderId, action, quantity, stop_price,
+            )
+            return stp
+
+        except Exception as e:
+            logger.error(
+                "Error in place_standalone_stp_order for %s: %s", symbol, e
+            )
+            return None
+
 
     async def place_limit_order(self, order: Order):
         """Place a simple limit order asynchronously."""
@@ -778,29 +707,8 @@ class IbClient:
             order = target_trade.order
             contract = target_trade.contract
 
-            # Where the trigger lives depends on the protective leg's shape.
-            # Native STP: it's on order.auxPrice. Conditional LMT (pre-market
-            # path): it's on order.conditions[0].price -- editing auxPrice on
-            # such an order does nothing, so we mutate the condition
-            # directly. Re-attach the whole list so ib_async ships the new
-            # value to IB on the modification round-trip.
-            price_cond = next(
-                (c for c in (getattr(order, "conditions", None) or [])
-                 if isinstance(c, PriceCondition)),
-                None,
-            )
-            if price_cond is not None:
-                new_cond = PriceCondition(
-                    conId=price_cond.conId,
-                    exch=price_cond.exch,
-                    isMore=price_cond.isMore,
-                    price=float(new_auxprice),
-                )
-                order.conditions = [new_cond]
-                order.conditionsIgnoreRth = True
-                order.conditionsCancelOrder = False
-            else:
-                order.auxPrice = float(new_auxprice)
+            # Native STP: the trigger lives on order.auxPrice.
+            order.auxPrice = float(new_auxprice)
 
             # Qualify contract (required by IB)
             await self.ib.qualifyContractsAsync(contract)

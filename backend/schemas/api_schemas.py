@@ -351,6 +351,34 @@ class AddRequestResponse(BaseModel):
     cooldown_until: Optional[str] = None
 
 
+# Add stand-alone protective stop for a position that has none.
+# The UI shows an "Add Stop order" button on the manage view for such
+# positions; the backend places a native STP or a conditional-LMT
+# (mirroring the bracket protective-leg shape) sized to the full
+# position.
+class AddStopOrderRequest(BaseModel):
+    symbol: str = Field(..., min_length=1)
+    stop_price: float = Field(..., gt=0)
+
+    @field_validator("symbol")
+    @classmethod
+    def _upper(cls, v: str) -> str:
+        v = v.strip().upper()
+        if not v:
+            raise ValueError("symbol cannot be empty")
+        return v
+
+
+class AddStopOrderResponse(BaseModel):
+    allowed: bool
+    message: str
+    symbol: str
+    order_id: Optional[int] = None
+    stop_price: Optional[float] = None
+    quantity: Optional[int] = None
+    action: Optional[str] = None  # SELL (long stop) or BUY (short stop)
+
+
 # Trade log row -- realized PnL today for one symbol, derived from today's
 # closed flat-to-flat cycles. No DB persistence.
 class TradeLogRow(BaseModel):

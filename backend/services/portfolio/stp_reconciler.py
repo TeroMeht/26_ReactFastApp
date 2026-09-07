@@ -4,8 +4,7 @@ STP reconciler — the SOLE writer of STP quantity.
 Contract
 --------
 Given a ``PositionChanged`` event from ``PositionLedger``, drive the
-symbol's protective stop (STP or conditional-LMT tagged
-``PROTECTIVE_STP``) to match the new position:
+symbol's protective native STP to match the new position:
 
     abs(STP.totalquantity) == abs(position)          if position != 0
     STP is cancelled                                  if position == 0

@@ -88,7 +88,15 @@ async def process_openrisktable(client: IbClient, db_conn) -> List[OpenPosition]
 
             if stop_order and stop_order.auxprice is not None:
                 aux_price = float(stop_order.auxprice)
-                open_risk = round(abs(position * (aux_price - avgcost)), 2)
+                # Signed open risk: positive = money at risk if the stop
+                # fires, negative = locked-in profit if it fires. Works
+                # for both sides because `position` is signed (+ long,
+                # - short) and (avgcost - aux_price) flips accordingly:
+                #   long,  stop below cost -> +position * +delta = +risk
+                #   long,  stop above cost -> +position * -delta = -risk (profit)
+                #   short, stop above cost -> -position * -delta = +risk
+                #   short, stop below cost -> -position * +delta = -risk (profit)
+                open_risk = round(position * (avgcost - aux_price), 2)
             else:
                 aux_price = 0.0
                 open_risk = 999_999_999  # no stop = unbounded risk
