@@ -149,11 +149,6 @@ class IbClient:
     def __init__(self, ib: IB, tracker: Optional[OrderTracker] = None):
         self.ib = ib
         self.tracker = tracker
-        # (symbol, contract_type) -> already-qualified Contract.
-        # qualifyContractsAsync is a 50-200ms round-trip; once IB has
-        # resolved conId/primaryExchange/etc for a symbol, that value is
-        # stable for the session, so we cache it and skip subsequent
-        # round-trips on the entry hot path.
         self._contract_cache: dict[tuple[str, str], object] = {}
 
     def _register(self, trade) -> None:
@@ -293,26 +288,9 @@ class IbClient:
             return []
 
     async def get_bid_ask_price(self, symbol: str) -> BidAsk:
-        # Use the cached qualified contract when available -- first entry
-        # for the session pays the ~50-200ms qualification round-trip;
-        # subsequent entries on the same symbol skip it.
+
         contract = await self._qualified_contract(symbol, "STK")
 
-        # Fast path: the scanner / watchlist streamer may already have a
-        # live ticker for this symbol. If so, ib.ticker(contract) returns
-        # it with the current cached bid/ask -- zero round-trip. Only
-        # fall back to a fresh reqMktData subscription if there isn't
-        # one, or the cached quote isn't populated yet.
-        existing = self.ib.ticker(contract)
-        if existing is not None and existing.bid and existing.ask \
-                and existing.bid > 0 and existing.ask > 0:
-            logger.debug(
-                "Quote for %s (cached ticker): bid=%s ask=%s",
-                symbol, existing.bid, existing.ask,
-            )
-            return BidAsk(symbol=symbol, bid=existing.bid, ask=existing.ask)
-
-        # Slow path: one-shot subscription with a 2s ceiling.
         ticker = self.ib.reqMktData(contract, "", False, False)
         try:
             matched = await _await_event(
