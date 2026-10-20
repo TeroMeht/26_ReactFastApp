@@ -10,9 +10,8 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from dependencies import get_ib, get_order_tracker
+from dependencies import get_ib_client
 from services.portfolio.ib_client import IbClient
-from services.portfolio.order_tracker import OrderTracker
 from services.portfolio.flows.exit import process_manual_exit
 from services.exits import list_manual_exits, cancel_manual_exit_by_perm_id
 from schemas.api_schemas import CreateManualExitRequest, ManualExitResponse
@@ -28,11 +27,9 @@ router = APIRouter(
 @router.get("/{symbol}", response_model=List[ManualExitResponse])
 async def get_custom_exits(
     symbol: str,
-    ib=Depends(get_ib),
-    tracker: OrderTracker = Depends(get_order_tracker),
+    client: IbClient = Depends(get_ib_client),
 ):
     try:
-        client = IbClient(ib, tracker=tracker)
         return await list_manual_exits(client, symbol)
     except Exception as e:
         logger.exception("Failed to list custom exits for %s", symbol)
@@ -42,11 +39,9 @@ async def get_custom_exits(
 @router.post("", response_model=ManualExitResponse)
 async def create_custom_exit(
     payload: CreateManualExitRequest,
-    ib=Depends(get_ib),
-    tracker: OrderTracker = Depends(get_order_tracker),
+    client: IbClient = Depends(get_ib_client),
 ):
     try:
-        client = IbClient(ib, tracker=tracker)
         return await process_manual_exit(
             client,
             symbol=payload.symbol,
@@ -64,15 +59,13 @@ async def create_custom_exit(
 @router.delete("/{perm_id}", response_model=dict)
 async def cancel_custom_exit_endpoint(
     perm_id: int,
-    ib=Depends(get_ib),
-    tracker: OrderTracker = Depends(get_order_tracker),
+    client: IbClient = Depends(get_ib_client),
 ):
     """
     Cancel a custom exit by its IB permId. The frontend reads permId off
     the rows returned by GET /api/exits/custom/{symbol}.
     """
     try:
-        client = IbClient(ib, tracker=tracker)
         result = await cancel_manual_exit_by_perm_id(client, perm_id)
         if result.get("status") == "error":
             raise HTTPException(status_code=500, detail=result.get("message"))

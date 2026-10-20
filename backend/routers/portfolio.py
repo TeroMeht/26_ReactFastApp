@@ -20,7 +20,7 @@ from db.order_log import fetch_order_log
 
 
 from dependencies import (
-    get_ib,
+    get_ib_client,
     get_db_conn,
     get_order_tracker,
     get_openrisk_hub,
@@ -58,27 +58,24 @@ router = APIRouter(
 # Read endpoints - thin pass-throughs to IbClient
 # ----------------------------------------------------------------------
 @router.get("/positions")
-async def get_positions(ib=Depends(get_ib)):
+async def get_positions(client: IbClient = Depends(get_ib_client)):
     try:
-        client = IbClient(ib)
         return await client.get_positions()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/orders")
-async def get_orders(ib=Depends(get_ib)):
+async def get_orders(client: IbClient = Depends(get_ib_client)):
     try:
-        client = IbClient(ib)
         return await client.get_orders()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/account-summary")
-async def get_account_summary(ib=Depends(get_ib)):
+async def get_account_summary(client: IbClient = Depends(get_ib_client)):
     try:
-        client = IbClient(ib)
         summary = await client.get_account_summary()
         # Preserve the historical wire shape: `{tag: value}` flat dict, not
         # the wrapping AccountSummary dataclass. Consumers of the endpoint
@@ -89,18 +86,16 @@ async def get_account_summary(ib=Depends(get_ib)):
 
 
 @router.get("/trades")
-async def get_trades(ib=Depends(get_ib)):
+async def get_trades(client: IbClient = Depends(get_ib_client)):
     try:
-        client = IbClient(ib)
         return await client.get_trades()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/price/{symbol}")
-async def get_bid_ask_price(symbol: str, ib=Depends(get_ib)):
+async def get_bid_ask_price(symbol: str, client: IbClient = Depends(get_ib_client)):
     try:
-        client = IbClient(ib)
         return await client.get_bid_ask_price(symbol)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -110,11 +105,10 @@ async def get_bid_ask_price(symbol: str, ib=Depends(get_ib)):
 # Workflow endpoints - call the function-style handlers in services.portfolio
 
 @router.get("/lockout-status", response_model=LockoutStatusResponse)
-async def get_lockout_status(ib=Depends(get_ib)):
+async def get_lockout_status(client: IbClient = Depends(get_ib_client)):
     # Same aligned handler shape as /trade-log and /entry-attempts:
     # thin call into the service layer, asdict + Pydantic wrap.
     try:
-        client = IbClient(ib)
         return LockoutStatusResponse(**asdict(await build_lockout_status(client)))
     except Exception as e:
         logger.exception("lockout-status failed")
@@ -124,8 +118,7 @@ async def get_lockout_status(ib=Depends(get_ib)):
 @router.post("/entry-request", response_model=EntryRequestResponse)
 async def entry_request(
     payload: EntryRequest,
-    ib=Depends(get_ib),
-    tracker: OrderTracker = Depends(get_order_tracker),
+    client: IbClient = Depends(get_ib_client),
     db_conn=Depends(get_db_conn),
 ):
     """
@@ -133,25 +126,21 @@ async def entry_request(
     bracket order immediately. There is a single entry flow -- no
     manual/automatic split, no approval step.
     """
-    client = IbClient(ib, tracker=tracker)
     return await process_entry_request(client, payload, db_conn=db_conn)
 
 
 @router.post("/add-request", response_model=AddRequestResponse)
 async def add_request(
     payload: AddRequest,
-    ib=Depends(get_ib),
-    tracker: OrderTracker = Depends(get_order_tracker),
+    client: IbClient = Depends(get_ib_client),
 ):
-    client = IbClient(ib, tracker=tracker)
     return await process_add_request(client, payload)
 
 
 @router.post("/add-stop-order", response_model=AddStopOrderResponse)
 async def add_stop_order(
     payload: AddStopOrderRequest,
-    ib=Depends(get_ib),
-    tracker: OrderTracker = Depends(get_order_tracker),
+    client: IbClient = Depends(get_ib_client),
 ):
     """
     Place a stand-alone protective STP for an existing position that
@@ -159,36 +148,30 @@ async def add_stop_order(
     downstream code (reconciler, open-risk, add flow, move-to-BE)
     treats it exactly like a bracket-planted stop.
     """
-    client = IbClient(ib, tracker=tracker)
     return await process_add_stop_request(client, payload)
 
 
 @router.post("/exit-request", response_model=ExitRequestResponseIB)
 async def exit_request(
     payload: ExitRequest,
-    ib=Depends(get_ib),
+    client: IbClient = Depends(get_ib_client),
     db_conn=Depends(get_db_conn),
-    tracker: OrderTracker = Depends(get_order_tracker),
 ):
-    client = IbClient(ib, tracker=tracker)
     return await process_automatic_exit(client, db_conn, payload)
 
 
 @router.post("/move-stop-be")
 async def move_stop_by_symbol(
     symbol: str,
-    ib=Depends(get_ib),
-    tracker: OrderTracker = Depends(get_order_tracker),
+    client: IbClient = Depends(get_ib_client),
 ):
-    client = IbClient(ib, tracker=tracker)
     return await client.move_stp_order_by_symbol(symbol)
 
 
 @router.post("/cancel-order/{order_id}", response_model=CancelOrderResult)
 async def cancel_order(
     order_id: int,
-    ib=Depends(get_ib),
-    tracker: OrderTracker = Depends(get_order_tracker),
+    client: IbClient = Depends(get_ib_client),
 ):
     """
     Cancel an open IB order by permId and *wait* for IB to acknowledge a
@@ -196,7 +179,6 @@ async def cancel_order(
     actually cancelled, or whether it filled before the cancel landed.
     """
     try:
-        client = IbClient(ib, tracker=tracker)
         result = await client.cancel_order_by_id(order_id)
         return CancelOrderResult(**result)
     except OrderNotFoundError as e:
@@ -221,10 +203,9 @@ async def get_order_status(tracker: OrderTracker = Depends(get_order_tracker)):
 
 
 @router.get("/trade-log", response_model=TradeLogResponse)
-async def get_trade_log(ib=Depends(get_ib)):
+async def get_trade_log(client: IbClient = Depends(get_ib_client)):
 
     try:
-        client = IbClient(ib)
         # asdict() recurses into TradeLogEntry rows so Pydantic can
         # construct the response model from the resulting nested dict.
         return TradeLogResponse(**asdict(await build_trade_log(client)))
@@ -294,15 +275,13 @@ async def stream_order_status(tracker: OrderTracker = Depends(get_order_tracker)
 
 @router.post("/cancel-all-unfilled", response_model=List[CancelOrderResult])
 async def cancel_all_unfilled(
-    ib=Depends(get_ib),
-    tracker: OrderTracker = Depends(get_order_tracker),
+    client: IbClient = Depends(get_ib_client),
 ):
     """
     Cancel every currently-open order that has zero fills. Useful as a
     panic button when you want to flatten pending entries quickly.
     """
     try:
-        client = IbClient(ib, tracker=tracker)
         results = await client.cancel_all_unfilled()
         return [CancelOrderResult(**r) for r in results]
     except Exception as e:
@@ -313,7 +292,7 @@ async def cancel_all_unfilled(
 
 
 @router.get("/entry-attempts", response_model=EntryAttemptsResponse)
-async def get_entry_attempts(ib=Depends(get_ib), db_conn=Depends(get_db_conn)):
+async def get_entry_attempts(client: IbClient = Depends(get_ib_client), db_conn=Depends(get_db_conn)):
     """
     Per-symbol entry-attempt stats for today plus the daily total. Only
     symbols with at least one attempt today are returned (ordered
@@ -323,7 +302,6 @@ async def get_entry_attempts(ib=Depends(get_ib), db_conn=Depends(get_db_conn)):
     the week is to MAX_TOTAL_ENTRIES_PER_WEEK).
     """
     try:
-        client = IbClient(ib)
         return EntryAttemptsResponse(
             **asdict(await build_entry_attempts(client, db_conn=db_conn))
         )
@@ -333,12 +311,11 @@ async def get_entry_attempts(ib=Depends(get_ib), db_conn=Depends(get_db_conn)):
 
 
 @router.get("/open-risk-table", response_model=List[OpenPosition])
-async def get_open_risk_table(ib=Depends(get_ib), db_conn=Depends(get_db_conn)):
+async def get_open_risk_table(client: IbClient = Depends(get_ib_client), db_conn=Depends(get_db_conn)):
     """
     Fetch the current open risk table for all portfolio positions.
     """
     try:
-        client = IbClient(ib)
         return await process_openrisktable(client, db_conn)
 
     except Exception as e:

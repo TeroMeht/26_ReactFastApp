@@ -12,7 +12,8 @@ Exit-request arm / disarm is triggered separately from the exits router
 after the DB mutation commits.
 
 Must run AFTER connect_ib, init_database, and wire_order_tracker (needs
-app.state.ib, app.state.db_pool, app.state.order_tracker).
+app.state.ib, app.state.db_pool, app.state.order_tracker,
+app.state.ib_client).
 """
 import asyncio
 import logging
@@ -29,7 +30,7 @@ async def wire_openrisk_hub(app: FastAPI) -> None:
     db_pool = app.state.db_pool
     tracker = app.state.order_tracker
 
-    hub = OpenRiskHub(ib=ib, db_pool=db_pool)
+    hub = OpenRiskHub(client=app.state.ib_client, db_pool=db_pool)
     hub.bind_loop(asyncio.get_running_loop())
 
     # ib_async fires these events synchronously from the socket callback.

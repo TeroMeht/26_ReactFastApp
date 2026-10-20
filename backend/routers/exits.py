@@ -10,7 +10,7 @@ from services.exits import (
 from services.portfolio.ib_client import IbClient
 from services.portfolio.openrisk_hub import OpenRiskHub
 
-from dependencies import get_db_conn, get_ib, get_openrisk_hub
+from dependencies import get_db_conn, get_ib_client, get_openrisk_hub
 from schemas.api_schemas import UpdateExitRequest, ExitRequestResponse
 
 router = APIRouter(
@@ -75,7 +75,7 @@ async def update_exit(
 
 @router.post("/exits/reconcile", response_model=dict)
 async def reconcile_exits(
-    ib=Depends(get_ib),
+    client: IbClient = Depends(get_ib_client),
     db_conn=Depends(get_db_conn),
     hub: OpenRiskHub = Depends(get_openrisk_hub),
 ):
@@ -86,7 +86,6 @@ async def reconcile_exits(
     row behind.
     """
     try:
-        client = IbClient(ib)
         result = await reconcile_exit_requests_with_positions(client, db_conn)
         hub.notify()
         return result

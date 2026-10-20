@@ -38,7 +38,7 @@ async def run_scanner(preset_name: str,ib=Depends(get_ib)):
 
 
 
-CUTOFF_24H = datetime.now(timezone.utc) - timedelta(hours=24)
+CUTOFF_24H = datetime.now(timezone.utc) - timedelta(hours=48)
 
 def parse_dt(dt_str: str) -> datetime | None:
     for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z"):

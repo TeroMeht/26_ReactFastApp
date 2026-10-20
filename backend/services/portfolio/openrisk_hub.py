@@ -22,7 +22,6 @@ import asyncio
 import logging
 from typing import Any, List, Optional
 
-from ib_async import IB
 from asyncpg import Pool
 
 from services.portfolio.flows.open_risk import process_openrisktable
@@ -44,8 +43,8 @@ class OpenRiskHub:
         and pushes the resulting snapshot to every subscriber
     """
 
-    def __init__(self, ib: IB, db_pool: Pool) -> None:
-        self.ib = ib
+    def __init__(self, client: IbClient, db_pool: Pool) -> None:
+        self.client = client
         self.db_pool = db_pool
         self._subscribers: List[asyncio.Queue] = []
         self._notify_pending = False
@@ -112,7 +111,7 @@ class OpenRiskHub:
             return
         try:
             async with self.db_pool.acquire() as conn:
-                rows = await process_openrisktable(IbClient(self.ib), conn)
+                rows = await process_openrisktable(self.client, conn)
         except Exception:
             logger.exception("OpenRiskHub rebuild failed")
             return
@@ -147,5 +146,5 @@ class OpenRiskHub:
         the next event.
         """
         async with self.db_pool.acquire() as conn:
-            rows = await process_openrisktable(IbClient(self.ib), conn)
+            rows = await process_openrisktable(self.client, conn)
         return {"type": "snapshot", "rows": [r.model_dump() for r in rows]}

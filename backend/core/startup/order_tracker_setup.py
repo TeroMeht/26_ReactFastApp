@@ -1,9 +1,16 @@
 """OrderTracker wiring.
 
-Attaches the DB pool, the position ledger, IB event handlers, and the
-per-fill fanout for manual-exit Telegram notifications; then seeds the
-ledger from IB's current position snapshot and pulls existing open
-orders into the tracker.
+Two steps, run on either side of create_ib_client:
+
+  create_order_tracker  builds the OrderTracker + PositionLedger, attaches
+                        the DB pool and the ledger, and publishes both on
+                        app.state. No IB events are bound yet.
+
+  wire_order_tracker    subscribes the STP reconciler (using the shared
+                        IbClient) and the manual-exit Telegram fanout,
+                        seeds the ledger from IB's current position
+                        snapshot, then binds IB events and pulls existing
+                        open orders into the tracker.
 
 STP quantity is owned by ``stp_reconciler.reconcile_stp``, subscribed
 to ``PositionLedger``. Fill events feed the ledger from
@@ -11,15 +18,15 @@ to ``PositionLedger``. Fill events feed the ledger from
 reconciler brings the STP into agreement. No other code path modifies
 STP quantity in response to a fill.
 
-Must run AFTER connect_ib and init_database (needs both app.state.ib
-and app.state.db_pool).
+Order in lifespan:
+  connect_ib -> init_database -> create_order_tracker
+  -> create_ib_client -> wire_order_tracker
 """
 import logging
 
 from fastapi import FastAPI
 
 from services.portfolio.order_tracker import OrderTracker
-from services.portfolio.ib_client import IbClient
 from services.portfolio.position_ledger import (
     PositionLedger,
     PositionChanged,
@@ -30,31 +37,35 @@ from services.portfolio.flows.exit import notify_manual_exit_fill_if_relevant
 logger = logging.getLogger(__name__)
 
 
-# Module-level singletons so a single tracker + ledger instance carry
-# state across the app. Requests reach the tracker via
-# dependencies.get_order_tracker.
-order_tracker = OrderTracker()
-position_ledger = PositionLedger()
+def create_order_tracker(app: FastAPI) -> None:
+    """Build the tracker + ledger and publish them on app.state.
+
+    Created here (not at module level) so app.state is the only way to
+    reach them. Requests use dependencies.get_order_tracker.
+    """
+    order_tracker = OrderTracker()
+    position_ledger = PositionLedger()
+
+    # Attach the pool first so seed/bind writes are persisted.
+    order_tracker.set_db_pool(app.state.db_pool)
+    # Attach the ledger BEFORE binding IB events (wire_order_tracker) so
+    # the very first fill after startup finds the ledger in place.
+    order_tracker.set_position_ledger(position_ledger)
+
+    app.state.order_tracker = order_tracker
+    app.state.position_ledger = position_ledger
 
 
 async def wire_order_tracker(app: FastAPI) -> None:
     ib = app.state.ib
-    db_pool = app.state.db_pool
-
-    # Attach the pool first so seed/bind writes are persisted.
-    order_tracker.set_db_pool(db_pool)
-    # Attach the ledger BEFORE binding IB events so the very first fill
-    # after startup finds the ledger in place.
-    order_tracker.set_position_ledger(position_ledger)
+    order_tracker = app.state.order_tracker
+    position_ledger = app.state.position_ledger
+    ib_client = app.state.ib_client
 
     # Subscribe the STP reconciler to ledger events. It is the sole
     # writer of STP quantity in response to a fill.
     async def _on_position_changed(event: PositionChanged) -> None:
-        # A fresh IbClient per event keeps the reconciler self-contained
-        # (no long-lived client state to manage) and is cheap — IbClient
-        # is a stateless wrapper over the shared ib_async connection.
-        client = IbClient(ib, tracker=order_tracker)
-        await reconcile_stp(event, client)
+        await reconcile_stp(event, ib_client)
 
     position_ledger.subscribe(_on_position_changed)
 
@@ -70,8 +81,7 @@ async def wire_order_tracker(app: FastAPI) -> None:
     # every fill from the listener onwards is a delta on top of the
     # correct baseline.
     try:
-        client = IbClient(ib, tracker=order_tracker)
-        positions = await client.get_positions()
+        positions = await ib_client.get_positions()
         for pos in positions or []:
             if pos.symbol and pos.position is not None:
                 position_ledger.seed_symbol(pos.symbol, int(pos.position))
@@ -85,9 +95,6 @@ async def wire_order_tracker(app: FastAPI) -> None:
 
     order_tracker.bind_events(ib)
     await order_tracker.seed(ib)
-
-    app.state.order_tracker = order_tracker
-    app.state.position_ledger = position_ledger
 
 
 def _notify_manual_exit_fill(snap: dict) -> None:

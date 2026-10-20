@@ -179,7 +179,7 @@ async def wrapup_pending_orders(db_conn) -> List[Dict]:
 # Calculate and generate PendingOrder for UI to show
 async def process_open_orders(
     db_conn,
-    ib,
+    client: IbClient,
 ) -> List[PendingOrder]:
         """
         Build the Pending Orders table view.
@@ -191,7 +191,6 @@ async def process_open_orders(
         anyway. The Send click itself posts to /entry-request, which
         re-runs the guards at click-time and places the bracket order.
         """
-        client = IbClient(ib)
         combined_orders = await wrapup_pending_orders(db_conn)
 
         if not combined_orders:

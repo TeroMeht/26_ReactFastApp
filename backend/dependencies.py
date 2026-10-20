@@ -5,12 +5,19 @@ import asyncpg
 
 from services.portfolio.order_tracker import OrderTracker
 from services.portfolio.openrisk_hub import OpenRiskHub
+from services.portfolio.ib_client import IbClient
 
 
 # --- IBKR dependency ---
 def get_ib(request: Request) -> IB:
     ib: IB = request.app.state.ib
     return ib
+
+
+# --- Shared IbClient (built once at startup, carries the tracker) ---
+def get_ib_client(request: Request) -> IbClient:
+    client: IbClient = request.app.state.ib_client
+    return client
 
 
 # --- Order tracker dependency ---

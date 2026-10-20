@@ -19,7 +19,8 @@ from fastapi import FastAPI
 from core.risk_manager_config import risk_settings
 from core.startup.ibkr import connect_ib, disconnect_ib
 from core.startup.database import init_database, ensure_schema, close_database
-from core.startup.order_tracker_setup import wire_order_tracker
+from core.startup.order_tracker_setup import create_order_tracker, wire_order_tracker
+from core.startup.ib_client_setup import create_ib_client
 from core.startup.openrisk_hub_setup import wire_openrisk_hub
 from core.startup.live_scanner import start_live_scanner, stop_live_scanner
 from core.startup.streamer_watchdog import (
@@ -36,7 +37,9 @@ async def lifespan(app: FastAPI):
         await connect_ib(app)
         await init_database(app)
         await ensure_schema(app)
-        await wire_order_tracker(app)
+        create_order_tracker(app)       # tracker + ledger, no IB events yet
+        create_ib_client(app)           # the ONE shared IbClient
+        await wire_order_tracker(app)   # reconciler, ledger seed, IB events
         await wire_openrisk_hub(app)
         await start_live_scanner(app)   # non-fatal on failure
         start_streamer_watchdog(app)

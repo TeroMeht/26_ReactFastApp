@@ -4,9 +4,8 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
-import pytz
+from zoneinfo import ZoneInfo
 from ib_async import IB, Stock, CFD, LimitOrder, StopOrder, MarketOrder
-from core.config import settings
 from services.orders import BidAsk, Order
 from services.portfolio.order_tracker import OrderTracker, TERMINAL_STATUSES
 
@@ -146,9 +145,19 @@ def _build_contract(symbol: str, contract_type: str):
 
 class IbClient:
 
-    def __init__(self, ib: IB, tracker: Optional[OrderTracker] = None):
+    def __init__(
+        self,
+        ib: IB,
+        tracker: Optional[OrderTracker] = None,
+        *,
+        tz: ZoneInfo,
+    ):
+        # Everything IbClient needs is injected here; it never reads
+        # core.config itself. tz is the display timezone for fill
+        # times (Fill.time) -- passed in by core.startup.ib_client_setup.
         self.ib = ib
         self.tracker = tracker
+        self.tz = tz
         self._contract_cache: dict[tuple[str, str], object] = {}
 
     def _register(self, trade) -> None:
@@ -245,8 +254,6 @@ class IbClient:
 
     async def get_trades(self) -> list[Fill]:
 
-        TIMEZONE = pytz.timezone(settings.TIMEZONE)
-
         try:
             trades = await asyncio.wait_for(
                 self.ib.reqExecutionsAsync(),
@@ -259,7 +266,7 @@ class IbClient:
                 if not fill.execution:
                     continue
 
-                time_helsinki = fill.execution.time.astimezone(TIMEZONE)
+                time_local = fill.execution.time.astimezone(self.tz)
                 executed.append(Fill(
                     tradeid=fill.execution.permId,
                     symbol=fill.contract.symbol,
@@ -268,7 +275,7 @@ class IbClient:
                     action=fill.execution.side,
                     quantity=fill.execution.shares,
                     price=fill.execution.price,
-                    time=time_helsinki,
+                    time=time_local,
                     exchange=fill.execution.exchange,
 
                 ))

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, List
-from dependencies import get_db_conn, get_ib
+from dependencies import get_db_conn, get_ib_client
+from services.portfolio.ib_client import IbClient
 from services.pending_orders import *
 
 
@@ -47,10 +48,10 @@ async def delete_auto_order(order_id: int, db_conn=Depends(get_db_conn))-> Dict:
 @router.get("/orders")
 async def get_all_pending_orders(
     db_conn=Depends(get_db_conn),
-    ib=Depends(get_ib),
+    client: IbClient = Depends(get_ib_client),
 ) -> List[PendingOrder]:
     try:
-        pending_orders = await process_open_orders(db_conn, ib)
+        pending_orders = await process_open_orders(db_conn, client)
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
     return [PendingOrder(**order.__dict__) for order in pending_orders]
