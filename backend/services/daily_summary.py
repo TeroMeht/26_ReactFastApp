@@ -7,7 +7,7 @@ Orchestration:
      services.scanner.run_scanner_logic pipeline.
 2.   Take the top 5 by % change on each side (the same sort the frontend already
      uses).
-3.   For each of those 10 tickers, fetch news via the same yfinance/RSS path
+3.   For each of those 10 tickers, fetch news via the same yfinance path (services.news)
      the /api/scanner/news/{symbol} endpoint uses, then ask Claude to apply
      the Catalyst Value Equation (CVE) rubric — see docs/CATALYST_EVALUATION.md
      — and return a structured evaluation: catalyst sentence, type, magnitude,
@@ -30,104 +30,30 @@ import asyncio
 import json
 import logging
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
 
 import asyncpg
-import feedparser
-import yfinance as yf
 from ib_async import IB
 
 from core.config import settings
 from db.daily_summary import upsert_daily_summary
 from services.scanner import run_scanner_logic
+from services.news import fetch_symbol_news_sync
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# News fetch — mirrors routers/scanner.py's /news/{symbol} logic, but as a
-# plain async function so the service can call it without going through HTTP.
+# News fetch — shared with routers/scanner.py via services.news.
 # ---------------------------------------------------------------------------
 
-def _parse_dt(dt_str: str) -> Optional[datetime]:
-    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z"):
-        try:
-            dt = datetime.strptime(dt_str, fmt)
-            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-        except (ValueError, TypeError):
-            continue
-    return None
-
-
-def _fetch_symbol_news_sync(symbol: str, cutoff: datetime) -> List[Dict]:
-    """
-    Blocking news fetch (yfinance + Yahoo RSS fallback). Designed to be run
-    via asyncio.to_thread because yfinance / feedparser are sync.
-    Returns newest-first list of {title, summary, url, source, published_at}.
-    """
-    news_items: List[Dict] = []
-    seen_urls: set[str] = set()
-
-    try:
-        ticker = yf.Ticker(symbol)
-        yf_news = ticker.news or []
-        for item in yf_news:
-            content = item.get("content", {}) or {}
-            published_at = content.get("pubDate", "") or ""
-            dt = _parse_dt(published_at)
-            if dt is None or dt < cutoff:
-                continue
-            url = (content.get("canonicalUrl") or {}).get("url", "") or ""
-            if not url or url in seen_urls:
-                continue
-            seen_urls.add(url)
-            news_items.append({
-                "title": content.get("title", "") or "",
-                "summary": content.get("summary", "") or "",
-                "url": url,
-                "source": (content.get("provider") or {}).get("displayName", "Yahoo Finance"),
-                "published_at": published_at,
-            })
-    except Exception:
-        logger.warning("yfinance news unavailable for %s, falling back to RSS", symbol)
-        try:
-            rss_url = (
-                f"https://feeds.finance.yahoo.com/rss/2.0/headline"
-                f"?s={symbol}&region=US&lang=en-US"
-            )
-            feed = feedparser.parse(rss_url)
-            for entry in feed.entries:
-                published_at = ""
-                if getattr(entry, "published_parsed", None):
-                    dt = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-                    if dt < cutoff:
-                        continue
-                    published_at = dt.isoformat()
-                url = entry.get("link", "") or ""
-                if not url or url in seen_urls:
-                    continue
-                seen_urls.add(url)
-                news_items.append({
-                    "title": entry.get("title", "") or "",
-                    "summary": entry.get("summary", "") or "",
-                    "url": url,
-                    "source": "Yahoo Finance RSS",
-                    "published_at": published_at,
-                })
-        except Exception:
-            logger.exception("Failed to fetch news for %s", symbol)
-
-    news_items.sort(
-        key=lambda x: _parse_dt(x["published_at"]) or datetime.min.replace(tzinfo=timezone.utc),
-        reverse=True,
-    )
-    return news_items
-
-
 async def _fetch_symbol_news(symbol: str) -> List[Dict]:
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-    return await asyncio.to_thread(_fetch_symbol_news_sync, symbol, cutoff)
+    try:
+        return await asyncio.to_thread(fetch_symbol_news_sync, symbol, 24)
+    except Exception:
+        logger.exception("yfinance news fetch failed for %s", symbol)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +63,13 @@ async def _fetch_symbol_news(symbol: str) -> List[Dict]:
 # Lazy import + module-level client cache so the rest of the backend doesn't
 # need the anthropic package installed unless this endpoint is actually used.
 _anthropic_client = None
+
+# Cost controls for the per-ticker CVE evaluation.
+# CLAUDE_HEADLINES: newest headlines per ticker sent to Claude.
+# CLAUDE_MAX_TOKENS: output budget (includes the model's thinking). 400 was too
+# small and cut replies off mid-JSON, which parsed as "no catalyst" / grade D.
+CLAUDE_HEADLINES = 5
+CLAUDE_MAX_TOKENS = 1000
 
 
 def _get_anthropic_client():
@@ -168,6 +101,11 @@ def _claude_complete_sync(prompt: str, max_tokens: int = 60) -> str:
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
+        if msg.stop_reason == "max_tokens":
+            logger.warning(
+                "Claude reply hit max_tokens=%s (output_tokens=%s); JSON is likely truncated",
+                max_tokens, getattr(msg.usage, "output_tokens", "?"),
+            )
         # The SDK returns a list of content blocks; the first text block is what we want.
         for block in msg.content:
             text = getattr(block, "text", None)
@@ -274,7 +212,7 @@ def _ticker_reason_prompt(
     rvol_str = f"{rvol:.2f}" if rvol is not None else "n/a"
     bullets = "\n".join(
         f"- {h['title']}" + (f" — {h['summary'][:200]}" if h.get("summary") else "")
-        for h in headlines[:3]
+        for h in headlines
     ) or "(no news available)"
     return (
         "You are a premarket trading analyst applying the Catalyst Value Equation (CVE).\n"
@@ -313,8 +251,8 @@ def _ticker_reason_prompt(
         '  "catalyst_type" : confirmed | coverage | narrative | none\n'
         '  "magnitude"     : Absolute | Yes | Maybe | No\n'
         '  "speed"         : Absolute | Yes | Maybe | No\n'
-        '  "notes"         : caveats — already in price? float/liquidity? peer\n'
-        '                    flow? Confidence checks the reader should know.\n\n'
+        '  "notes"         : at most 2 short sentences of caveats — already in\n'
+        '                    price? float/liquidity? Most important first.\n\n'
         'Example:\n'
         '  {"reason": "Post-quiet-period analyst initiations from 4 banks",\n'
         '   "catalyst_type": "coverage", "magnitude": "Absolute", "speed": "Absolute",\n'
@@ -422,15 +360,13 @@ async def generate_daily_summary(
         symbol = row.symbol
         change = float(row.change) if row.change is not None else None
         rvol = float(row.rvol) if row.rvol is not None else None
-        news = await _fetch_symbol_news(symbol)
+        news = (await _fetch_symbol_news(symbol))[:CLAUDE_HEADLINES]
 
         # Always send the rubric prompt so Claude can return "no catalyst →
         # grade D" cleanly when news is empty — we don't gate on news presence.
-        # The token budget is larger than the old version because the structured
-        # output (reason + 4 fields + notes) needs more room than a one-liner.
         raw = await _claude_complete(
             _ticker_reason_prompt(symbol, change, rvol, news),
-            max_tokens=400,
+            max_tokens=CLAUDE_MAX_TOKENS,
         )
         cve = _parse_ticker_response(raw)
 

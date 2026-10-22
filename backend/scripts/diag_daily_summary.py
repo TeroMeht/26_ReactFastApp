@@ -2,7 +2,7 @@
 Diagnose why the daily premarket summary grades every row D.
 
 A row only gets a grade above D when BOTH inputs work:
-  1. news fetch  (yfinance, falling back to Yahoo RSS)
+  1. news fetch  (yfinance, via services.news)
   2. the Claude call (ANTHROPIC_API_KEY + ANTHROPIC_MODEL)
 
 This script tests each one separately and prints what it got, so the
@@ -18,55 +18,48 @@ from __future__ import annotations
 import os
 import sys
 import traceback
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BACKEND = os.path.dirname(HERE)
 if BACKEND not in sys.path:
     sys.path.insert(0, BACKEND)
 
-import feedparser  # noqa: E402
 import yfinance as yf  # noqa: E402
 
 from core.config import settings  # noqa: E402
 from services import daily_summary as ds  # noqa: E402
+from services.news import fetch_symbol_news_sync  # noqa: E402
+
+# Show errors yfinance normally hides (faulty Yahoo responses etc.)
+yf.config.debug.hide_exceptions = False
 
 
 def check_news(symbol: str) -> list:
     print(f"\n--- NEWS: {symbol} ---")
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
 
-    # yfinance, raw
+    # yfinance Search, raw
     try:
-        raw = yf.Ticker(symbol).news or []
-        print(f"yfinance {yf.__version__}: {len(raw)} raw item(s)")
+        raw = yf.Search(symbol, news_count=20, max_results=1).news or []
+        print(f"yfinance {yf.__version__} Search: {len(raw)} raw item(s)")
         for item in raw[:3]:
-            content = item.get("content") or {}
-            pub = content.get("pubDate")
-            print(f"  pubDate={pub!r}  parses_as={ds._parse_dt(pub or '')}  "
-                  f"title={str(content.get('title'))[:70]!r}")
-        if raw and not (raw[0].get("content")):
-            print(f"  !! item has no 'content' key; keys are: {list(raw[0].keys())}")
+            ts = item.get("providerPublishTime")
+            when = datetime.fromtimestamp(ts, tz=timezone.utc) if ts else None
+            print(f"  published={when}  related={item.get('relatedTickers')}  "
+                  f"title={str(item.get('title'))[:70]!r}")
     except Exception:
         print("yfinance RAISED:")
         traceback.print_exc()
 
-    # RSS, raw (the service only tries this if yfinance raises)
-    try:
-        feed = feedparser.parse(
-            f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
-        )
-        status = getattr(feed, "status", "n/a")
-        print(f"RSS: http status={status}, {len(feed.entries)} entr(ies)"
-              + (f", bozo={feed.bozo_exception!r}" if feed.bozo else ""))
-    except Exception:
-        print("RSS RAISED:")
-        traceback.print_exc()
-
     # What the service actually ends up with (after the 24h filter)
-    items = ds._fetch_symbol_news_sync(symbol, cutoff)
-    print(f"=> service news after 24h filter: {len(items)} item(s)")
-    return items
+    try:
+        items = fetch_symbol_news_sync(symbol, 24)
+    except Exception as e:
+        print(f"service fetch RAISED: {type(e).__name__}: {e}")
+        items = []
+    print(f"=> service news after 24h filter: {len(items)} item(s), "
+          f"sending newest {ds.CLAUDE_HEADLINES} to Claude")
+    return items[:ds.CLAUDE_HEADLINES]
 
 
 def check_claude(symbol: str, news: list) -> None:
@@ -82,13 +75,15 @@ def check_claude(symbol: str, news: list) -> None:
     try:
         msg = client.messages.create(
             model=settings.ANTHROPIC_MODEL,
-            max_tokens=400,
+            max_tokens=ds.CLAUDE_MAX_TOKENS,
             messages=[{"role": "user",
                        "content": ds._ticker_reason_prompt(symbol, None, None, news)}],
         )
         text = "".join(getattr(b, "text", "") for b in msg.content)
-        print(f"stop_reason={msg.stop_reason}")
-        print(f"raw reply: {text[:500]!r}")
+        print(f"stop_reason={msg.stop_reason}  max_tokens={ds.CLAUDE_MAX_TOKENS}  "
+              f"output_tokens={msg.usage.output_tokens}  "
+              f"blocks={[b.type for b in msg.content]}")
+        print(f"raw reply: {text!r}")
         print(f"=> parsed: {ds._parse_ticker_response(text.strip())}")
     except Exception:
         print("=> Claude call RAISED (this is what the service swallows):")
