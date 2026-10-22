@@ -13,11 +13,6 @@ class RiskManagerSettings(BaseSettings):
     MAX_TOTAL_ENTRIES_PER_DAY: int  # Hard cap on total entries across all tickers in one day.
     MAX_TOTAL_ENTRIES_PER_WEEK: int  # Hard cap on total entries across all tickers in one ISO week.
 
-    # No entries allowed before this time of day (Helsinki).
-    FIRST_ENTRY_HOUR: int
-    FIRST_ENTRY_MINUTE: int
-
-
     # Daily loss limit
     MAX_DAILY_LOSS: int
 

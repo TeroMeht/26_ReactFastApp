@@ -1,23 +1,10 @@
-"""FastAPI lifespan orchestrator.
-
-Reads top-to-bottom like a checklist. Each subsystem owns its own
-startup + shutdown pair in core/startup/*; this file only sequences
-them and handles the outer try/except so failures at any stage abort
-startup cleanly.
-
-Shutdown runs in reverse dependency order:
-  - watchdog first (it holds a running task)
-  - live scanner (needs IB alive to unsubscribe cleanly)
-  - database (nothing else needs it after this point)
-  - IB last (everything downstream of it is already stopped)
-"""
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-
-from core.risk_manager_config import risk_settings
-from core.startup.ibkr import connect_ib, disconnect_ib
+from core.config import settings
+from data_sources.ib._client import IBSource, connect, disconnect
+from data_sources.ib._config import IBSourceConfig
 from core.startup.database import init_database, ensure_schema, close_database
 from core.startup.order_tracker_setup import create_order_tracker, wire_order_tracker
 from core.startup.ib_client_setup import create_ib_client
@@ -34,7 +21,18 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        await connect_ib(app)
+        # IB connection is owned by the shared data_sources package.
+        # app.state.ib_source -> IBSource (for data_sources fetchers)
+        # app.state.ib        -> raw IB() used by IbClient / get_ib
+        # Host/port come from the shared IBSourceConfig; clientId is
+        # per-project, so it stays in 26's settings.
+        ib_config = IBSourceConfig()
+        app.state.ib_source = IBSource(
+            host      = ib_config.IB_HOST,
+            port      = ib_config.IB_PORT,
+            client_id = settings.IB_CLIENT_ID,
+        )
+        app.state.ib = await connect(app.state.ib_source)
         await init_database(app)
         await ensure_schema(app)
         create_order_tracker(app)       # tracker + ledger, no IB events yet
@@ -55,7 +53,7 @@ async def lifespan(app: FastAPI):
         await stop_streamer_watchdog(app)
         await stop_live_scanner(app)
         await close_database(app)
-        disconnect_ib(app)
+        disconnect(app.state.ib_source)
     except Exception:
         logger.exception("Error during shutdown")
 

@@ -9,8 +9,6 @@ class Settings(BaseSettings):
     DATABASE_URL: str
 
     # --- Interactive Brokers ---
-    IB_HOST: str
-    IB_PORT: int
     IB_CLIENT_ID: int
 
     API_PREFIX: str
